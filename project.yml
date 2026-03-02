@@ -1,0 +1,45 @@
+name: PrivateAI
+options:
+  bundleIdPrefix: com.privateai
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+  generateEmptyDirectories: true
+
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    DEVELOPMENT_TEAM: ""
+    ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES: YES
+    TARGETED_DEVICE_FAMILY: "1,2"
+
+targets:
+  PrivateAI:
+    type: application
+    platform: iOS
+    deploymentTarget: "16.0"
+    sources:
+      - path: PrivateAI
+        excludes:
+          - "**/*.md"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.privateai.assistant
+        INFOPLIST_FILE: PrivateAI/Resources/Info.plist
+        SWIFT_VERSION: "5.9"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/Frameworks"
+        ENABLE_PREVIEWS: YES
+      debug:
+        DEBUG_INFORMATION_FORMAT: dwarf
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG
+      release:
+        DEBUG_INFORMATION_FORMAT: "dwarf-with-dsym"
+        SWIFT_OPTIMIZATION_LEVEL: "-Onone"
+    entitlements:
+      path: PrivateAI/PrivateAI.entitlements
+      properties:
+        com.apple.developer.healthkit: true
+        com.apple.developer.healthkit.access: []
+        com.apple.developer.healthkit.background-delivery: true

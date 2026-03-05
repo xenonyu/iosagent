@@ -19,17 +19,28 @@ struct MainTabView: View {
                 }
                 .tag(1)
 
+            StatsView(viewModel: StatsViewModel(
+                context: context,
+                healthService: appState.healthService,
+                calendarService: appState.calendarService,
+                photoService: appState.photoService
+            ))
+            .tabItem {
+                Label("统计", systemImage: "chart.bar.fill")
+            }
+            .tag(2)
+
             ProfileView(viewModel: ProfileViewModel(context: context))
                 .tabItem {
                     Label("我", systemImage: "person.fill")
                 }
-                .tag(2)
+                .tag(3)
 
             SettingsView(viewModel: SettingsViewModel(context: context, appState: appState))
                 .tabItem {
                     Label("设置", systemImage: "gearshape.fill")
                 }
-                .tag(3)
+                .tag(4)
         }
         .accentColor(Color("AccentPrimary"))
     }

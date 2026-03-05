@@ -29,12 +29,12 @@ struct ChatView: View {
                         .padding(.horizontal, 16)
                         .padding(.vertical, 12)
                     }
-                    .onChange(of: viewModel.messages.count) { _ in
+                    .onReceive(viewModel.$messages) { _ in
                         withAnimation(.easeOut(duration: 0.3)) {
                             proxy.scrollTo(bottomID, anchor: .bottom)
                         }
                     }
-                    .onChange(of: viewModel.isThinking) { _ in
+                    .onReceive(viewModel.$isThinking) { _ in
                         withAnimation(.easeOut(duration: 0.3)) {
                             proxy.scrollTo(bottomID, anchor: .bottom)
                         }

@@ -16,6 +16,7 @@ final class ChatViewModel: ObservableObject {
     private let context: NSManagedObjectContext
     private let speechService: SpeechService
     private let appState: AppState
+    private let contextMemory = ContextMemory()
     private var cancellables = Set<AnyCancellable>()
 
     // MARK: - Init
@@ -77,6 +78,7 @@ final class ChatViewModel: ObservableObject {
         let userMsg = ChatMessage(content: text, isUser: true)
         append(message: userMsg)
         persist(message: userMsg)
+        contextMemory.add(message: userMsg)
 
         inputText = ""
         isThinking = true
@@ -84,19 +86,27 @@ final class ChatViewModel: ObservableObject {
         // Build profile from CoreData
         let profile = CDUserProfile.fetchOrCreate(in: context).toProfileData()
 
+        // Resolve intent with context memory (handles follow-ups like "那昨天呢?")
+        let resolvedIntent = contextMemory.resolveIntent(from: text)
+        contextMemory.setLastIntent(resolvedIntent)
+
         let engine = LocalAIEngine(
             context: context,
             healthService: appState.healthService,
-            profile: profile
+            calendarService: appState.calendarService,
+            photoService: appState.photoService,
+            profile: profile,
+            contextMemory: contextMemory
         )
 
         // Small delay to feel more natural
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-            engine.respond(to: text) { [weak self] response in
+            engine.respond(to: text, preResolvedIntent: resolvedIntent) { [weak self] response in
                 guard let self else { return }
                 let aiMsg = ChatMessage(content: response, isUser: false)
                 self.append(message: aiMsg)
                 self.persist(message: aiMsg)
+                self.contextMemory.add(message: aiMsg)
                 self.isThinking = false
             }
         }

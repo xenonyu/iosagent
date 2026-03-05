@@ -37,6 +37,10 @@ targets:
       release:
         DEBUG_INFORMATION_FORMAT: "dwarf-with-dsym"
         SWIFT_OPTIMIZATION_LEVEL: "-Onone"
+    dependencies:
+      - sdk: EventKit.framework
+      - sdk: Photos.framework
+      - sdk: UserNotifications.framework
     entitlements:
       path: PrivateAI/PrivateAI.entitlements
       properties:

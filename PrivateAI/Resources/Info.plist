@@ -64,6 +64,10 @@
 	<string>私人助理可以读取照片的时间和位置元数据，以丰富您的记忆记录。照片内容不会被上传。</string>
 	<key>NSCalendarsUsageDescription</key>
 	<string>私人助理可以读取您的日历事件，以便在问答中提供相关信息。日历数据仅保存在本机。</string>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>私人助理需要完整日历权限以读取您的日程安排。所有日历数据仅在本机处理，不会上传。</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>私人助理不会修改相册内容。</string>
 
 	<!-- Background modes -->
 	<key>UIBackgroundModes</key>

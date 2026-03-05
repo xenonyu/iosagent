@@ -8,20 +8,31 @@ final class LocalAIEngine {
 
     private let context: NSManagedObjectContext
     private let healthService: HealthService
+    private let calendarService: CalendarService
+    private let photoService: PhotoMetadataService
     private let profile: UserProfileData
+    private let contextMemory: ContextMemory?
 
     init(context: NSManagedObjectContext,
          healthService: HealthService,
-         profile: UserProfileData) {
+         calendarService: CalendarService,
+         photoService: PhotoMetadataService,
+         profile: UserProfileData,
+         contextMemory: ContextMemory? = nil) {
         self.context = context
         self.healthService = healthService
+        self.calendarService = calendarService
+        self.photoService = photoService
         self.profile = profile
+        self.contextMemory = contextMemory
     }
 
     // MARK: - Main Entry Point
 
-    func respond(to query: String, completion: @escaping (String) -> Void) {
-        let intent = IntentParser.parse(query)
+    func respond(to query: String,
+                 preResolvedIntent: QueryIntent? = nil,
+                 completion: @escaping (String) -> Void) {
+        let intent = preResolvedIntent ?? IntentParser.parse(query)
 
         switch intent {
         case .exercise(let range):
@@ -44,6 +55,12 @@ final class LocalAIEngine {
 
         case .health(let metric, let range):
             respondHealth(metric: metric, range: range, completion: completion)
+
+        case .calendar(let range):
+            completion(respondCalendar(range: range))
+
+        case .photos(let range):
+            completion(respondPhotos(range: range))
 
         case .profile:
             completion(respondProfile())
@@ -398,17 +415,87 @@ final class LocalAIEngine {
         }
     }
 
+    // MARK: - Calendar
+
+    private func respondCalendar(range: QueryTimeRange) -> String {
+        let interval = range.interval
+        let events = calendarService.fetchEvents(from: interval.start, to: interval.end)
+
+        if events.isEmpty {
+            return "📅 \(range.label)的日历里没有事件。\n请确认已开启日历权限，或者前往日历 App 添加行程。"
+        }
+
+        var lines = ["📅 \(range.label)的日程（共 \(events.count) 个）：\n"]
+        let fmt = DateFormatter()
+        fmt.dateFormat = "M月d日"
+
+        let grouped = Dictionary(grouping: events) { fmt.string(from: $0.startDate) }
+        grouped.keys.sorted().prefix(7).forEach { dateStr in
+            lines.append("📌 \(dateStr)")
+            grouped[dateStr]?.forEach { event in
+                lines.append("  • \(event.timeDisplay) \(event.title)")
+                if !event.location.isEmpty { lines.append("    📍 \(event.location)") }
+            }
+        }
+
+        return lines.joined(separator: "\n")
+    }
+
+    // MARK: - Photos
+
+    private func respondPhotos(range: QueryTimeRange) -> String {
+        let interval = range.interval
+        let photos = photoService.fetchMetadata(from: interval.start, to: interval.end)
+
+        if photos.isEmpty {
+            return "📷 \(range.label)没有照片记录。\n请确认已开启相册权限。"
+        }
+
+        let withLocation = photos.filter { $0.hasLocation }.count
+        let favorites = photos.filter { $0.isFavorite }.count
+
+        // Group by day
+        let cal = Calendar.current
+        var dayCount: [Date: Int] = [:]
+        photos.forEach {
+            let day = cal.startOfDay(for: $0.date)
+            dayCount[day, default: 0] += 1
+        }
+        let mostActiveDay = dayCount.max(by: { $0.value < $1.value })
+
+        var lines = ["📷 \(range.label)的照片活动：\n"]
+        lines.append("总计拍了 \(photos.count) 张照片")
+        if withLocation > 0 { lines.append("📍 其中 \(withLocation) 张有位置信息") }
+        if favorites > 0 { lines.append("❤️ 标记了 \(favorites) 张收藏") }
+
+        if let (day, count) = mostActiveDay {
+            let df = DateFormatter()
+            df.dateFormat = "M月d日"
+            lines.append("\n🏆 最活跃的一天：\(df.string(from: day))（\(count) 张）")
+        }
+
+        return lines.joined(separator: "\n")
+    }
+
     // MARK: - Unknown
 
     private func respondUnknown(query: String) -> String {
+        // Check context memory for hints
+        var contextHint = ""
+        if let hint = contextMemory?.buildContextHint() {
+            contextHint = "\n\n（基于近期话题：\(hint)）"
+        }
+
         let suggestions = [
             "• 「我上周做了什么运动？」",
             "• 「最近去过哪些地方？」",
             "• 「帮我总结这个月的生活」",
             "• 「给老婆推荐礼物」",
+            "• 「我今天的日历行程」",
+            "• 「最近拍了多少照片」",
             "• 「今天跑步了5公里，感觉很棒」（记录事件）"
         ]
-        return "🤔 我理解你在问：「\(query)」\n\n我目前最擅长回答：\n\n\(suggestions.joined(separator: "\n"))\n\n或者直接告诉我你做了什么，我会帮你记录下来！"
+        return "🤔 我理解你在问：「\(query)」\(contextHint)\n\n我目前最擅长回答：\n\n\(suggestions.joined(separator: "\n"))\n\n或者直接告诉我你做了什么，我会帮你记录下来！"
     }
 }
 

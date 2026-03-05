@@ -10,6 +10,8 @@ enum QueryIntent {
     case summary(range: QueryTimeRange)
     case events(range: QueryTimeRange)
     case health(metric: String, range: QueryTimeRange)
+    case calendar(range: QueryTimeRange)
+    case photos(range: QueryTimeRange)
     case profile
     case addEvent(title: String, content: String, mood: MoodType)
     case unknown
@@ -68,6 +70,18 @@ struct IntentParser {
                                 "sleep", "heart rate", "calories", "health"]) {
             let metric = extractHealthMetric(from: lower)
             return .health(metric: metric, range: range)
+        }
+
+        // --- Calendar ---
+        if containsAny(lower, ["日历", "行程", "日程", "计划", "会议", "约会", "活动",
+                                "calendar", "schedule", "meeting", "event", "appointment"]) {
+            return .calendar(range: range)
+        }
+
+        // --- Photos ---
+        if containsAny(lower, ["照片", "拍了", "拍过", "图片", "相册", "记录了几张",
+                                "photo", "picture", "shot", "camera", "image"]) {
+            return .photos(range: range)
         }
 
         // --- Profile ---

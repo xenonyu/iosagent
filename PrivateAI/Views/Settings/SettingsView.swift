@@ -42,10 +42,81 @@ struct SettingsView: View {
                             set: { appState.speechEnabled = $0 }
                         )
                     )
+
+                    PermissionRow(
+                        icon: "calendar",
+                        iconColor: .green,
+                        title: "日历权限",
+                        subtitle: "读取你的日程和行程安排",
+                        isOn: Binding(
+                            get: { appState.calendarEnabled },
+                            set: { appState.toggleCalendar($0) }
+                        )
+                    )
+
+                    PermissionRow(
+                        icon: "photo.fill",
+                        iconColor: .purple,
+                        title: "相册权限",
+                        subtitle: "读取照片时间和位置元数据（不读图片内容）",
+                        isOn: Binding(
+                            get: { appState.photoEnabled },
+                            set: { appState.togglePhoto($0) }
+                        )
+                    )
                 } header: {
                     Label("权限管理", systemImage: "lock.shield")
                 } footer: {
                     Text("所有数据只存在本机，不会上传到任何服务器。")
+                }
+
+                // Notification Settings
+                Section {
+                    PermissionRow(
+                        icon: "bell.fill",
+                        iconColor: .yellow,
+                        title: "本地通知",
+                        subtitle: "每日提醒 + 每周生活总结",
+                        isOn: Binding(
+                            get: { appState.notificationEnabled },
+                            set: { appState.toggleNotifications($0, context: context) }
+                        )
+                    )
+
+                    if appState.notificationEnabled {
+                        HStack {
+                            Text("每日提醒时间")
+                            Spacer()
+                            DatePicker(
+                                "",
+                                selection: Binding(
+                                    get: {
+                                        Calendar.current.date(
+                                            bySettingHour: appState.notifHour,
+                                            minute: appState.notifMinute,
+                                            second: 0,
+                                            of: Date()
+                                        ) ?? Date()
+                                    },
+                                    set: { date in
+                                        let comps = Calendar.current.dateComponents([.hour, .minute], from: date)
+                                        appState.notifHour = comps.hour ?? 21
+                                        appState.notifMinute = comps.minute ?? 0
+                                        appState.notificationService.scheduleDailyReminder(
+                                            hour: appState.notifHour,
+                                            minute: appState.notifMinute
+                                        )
+                                    }
+                                ),
+                                displayedComponents: .hourAndMinute
+                            )
+                            .labelsHidden()
+                        }
+                    }
+                } header: {
+                    Label("通知设置", systemImage: "bell")
+                } footer: {
+                    Text("每周日早上 9 点自动发送本周生活回顾。")
                 }
 
                 // Memory Settings

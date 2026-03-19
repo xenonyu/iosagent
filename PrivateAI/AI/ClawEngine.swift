@@ -20,7 +20,7 @@ final class ClawEngine {
     private let healthService: HealthService
     private let calendarService: CalendarService
     private let photoService: PhotoMetadataService
-    private let profile: UserProfileData
+    private var profile: UserProfileData
     private let contextMemory: ContextMemory?
 
     init(context: NSManagedObjectContext,
@@ -74,6 +74,15 @@ final class ClawEngine {
         registry.register(SearchSkill())
         registry.register(GreetingSkill())
         registry.register(UnknownSkill())
+    }
+
+    // MARK: - Profile Update
+
+    /// Refreshes the user profile before processing a new query.
+    /// Call this before `respond(to:)` when the engine is long-lived so
+    /// that profile changes (name, birthday, etc.) are picked up immediately.
+    func updateProfile(_ newProfile: UserProfileData) {
+        profile = newProfile
     }
 
     // MARK: - Main Entry Point

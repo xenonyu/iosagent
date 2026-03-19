@@ -20,6 +20,7 @@ final class ChatViewModel: ObservableObject {
     private let speechService: SpeechService
     private let appState: AppState
     private let contextMemory = ContextMemory()
+    private let engine: ClawEngine
     private var cancellables = Set<AnyCancellable>()
 
     // MARK: - Init
@@ -28,6 +29,16 @@ final class ChatViewModel: ObservableObject {
         self.context = context
         self.appState = appState
         self.speechService = appState.speechService
+
+        let profile = CDUserProfile.fetchOrCreate(in: context).toProfileData()
+        self.engine = ClawEngine(
+            context: context,
+            healthService: appState.healthService,
+            calendarService: appState.calendarService,
+            photoService: appState.photoService,
+            profile: profile,
+            contextMemory: contextMemory
+        )
 
         loadMessages()
         bindSpeech()
@@ -88,17 +99,9 @@ final class ChatViewModel: ObservableObject {
         inputText = ""
         isThinking = true
 
-        // Build profile from CoreData
+        // Refresh profile in case user updated it since last message
         let profile = CDUserProfile.fetchOrCreate(in: context).toProfileData()
-
-        let engine = ClawEngine(
-            context: context,
-            healthService: appState.healthService,
-            calendarService: appState.calendarService,
-            photoService: appState.photoService,
-            profile: profile,
-            contextMemory: contextMemory
-        )
+        engine.updateProfile(profile)
 
         // Local-first routing: use SkillRouter to determine intent
         let intent = SkillRouter.parse(text)

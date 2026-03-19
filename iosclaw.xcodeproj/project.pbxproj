@@ -13,6 +13,7 @@
 		157BA3783D1DA0417CE308C3 /* WidgetKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = BCC752E6251770B3ED0266FE /* WidgetKit.framework */; };
 		159145056FABB8D70C098C0F /* SleepCalculatorSkill.swift in Sources */ = {isa = PBXBuildFile; fileRef = FFCEC700DEDE242713561C91 /* SleepCalculatorSkill.swift */; };
 		1629AC2683D0413511958C4D /* LocationMapView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 283CD90008D11942D3C5AE72 /* LocationMapView.swift */; };
+		195FDBF0F8436297FF05E18B /* ReminderSkill.swift in Sources */ = {isa = PBXBuildFile; fileRef = 59A94E5A1885B11F9336356B /* ReminderSkill.swift */; };
 		1CBE700BAE9C065E1DFCE259 /* PhotoIndexService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 93E7F9209DB80408CB8E91D4 /* PhotoIndexService.swift */; };
 		1F8A74106053911191D26936 /* PrivateAIWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = FDB27CEC9D33CCDF90C0F401 /* PrivateAIWidget.swift */; };
 		290271DAB96311FA34581A0C /* SwiftUI.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A28B68FF7E20E12114174A8E /* SwiftUI.framework */; };
@@ -29,6 +30,7 @@
 		53F1B2B9286DB0DF74C9ED13 /* ClawEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 21F123D2B27E6BFA0F919E5F /* ClawEngine.swift */; };
 		55165A62308D1533D99EE38F /* AppState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 29EDF0AABD473CD3FEAE585C /* AppState.swift */; };
 		5548A4F9F8B9B9B3780BC82E /* MathSkill.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D0677EAD4A98FD7B4BB601E /* MathSkill.swift */; };
+		57821817DDEDADC9CEE666C4 /* ExpenseSkill.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F796E57D97A09EC743748D0 /* ExpenseSkill.swift */; };
 		59E9D92FFAA8322E750ECBC5 /* CalendarSkill.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42167BD1FB1325E7A4A9B494 /* CalendarSkill.swift */; };
 		5EE02A196A3FC5981B0A0C83 /* RawGPTService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 69B00A54F7A85E6D41104B35 /* RawGPTService.swift */; };
 		5F55F004A36BA18AD2F8F2B4 /* RecordSkill.swift in Sources */ = {isa = PBXBuildFile; fileRef = 749BA5F94BA2252D4E0744BB /* RecordSkill.swift */; };
@@ -82,6 +84,7 @@
 /* Begin PBXFileReference section */
 		0624FDC274E59C094C592A70 /* TimelineView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimelineView.swift; sourceTree = "<group>"; };
 		0ACE818BAD02C2D8CBA59243 /* LocationSkill.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationSkill.swift; sourceTree = "<group>"; };
+		0F796E57D97A09EC743748D0 /* ExpenseSkill.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExpenseSkill.swift; sourceTree = "<group>"; };
 		12D2D7E53A79547B6F578CE6 /* ProfileViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProfileViewModel.swift; sourceTree = "<group>"; };
 		185318DE001F2471C0C32502 /* BreathingSkill.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BreathingSkill.swift; sourceTree = "<group>"; };
 		1B534D5CB1E9EF01490A5E41 /* ProfileView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProfileView.swift; sourceTree = "<group>"; };
@@ -108,6 +111,7 @@
 		521E0A5E81B31CB156CA8448 /* HabitSkill.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HabitSkill.swift; sourceTree = "<group>"; };
 		56B2FE7E27D4FAA1D6E8940E /* PhotoSearchService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotoSearchService.swift; sourceTree = "<group>"; };
 		56EFC4A5014C197FD4D053A8 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		59A94E5A1885B11F9336356B /* ReminderSkill.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReminderSkill.swift; sourceTree = "<group>"; };
 		5D0677EAD4A98FD7B4BB601E /* MathSkill.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MathSkill.swift; sourceTree = "<group>"; };
 		5D806134713EBA25781AD08B /* SettingsViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsViewModel.swift; sourceTree = "<group>"; };
 		666F826153CDFB7991D2EADB /* ContextMemory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContextMemory.swift; sourceTree = "<group>"; };
@@ -221,6 +225,7 @@
 				42167BD1FB1325E7A4A9B494 /* CalendarSkill.swift */,
 				A70FF8187392AC19ACF2C265 /* CountdownSkill.swift */,
 				E6E2C9D2C7E48ECFC1C286F5 /* DateTimeSkill.swift */,
+				0F796E57D97A09EC743748D0 /* ExpenseSkill.swift */,
 				FACC25FE9941AA10BA6893EA /* GreetingSkill.swift */,
 				521E0A5E81B31CB156CA8448 /* HabitSkill.swift */,
 				1C1BB503360544C933017A41 /* HealthSkill.swift */,
@@ -234,6 +239,7 @@
 				E0D30AC57225B6B7E6E63177 /* RandomDecisionSkill.swift */,
 				A0E0CB3253163E40232B6BB4 /* RecommendationSkill.swift */,
 				749BA5F94BA2252D4E0744BB /* RecordSkill.swift */,
+				59A94E5A1885B11F9336356B /* ReminderSkill.swift */,
 				FFCEC700DEDE242713561C91 /* SleepCalculatorSkill.swift */,
 				85E0695CE3DE415DB52E76A0 /* SummarySkill.swift */,
 				B85998145F0B8168C2FE2522 /* TodoSkill.swift */,
@@ -556,6 +562,7 @@
 				FB9010CD507564F884C9E8C5 /* CoreDataExtensions.swift in Sources */,
 				3E2E018A27AFE72A51667884 /* CountdownSkill.swift in Sources */,
 				7598BBBE24400747733968CE /* DateTimeSkill.swift in Sources */,
+				57821817DDEDADC9CEE666C4 /* ExpenseSkill.swift in Sources */,
 				91132942AAAC12535741AAB5 /* GreetingSkill.swift in Sources */,
 				3C56D125E9C220F924B1E0B4 /* HabitSkill.swift in Sources */,
 				71F709C5BB09A038E435AE40 /* HealthService.swift in Sources */,
@@ -586,6 +593,7 @@
 				5EE02A196A3FC5981B0A0C83 /* RawGPTService.swift in Sources */,
 				0570EE17ED17F727A06A3B0D /* RecommendationSkill.swift in Sources */,
 				5F55F004A36BA18AD2F8F2B4 /* RecordSkill.swift in Sources */,
+				195FDBF0F8436297FF05E18B /* ReminderSkill.swift in Sources */,
 				77FBFEC1EB5D3A324A6569BC /* SettingsView.swift in Sources */,
 				AD114F09417B656E5EC81E14 /* SettingsViewModel.swift in Sources */,
 				6DD3A7EEF424C809B15CFB30 /* SharedDefaults.swift in Sources */,

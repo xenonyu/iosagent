@@ -33,6 +33,7 @@ enum QueryIntent {
     case passwordGen(type: PasswordGenType)
     case pomodoro(action: PomodoroAction)
     case expense(action: ExpenseAction, amount: Double, category: String, note: String)
+    case reminder(action: ReminderAction)
     case unknown
 }
 
@@ -113,6 +114,14 @@ enum PasswordGenType {
     case pin(digits: Int)        // numeric PIN
     case memorable               // word-based easy-to-remember
     case overview                // show all options
+}
+
+// MARK: - Reminder Action
+
+enum ReminderAction {
+    case set(minutes: Int, message: String) // 提醒我X分钟后...
+    case list                                // 查看提醒
+    case clear                               // 清除提醒
 }
 
 // MARK: - Water Track Action
@@ -272,6 +281,11 @@ struct SkillRouter {
         if containsAny(lower, ["删除习惯", "去掉习惯", "不追踪", "remove habit", "delete habit"]) {
             let content = extractHabitContent(from: text)
             return .habit(action: .delete, content: content)
+        }
+
+        // --- Timed Reminder (must be checked before Todo) ---
+        if let reminderIntent = parseReminder(lower, original: text) {
+            return reminderIntent
         }
 
         // --- Todo / Memo ---
@@ -1423,6 +1437,144 @@ struct SkillRouter {
             }
         }
         return ""
+    }
+
+    // MARK: - Reminder Parsing
+
+    /// Detects timed reminder requests like "提醒我5分钟后喝水", "30分钟后提醒我开会",
+    /// "1小时后提醒我", "半小时后提醒我吃药", "remind me in 10 minutes to drink water"
+    private static func parseReminder(_ lower: String, original: String) -> QueryIntent? {
+        // Must contain reminder keyword AND a time expression
+        let hasReminderKeyword = containsAny(lower, ["提醒我", "提醒一下", "定个提醒", "设个提醒",
+                                                       "闹钟", "定时", "remind me", "set a reminder",
+                                                       "set reminder", "alarm"])
+
+        // List reminders
+        if hasReminderKeyword && containsAny(lower, ["查看提醒", "提醒列表", "有什么提醒",
+                                                       "哪些提醒", "list reminder", "my reminder",
+                                                       "查看闹钟", "闹钟列表"]) {
+            return .reminder(action: .list)
+        }
+
+        // Clear reminders
+        if hasReminderKeyword && containsAny(lower, ["清除提醒", "取消提醒", "删除提醒",
+                                                       "清除闹钟", "取消闹钟", "删除闹钟",
+                                                       "cancel reminder", "clear reminder",
+                                                       "delete reminder"]) {
+            return .reminder(action: .clear)
+        }
+
+        guard hasReminderKeyword else { return nil }
+
+        // Try to extract time delay (in minutes)
+        let nsText = lower as NSString
+        var minutes: Int?
+
+        // Pattern: "X分钟后" / "X分钟以后" / "X分钟之后"
+        if let regex = try? NSRegularExpression(
+            pattern: "(\\d+)\\s*分钟\\s*(?:后|以后|之后)?",
+            options: []
+        ), let match = regex.firstMatch(in: lower, options: [],
+                                         range: NSRange(location: 0, length: nsText.length)),
+           match.numberOfRanges >= 2 {
+            let numStr = nsText.substring(with: match.range(at: 1))
+            if let n = Int(numStr), n >= 1, n <= 1440 { minutes = n }
+        }
+
+        // Pattern: "X小时后" / "X个小时后"
+        if minutes == nil,
+           let regex = try? NSRegularExpression(
+            pattern: "(\\d+)\\s*(?:个)?小时\\s*(?:后|以后|之后)?",
+            options: []
+           ), let match = regex.firstMatch(in: lower, options: [],
+                                            range: NSRange(location: 0, length: nsText.length)),
+           match.numberOfRanges >= 2 {
+            let numStr = nsText.substring(with: match.range(at: 1))
+            if let n = Int(numStr), n >= 1, n <= 24 { minutes = n * 60 }
+        }
+
+        // Pattern: "半小时后" / "半个小时后"
+        if minutes == nil && containsAny(lower, ["半小时", "半个小时"]) {
+            minutes = 30
+        }
+
+        // Pattern: "X min", "X minutes", "in X minutes"
+        if minutes == nil,
+           let regex = try? NSRegularExpression(
+            pattern: "(\\d+)\\s*(?:min|minutes?)",
+            options: .caseInsensitive
+           ), let match = regex.firstMatch(in: lower, options: [],
+                                            range: NSRange(location: 0, length: nsText.length)),
+           match.numberOfRanges >= 2 {
+            let numStr = nsText.substring(with: match.range(at: 1))
+            if let n = Int(numStr), n >= 1, n <= 1440 { minutes = n }
+        }
+
+        // Pattern: "X hour(s)"
+        if minutes == nil,
+           let regex = try? NSRegularExpression(
+            pattern: "(\\d+)\\s*(?:hours?|hr)",
+            options: .caseInsensitive
+           ), let match = regex.firstMatch(in: lower, options: [],
+                                            range: NSRange(location: 0, length: nsText.length)),
+           match.numberOfRanges >= 2 {
+            let numStr = nsText.substring(with: match.range(at: 1))
+            if let n = Int(numStr), n >= 1, n <= 24 { minutes = n * 60 }
+        }
+
+        // Pattern: "X秒后" / "X seconds"
+        if minutes == nil,
+           let regex = try? NSRegularExpression(
+            pattern: "(\\d+)\\s*(?:秒|seconds?|sec)",
+            options: .caseInsensitive
+           ), let match = regex.firstMatch(in: lower, options: [],
+                                            range: NSRange(location: 0, length: nsText.length)),
+           match.numberOfRanges >= 2 {
+            let numStr = nsText.substring(with: match.range(at: 1))
+            if let n = Int(numStr), n >= 10, n <= 3600 {
+                minutes = max(1, n / 60) // convert to minutes, min 1
+            }
+        }
+
+        // No time expression found → not a timed reminder, let it fall through to todo
+        guard let mins = minutes else { return nil }
+
+        // Extract the reminder message (what to remind about)
+        let message = extractReminderMessage(from: original, lower: lower)
+
+        return .reminder(action: .set(minutes: mins, message: message))
+    }
+
+    /// Extract the actual reminder content from the query.
+    private static func extractReminderMessage(from original: String, lower: String) -> String {
+        var cleaned = original
+
+        // Remove time expressions
+        let timePatterns = [
+            "\\d+\\s*分钟\\s*(?:后|以后|之后)?",
+            "\\d+\\s*(?:个)?小时\\s*(?:后|以后|之后)?",
+            "半(?:个)?小时\\s*(?:后|以后|之后)?",
+            "\\d+\\s*(?:min(?:utes?)?|hours?|hr|seconds?|sec)\\s*(?:later)?",
+            "in\\s+\\d+\\s+(?:min(?:utes?)?|hours?)",
+            "\\d+\\s*秒\\s*(?:后|以后|之后)?"
+        ]
+        for pattern in timePatterns {
+            cleaned = cleaned.replacingOccurrences(of: pattern, with: "", options: .regularExpression)
+        }
+
+        // Remove reminder keywords
+        let keywords = ["提醒我", "提醒一下", "定个提醒", "设个提醒", "闹钟", "定时",
+                        "remind me", "set a reminder", "set reminder"]
+        for kw in keywords {
+            cleaned = cleaned.replacingOccurrences(of: kw, with: "", options: .caseInsensitive)
+        }
+
+        // Clean up
+        cleaned = cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
+        cleaned = cleaned.trimmingCharacters(in: CharacterSet(charactersIn: "，,。.、：:！!？?to "))
+        cleaned = cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        return cleaned.isEmpty ? "提醒时间到了" : cleaned
     }
 
     static func containsAny(_ text: String, _ keywords: [String]) -> Bool {

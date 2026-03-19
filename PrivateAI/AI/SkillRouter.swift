@@ -314,6 +314,18 @@ struct SkillRouter {
             return .recommendation(topic: topic)
         }
 
+        // --- Weekly Insight (MUST check before Summary to avoid keyword shadowing) ---
+        // "本周总结", "本周回顾" contain "总结"/"回顾" which would match Summary first.
+        // Weekly insight provides richer cross-data analysis than basic summary.
+        if containsAny(lower, ["本周总结", "这周总结", "本周回顾", "这周回顾",
+                                "这周怎么样", "这周过得", "本周情况", "这周情况",
+                                "周报", "这礼拜", "一周总结", "一周回顾",
+                                "本周表现", "这周表现", "这周分析", "本周分析",
+                                "weekly", "weekly review", "weekly insight",
+                                "week summary", "this week review"]) {
+            return .weeklyInsight
+        }
+
         // --- Summary ---
         if containsAny(lower, ["总结", "回顾", "概括", "做了什么", "发生了什么",
                                 "过得怎么样", "过得如何", "怎么过的", "生活怎么样",
@@ -344,12 +356,6 @@ struct SkillRouter {
         // --- Streak ---
         if containsAny(lower, ["连续", "打卡", "坚持", "streak", "连续几天", "streak days"]) {
             return .streak
-        }
-
-        // --- Weekly Insight ---
-        if containsAny(lower, ["本周总结", "这周怎么样", "周报", "weekly", "本周情况", "这周总结",
-                                "这周过得", "本周回顾", "这礼拜", "weekly review"]) {
-            return .weeklyInsight
         }
 
         // --- Comparison ---

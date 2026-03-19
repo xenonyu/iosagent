@@ -22,13 +22,13 @@ struct LocationSkill: ClawSkill {
             return
         }
 
-        let response = buildInsightfulResponse(records: records, range: range)
+        let response = buildInsightfulResponse(records: records, range: range, context: context)
         completion(response)
     }
 
     // MARK: - Response Builder
 
-    private func buildInsightfulResponse(records: [LocationRecord], range: QueryTimeRange) -> String {
+    private func buildInsightfulResponse(records: [LocationRecord], range: QueryTimeRange, context: SkillContext) -> String {
         var sections: [String] = []
 
         // Header
@@ -64,7 +64,12 @@ struct LocationSkill: ClawSkill {
             }
         }
 
-        // 6. Activity summary
+        // 6. Period-over-period comparison (only for multi-day ranges)
+        if let comparison = buildPeriodComparison(currentRecords: records, currentProfiles: profiles, range: range, context: context) {
+            sections.append(comparison)
+        }
+
+        // 7. Activity summary
         let summary = buildActivitySummary(records: records, range: range)
         sections.append(summary)
 
@@ -665,6 +670,168 @@ struct LocationSkill: ClawSkill {
                 sin(dLon / 2) * sin(dLon / 2)
         let c = 2 * atan2(sqrt(a), sqrt(1 - a))
         return R * c
+    }
+
+    // MARK: - Period-over-Period Comparison
+
+    /// Compares current period's location activity against the previous period of equal length.
+    /// Shows changes in unique places, movement range, and highlights new explorations.
+    private func buildPeriodComparison(
+        currentRecords: [LocationRecord],
+        currentProfiles: [PlaceProfile],
+        range: QueryTimeRange,
+        context: SkillContext
+    ) -> String? {
+        let cal = Calendar.current
+        let interval = range.interval
+        let spanDays = max(1, cal.dateComponents([.day], from: interval.start, to: interval.end).day ?? 1)
+
+        // Only compare for ranges of 3–31 days (skip single-day or very long ranges)
+        guard spanDays >= 3, spanDays <= 31 else { return nil }
+
+        // Fetch previous period of same length
+        guard let prevStart = cal.date(byAdding: .day, value: -spanDays, to: interval.start) else { return nil }
+        let prevEnd = interval.start
+
+        let prevRecords = CDLocationRecord.fetch(from: prevStart, to: prevEnd, in: context.coreDataContext)
+
+        // Need data in both periods for a meaningful comparison
+        guard !prevRecords.isEmpty else {
+            if currentRecords.count >= 3 {
+                return "📈 上个同期没有位置记录，无法对比。"
+            }
+            return nil
+        }
+
+        let prevProfiles = buildPlaceProfiles(records: prevRecords)
+
+        // --- Metrics ---
+        let curPlaceCount = Set(currentRecords.map { $0.displayName }).count
+        let prevPlaceCount = Set(prevRecords.map { $0.displayName }).count
+
+        let curRecordCount = currentRecords.count
+        let prevRecordCount = prevRecords.count
+
+        // Activity radius: max distance from centroid
+        let curRadius = computeActivityRadius(records: currentRecords)
+        let prevRadius = computeActivityRadius(records: prevRecords)
+
+        // Total sequential travel distance
+        let curTravelM = computeTotalTravel(records: currentRecords)
+        let prevTravelM = computeTotalTravel(records: prevRecords)
+
+        // Unique days with location data
+        let dayFmt = DateFormatter()
+        dayFmt.dateFormat = "yyyy-MM-dd"
+        let curActiveDays = Set(currentRecords.map { dayFmt.string(from: $0.timestamp) }).count
+        let prevActiveDays = Set(prevRecords.map { dayFmt.string(from: $0.timestamp) }).count
+
+        // New places: appeared this period but not last period
+        let curPlaceNames = Set(currentRecords.map { $0.displayName })
+        let prevPlaceNames = Set(prevRecords.map { $0.displayName })
+        let newPlaces = curPlaceNames.subtracting(prevPlaceNames)
+        let droppedPlaces = prevPlaceNames.subtracting(curPlaceNames)
+
+        // --- Build response ---
+        var lines: [String] = ["📈 与上期对比："]
+
+        // Place count delta
+        let placeDelta = curPlaceCount - prevPlaceCount
+        if placeDelta > 0 {
+            lines.append("  • 去了 \(curPlaceCount) 个地方（↑ 比上期多 \(placeDelta) 个）")
+        } else if placeDelta < 0 {
+            lines.append("  • 去了 \(curPlaceCount) 个地方（↓ 比上期少 \(abs(placeDelta)) 个）")
+        } else {
+            lines.append("  • 去了 \(curPlaceCount) 个地方（与上期持平）")
+        }
+
+        // Active days
+        let dayDelta = curActiveDays - prevActiveDays
+        if abs(dayDelta) >= 1 && curActiveDays >= 2 {
+            let arrow = dayDelta > 0 ? "↑" : "↓"
+            lines.append("  • 活跃 \(curActiveDays) 天（\(arrow) 上期 \(prevActiveDays) 天）")
+        }
+
+        // Travel distance comparison
+        if curTravelM > 500 && prevTravelM > 500 {
+            let curKm = curTravelM / 1000.0
+            let prevKm = prevTravelM / 1000.0
+            let travelDelta = curKm - prevKm
+            let travelPct = prevKm > 0 ? Int(abs(travelDelta) / prevKm * 100) : 0
+            if abs(travelDelta) >= 1.0 {
+                let direction = travelDelta > 0 ? "多走了" : "少走了"
+                var travelLine = "  • 移动距离 \(String(format: "%.1f", curKm)) 公里（\(direction) \(String(format: "%.1f", abs(travelDelta))) 公里"
+                if travelPct >= 15 {
+                    travelLine += "，\(travelDelta > 0 ? "+" : "-")\(travelPct)%"
+                }
+                travelLine += "）"
+                lines.append(travelLine)
+            }
+        }
+
+        // Activity radius comparison
+        if curRadius > 500 && prevRadius > 500 {
+            let curRadiusKm = curRadius / 1000.0
+            let prevRadiusKm = prevRadius / 1000.0
+            let radiusDelta = curRadiusKm - prevRadiusKm
+            let radiusPct = prevRadiusKm > 0 ? Int(abs(radiusDelta) / prevRadiusKm * 100) : 0
+            if radiusPct >= 20 {
+                if radiusDelta > 0 {
+                    lines.append("  • 活动半径扩大到 \(String(format: "%.1f", curRadiusKm)) 公里（+\(radiusPct)%）")
+                } else {
+                    lines.append("  • 活动半径缩小到 \(String(format: "%.1f", curRadiusKm)) 公里（-\(radiusPct)%）")
+                }
+            }
+        }
+
+        // New explorations
+        let meaningfulNewPlaces = newPlaces.filter { $0 != "未知地点" && !$0.isEmpty }
+        if !meaningfulNewPlaces.isEmpty {
+            let preview = meaningfulNewPlaces.prefix(3).joined(separator: "、")
+            let extra = meaningfulNewPlaces.count > 3 ? " 等 \(meaningfulNewPlaces.count) 个" : ""
+            lines.append("  • 🆕 新探索：\(preview)\(extra)")
+        }
+
+        // Trend insight
+        if lines.count <= 2 { return nil } // No meaningful deltas to show
+
+        // Overall trend summary
+        let moreActive = placeDelta > 0 && curTravelM > prevTravelM * 1.1
+        let lessActive = placeDelta < 0 && curTravelM < prevTravelM * 0.9
+        if moreActive {
+            lines.append("  💡 整体更活跃，探索了更多地方")
+        } else if lessActive {
+            lines.append("  💡 活动范围收缩，以固定路线为主")
+        } else if !meaningfulNewPlaces.isEmpty && meaningfulNewPlaces.count >= 2 {
+            lines.append("  💡 保持探索节奏，发现了新地方 ✨")
+        }
+
+        return lines.joined(separator: "\n")
+    }
+
+    /// Computes the activity radius (max distance from centroid) for a set of records.
+    private func computeActivityRadius(records: [LocationRecord]) -> Double {
+        guard records.count >= 2 else { return 0 }
+        let avgLat = records.reduce(0.0) { $0 + $1.latitude } / Double(records.count)
+        let avgLon = records.reduce(0.0) { $0 + $1.longitude } / Double(records.count)
+        var maxDist: Double = 0
+        for r in records {
+            let dist = haversine(lat1: avgLat, lon1: avgLon, lat2: r.latitude, lon2: r.longitude)
+            maxDist = max(maxDist, dist)
+        }
+        return maxDist
+    }
+
+    /// Computes total sequential travel distance in meters.
+    private func computeTotalTravel(records: [LocationRecord]) -> Double {
+        let sorted = records.sorted { $0.timestamp < $1.timestamp }
+        guard sorted.count >= 2 else { return 0 }
+        var total: Double = 0
+        for i in 0..<(sorted.count - 1) {
+            total += haversine(lat1: sorted[i].latitude, lon1: sorted[i].longitude,
+                               lat2: sorted[i + 1].latitude, lon2: sorted[i + 1].longitude)
+        }
+        return total
     }
 
     // MARK: - Activity Summary

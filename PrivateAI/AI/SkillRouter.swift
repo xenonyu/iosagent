@@ -329,6 +329,9 @@ struct SkillRouter {
                                 "flights", "climbed",
                                 "走了多远", "跑了多远", "距离多少", "多少公里", "多少距离",
                                 "多远", "几公里",
+                                "体重", "体重变化", "多少斤", "多重", "几斤", "几公斤",
+                                "瘦了", "胖了", "增重", "减重", "称重",
+                                "weight", "body mass", "weigh",
                                 "sleep", "heart rate", "calories", "health", "slept",
                                 "energy", "burned", "body"]) {
             let metric = extractHealthMetric(from: lower)
@@ -618,6 +621,8 @@ struct SkillRouter {
         if containsAny(text, ["卡路里", "热量", "千卡", "大卡", "calories", "burned", "energy"]) { return "calories" }
         if containsAny(text, ["爬楼", "楼层", "几层", "爬了", "flights", "climbed", "floor"]) { return "flights" }
         if containsAny(text, ["多远", "距离", "公里", "几公里", "distance", "km", "far"]) { return "distance" }
+        if containsAny(text, ["体重", "多重", "几斤", "几公斤", "多少斤", "瘦了", "胖了",
+                               "增重", "减重", "称重", "weight", "body mass", "weigh"]) { return "weight" }
         return "general"
     }
 

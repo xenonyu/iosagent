@@ -231,6 +231,12 @@ struct HealthSkill: ClawSkill {
             let filtered = allSummaries.filter { interval.contains($0.date) }
             let withData = filtered.filter { $0.hasData }
 
+            // Weight has its own empty-state handling (fetches 30 days independently)
+            if metric == "weight" {
+                self.respondWeight(summaries: withData, range: range, context: context, completion: completion)
+                return
+            }
+
             guard !withData.isEmpty else {
                 completion("📊 暂无健康数据。\n请在设置中开启健康权限以获取详细数据。")
                 return
@@ -1051,6 +1057,144 @@ struct HealthSkill: ClawSkill {
         completion(lines.joined(separator: "\n"))
     }
 
+    // MARK: - Weight / Body Mass
+
+    private func respondWeight(summaries: [HealthSummary], range: QueryTimeRange,
+                               context: SkillContext, completion: @escaping (String) -> Void) {
+        // Weight data is sparse (usually 1 record/day or less), so fetch 30 days for trend context
+        context.healthService.fetchSummaries(days: 30) { allSummaries in
+            let weightDays = allSummaries.filter { $0.bodyMassKg > 0 }.sorted { $0.date < $1.date }
+
+            guard !weightDays.isEmpty else {
+                var lines: [String] = ["⚖️ **体重数据**\n"]
+                lines.append("暂无体重记录。")
+                lines.append("")
+                lines.append("💡 你可以通过以下方式记录体重：")
+                lines.append("• 连接智能体重秤（如 Withings、小米等）自动同步")
+                lines.append("• 在 Apple 健康 App 中手动添加体重数据")
+                lines.append("")
+                lines.append("记录后再来问我，我会帮你分析趋势！")
+                completion(lines.joined(separator: "\n"))
+                return
+            }
+
+            // Also filter summaries within the requested range
+            let interval = range.interval
+            let rangeWeightDays = weightDays.filter { interval.contains($0.date) }
+
+            var lines: [String] = ["⚖️ **\(range.label)的体重数据**\n"]
+            let cal = Calendar.current
+            let dateFormatter = DateFormatter()
+            dateFormatter.locale = Locale(identifier: "zh_CN")
+            dateFormatter.dateFormat = "M/d"
+
+            let latest = weightDays.last!
+            lines.append("📌 最新体重：**\(String(format: "%.1f", latest.bodyMassKg)) kg**（\(dateFormatter.string(from: latest.date))）")
+
+            // Range-specific data
+            if !rangeWeightDays.isEmpty && rangeWeightDays.count > 1 {
+                let first = rangeWeightDays.first!
+                let last = rangeWeightDays.last!
+                let change = last.bodyMassKg - first.bodyMassKg
+                let changeStr: String
+                if abs(change) < 0.1 {
+                    changeStr = "基本持平 →"
+                } else if change > 0 {
+                    changeStr = "增加 \(String(format: "%.1f", change)) kg ↑"
+                } else {
+                    changeStr = "减少 \(String(format: "%.1f", abs(change))) kg ↓"
+                }
+
+                lines.append("")
+                lines.append("📈 \(range.label)变化：\(changeStr)")
+                lines.append("　　\(dateFormatter.string(from: first.date)) \(String(format: "%.1f", first.bodyMassKg)) → \(dateFormatter.string(from: last.date)) \(String(format: "%.1f", last.bodyMassKg))")
+
+                // Average in range
+                let avg = rangeWeightDays.reduce(0.0) { $0 + $1.bodyMassKg } / Double(rangeWeightDays.count)
+                let maxW = rangeWeightDays.max(by: { $0.bodyMassKg < $1.bodyMassKg })!
+                let minW = rangeWeightDays.min(by: { $0.bodyMassKg < $1.bodyMassKg })!
+                lines.append("　　平均：\(String(format: "%.1f", avg)) kg")
+                if maxW.bodyMassKg - minW.bodyMassKg > 0.2 {
+                    lines.append("　　波动：\(String(format: "%.1f", minW.bodyMassKg)) ~ \(String(format: "%.1f", maxW.bodyMassKg)) kg")
+                }
+            }
+
+            // 30-day trend (if enough data points)
+            if weightDays.count >= 3 {
+                let oldest = weightDays.first!
+                let newest = weightDays.last!
+                let totalChange = newest.bodyMassKg - oldest.bodyMassKg
+                let daysBetween = max(cal.dateComponents([.day], from: oldest.date, to: newest.date).day ?? 1, 1)
+
+                lines.append("")
+                lines.append("📊 **近期趋势**（\(weightDays.count) 条记录，跨 \(daysBetween) 天）")
+
+                if abs(totalChange) < 0.3 {
+                    lines.append("体重保持稳定，波动极小。👍")
+                } else if totalChange > 0 {
+                    let weeklyRate = totalChange / Double(daysBetween) * 7
+                    lines.append("整体呈上升趋势，\(String(format: "%.1f", totalChange)) kg（周均 +\(String(format: "%.1f", weeklyRate)) kg）")
+                    if weeklyRate > 0.5 {
+                        lines.append("⚠️ 体重增长较快，建议关注饮食和运动平衡。")
+                    }
+                } else {
+                    let weeklyRate = abs(totalChange) / Double(daysBetween) * 7
+                    lines.append("整体呈下降趋势，减少 \(String(format: "%.1f", abs(totalChange))) kg（周均 -\(String(format: "%.1f", weeklyRate)) kg）")
+                    if weeklyRate > 1.0 {
+                        lines.append("⚠️ 减重速度偏快，建议控制在每周 0.5~1 kg，保护身体。")
+                    } else if weeklyRate > 0.3 {
+                        lines.append("✅ 减重节奏健康，继续保持！")
+                    }
+                }
+
+                // Daily weight log (recent 7 entries max)
+                let recentEntries = weightDays.suffix(7)
+                if recentEntries.count > 1 {
+                    lines.append("")
+                    lines.append("📋 **近期记录**")
+                    for entry in recentEntries {
+                        let dayLabel = cal.isDateInToday(entry.date) ? "今天" :
+                                       cal.isDateInYesterday(entry.date) ? "昨天" :
+                                       dateFormatter.string(from: entry.date)
+                        let diff = entry.bodyMassKg - (weightDays.first { $0.date < entry.date && $0.bodyMassKg > 0 }?.bodyMassKg ?? entry.bodyMassKg)
+                        let diffStr: String
+                        if abs(diff) < 0.05 {
+                            diffStr = ""
+                        } else if diff > 0 {
+                            diffStr = " (+\(String(format: "%.1f", diff)))"
+                        } else {
+                            diffStr = " (\(String(format: "%.1f", diff)))"
+                        }
+                        lines.append("　\(dayLabel)　\(String(format: "%.1f", entry.bodyMassKg)) kg\(diffStr)")
+                    }
+                }
+            } else if weightDays.count == 1 {
+                lines.append("")
+                lines.append("📝 目前只有 1 条记录，持续记录后我可以帮你分析体重趋势。")
+            }
+
+            // Insight: correlate with exercise if weight trend is notable
+            if weightDays.count >= 5 {
+                let newest = weightDays.last!
+                let oldest = weightDays.first!
+                let change = newest.bodyMassKg - oldest.bodyMassKg
+                let exerciseDays = summaries.filter { $0.exerciseMinutes > 0 }
+
+                if abs(change) > 0.5 && !exerciseDays.isEmpty {
+                    let avgExercise = exerciseDays.reduce(0.0) { $0 + $1.exerciseMinutes } / Double(exerciseDays.count)
+                    lines.append("")
+                    if change < 0 && avgExercise > 20 {
+                        lines.append("💪 同期日均运动 \(Int(avgExercise)) 分钟，运动配合减重效果不错！")
+                    } else if change > 0 && avgExercise < 15 {
+                        lines.append("💡 同期运动较少（日均 \(Int(avgExercise)) 分钟），增加运动量可能有帮助。")
+                    }
+                }
+            }
+
+            completion(lines.joined(separator: "\n"))
+        }
+    }
+
     private func respondOverview(summaries: [HealthSummary], range: QueryTimeRange, completion: @escaping (String) -> Void) {
         var lines: [String] = ["📊 \(range.label)健康概览\n"]
         let dayCount = Double(max(summaries.count, 1))
@@ -1092,6 +1236,17 @@ struct HealthSkill: ClawSkill {
             lines.append("📳 HRV \(Int(avgHRV)) ms · 查看「心率」获取详细分析")
         }
         if totalFlights > 0 { lines.append("🏢 爬楼 \(Int(totalFlights)) 层（日均 \(Int(totalFlights / dayCount))）") }
+        let weightDays = summaries.filter { $0.bodyMassKg > 0 }.sorted { $0.date < $1.date }
+        if let latestWeight = weightDays.last {
+            var weightLine = "⚖️ 体重 \(String(format: "%.1f", latestWeight.bodyMassKg)) kg"
+            if weightDays.count >= 2, let firstWeight = weightDays.first {
+                let diff = latestWeight.bodyMassKg - firstWeight.bodyMassKg
+                if abs(diff) >= 0.1 {
+                    weightLine += diff > 0 ? "（+\(String(format: "%.1f", diff))）" : "（\(String(format: "%.1f", diff))）"
+                }
+            }
+            lines.append(weightLine)
+        }
 
         // --- Sparkline: day-by-day step trend ---
         if summaries.count >= 3 {

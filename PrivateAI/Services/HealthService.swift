@@ -20,7 +20,8 @@ final class HealthService: ObservableObject {
             .restingHeartRate,
             .heartRateVariabilitySDNN,
             .distanceWalkingRunning,
-            .flightsClimbed
+            .flightsClimbed,
+            .bodyMass
         ]
         identifiers.forEach {
             if let t = HKQuantityType.quantityType(forIdentifier: $0) { types.insert(t) }
@@ -128,6 +129,13 @@ final class HealthService: ObservableObject {
             group.leave()
         }
 
+        // Body mass (latest sample for this day — from smart scales or manual entry)
+        group.enter()
+        fetchLatest(.bodyMass, unit: .gramUnit(with: .kilo), predicate: predicate) { val in
+            summary.bodyMassKg = val
+            group.leave()
+        }
+
         // Workouts (individual sessions)
         group.enter()
         fetchWorkouts(start: start, end: end) { workouts in
@@ -181,6 +189,29 @@ final class HealthService: ObservableObject {
             options: .cumulativeSum
         ) { _, result, _ in
             completion(result?.sumQuantity()?.doubleValue(for: unit) ?? 0)
+        }
+        store.execute(query)
+    }
+
+    /// Fetches the most recent sample for a quantity type within the predicate window.
+    /// Useful for metrics recorded once per day (e.g., body mass from smart scales).
+    private func fetchLatest(_ id: HKQuantityTypeIdentifier,
+                             unit: HKUnit,
+                             predicate: NSPredicate,
+                             completion: @escaping (Double) -> Void) {
+        guard let type = HKQuantityType.quantityType(forIdentifier: id) else {
+            completion(0); return
+        }
+        let sortDesc = NSSortDescriptor(key: HKSampleSortIdentifierStartDate, ascending: false)
+        let query = HKSampleQuery(
+            sampleType: type,
+            predicate: predicate,
+            limit: 1,
+            sortDescriptors: [sortDesc]
+        ) { _, samples, _ in
+            let value = (samples?.first as? HKQuantitySample)?
+                .quantity.doubleValue(for: unit) ?? 0
+            completion(value)
         }
         store.execute(query)
     }

@@ -284,6 +284,8 @@ struct HealthSummary {
     var hrv: Double = 0
     var distanceKm: Double = 0
     var flightsClimbed: Double = 0
+    /// Body mass in kg — from HealthKit (smart scales, manual entries)
+    var bodyMassKg: Double = 0
     /// Individual workout sessions from HKWorkout
     var workouts: [WorkoutRecord] = []
     var date: Date = Date()
@@ -295,7 +297,7 @@ struct HealthSummary {
 
     /// True if this day has any recorded data at all.
     var hasData: Bool {
-        steps > 0 || exerciseMinutes > 0 || sleepHours > 0 || heartRate > 0 || distanceKm > 0.01 || flightsClimbed > 0
+        steps > 0 || exerciseMinutes > 0 || sleepHours > 0 || heartRate > 0 || distanceKm > 0.01 || flightsClimbed > 0 || bodyMassKg > 0
     }
 }
 

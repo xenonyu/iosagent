@@ -473,21 +473,26 @@ struct HealthSkill: ClawSkill {
     private func respondOverview(summaries: [HealthSummary], range: QueryTimeRange, completion: @escaping (String) -> Void) {
         var lines: [String] = ["📊 \(range.label)健康概览\n"]
         let dayCount = Double(max(summaries.count, 1))
+        let cal = Calendar.current
 
+        // --- Core metrics ---
         let totalSteps = summaries.reduce(0) { $0 + $1.steps }
         let totalExercise = summaries.reduce(0) { $0 + $1.exerciseMinutes }
-        let avgSleep = summaries.filter { $0.sleepHours > 0 }
-            .reduce(0) { $0 + $1.sleepHours } / Double(max(summaries.filter { $0.sleepHours > 0 }.count, 1))
-        let avgHR = summaries.filter { $0.heartRate > 0 }
-            .reduce(0) { $0 + $1.heartRate } / Double(max(summaries.filter { $0.heartRate > 0 }.count, 1))
+        let sleepDays = summaries.filter { $0.sleepHours > 0 }
+        let avgSleep = sleepDays.isEmpty ? 0 : sleepDays.reduce(0) { $0 + $1.sleepHours } / Double(sleepDays.count)
+        let hrDays = summaries.filter { $0.heartRate > 0 }
+        let avgHR = hrDays.isEmpty ? 0 : hrDays.reduce(0) { $0 + $1.heartRate } / Double(hrDays.count)
         let totalDistance = summaries.reduce(0) { $0 + $1.distanceKm }
+        let totalFlights = summaries.reduce(0) { $0 + $1.flightsClimbed }
 
-        if totalSteps > 0 { lines.append("👟 日均 \(Int(totalSteps / dayCount).formatted()) 步") }
+        let avgSteps = totalSteps / dayCount
+        let avgExercise = totalExercise / dayCount
+
+        if totalSteps > 0 { lines.append("👟 日均 \(Int(avgSteps).formatted()) 步") }
         if totalDistance > 0.1 { lines.append("📏 累计 \(String(format: "%.1f", totalDistance)) 公里") }
-        if totalExercise > 0 { lines.append("⏱ 日均运动 \(Int(totalExercise / dayCount)) 分钟") }
+        if totalExercise > 0 { lines.append("⏱ 日均运动 \(Int(avgExercise)) 分钟") }
         if avgSleep > 0 {
             lines.append("😴 均睡 \(String(format: "%.1f", avgSleep)) 小时")
-            // Show sleep quality hint if phase data available
             let phaseDays = summaries.filter { $0.hasSleepPhases }
             if !phaseDays.isEmpty {
                 let avgDeep = phaseDays.reduce(0) { $0 + $1.sleepDeepHours } / Double(phaseDays.count)
@@ -495,24 +500,137 @@ struct HealthSkill: ClawSkill {
             }
         }
         if avgHR > 0 { lines.append("❤️ 均心率 \(Int(avgHR)) BPM") }
-
-        let totalFlights = summaries.reduce(0) { $0 + $1.flightsClimbed }
         if totalFlights > 0 { lines.append("🏢 爬楼 \(Int(totalFlights)) 层（日均 \(Int(totalFlights / dayCount))）") }
 
-        // Quick verdict
+        // --- Sparkline: day-by-day step trend ---
+        if summaries.count >= 3 {
+            let sorted = summaries.sorted { $0.date < $1.date }
+            let maxSteps = sorted.map(\.steps).max() ?? 1
+            if maxSteps > 0 {
+                let sparkChars: [Character] = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"]
+                let spark = sorted.map { day -> Character in
+                    let idx = min(Int(day.steps / maxSteps * 7), 7)
+                    return sparkChars[idx]
+                }
+                lines.append("\n📈 步数趋势：\(String(spark))")
+            }
+        }
+
+        // --- Weekday vs Weekend patterns ---
+        if summaries.count >= 5 {
+            let weekdays = summaries.filter { !cal.isDateInWeekend($0.date) }
+            let weekends = summaries.filter { cal.isDateInWeekend($0.date) }
+
+            if !weekdays.isEmpty && !weekends.isEmpty {
+                let wdAvgSteps = weekdays.reduce(0) { $0 + $1.steps } / Double(weekdays.count)
+                let weAvgSteps = weekends.reduce(0) { $0 + $1.steps } / Double(weekends.count)
+                let wdAvgExercise = weekdays.reduce(0) { $0 + $1.exerciseMinutes } / Double(weekdays.count)
+                let weAvgExercise = weekends.reduce(0) { $0 + $1.exerciseMinutes } / Double(weekends.count)
+
+                // Only show if there's a meaningful difference (>15%)
+                let stepsDiff = wdAvgSteps > 0 ? abs(weAvgSteps - wdAvgSteps) / wdAvgSteps * 100 : 0
+                let exerciseDiff = wdAvgExercise > 0 ? abs(weAvgExercise - wdAvgExercise) / wdAvgExercise * 100 : 0
+
+                if stepsDiff > 15 || exerciseDiff > 15 {
+                    lines.append("\n🗓 工作日 vs 周末")
+                    if stepsDiff > 15 {
+                        let moreActive = weAvgSteps > wdAvgSteps ? "周末" : "工作日"
+                        lines.append("   步数：工作日均 \(Int(wdAvgSteps).formatted()) · 周末均 \(Int(weAvgSteps).formatted())（\(moreActive)更活跃）")
+                    }
+                    if exerciseDiff > 15 && wdAvgExercise > 0 {
+                        let moreActive = weAvgExercise > wdAvgExercise ? "周末" : "工作日"
+                        lines.append("   运动：工作日均 \(Int(wdAvgExercise))min · 周末均 \(Int(weAvgExercise))min（\(moreActive)更多）")
+                    }
+                }
+
+                // Sleep pattern: weekday vs weekend
+                let wdSleep = weekdays.filter { $0.sleepHours > 0 }
+                let weSleep = weekends.filter { $0.sleepHours > 0 }
+                if !wdSleep.isEmpty && !weSleep.isEmpty {
+                    let wdAvgSleep = wdSleep.reduce(0) { $0 + $1.sleepHours } / Double(wdSleep.count)
+                    let weAvgSleep = weSleep.reduce(0) { $0 + $1.sleepHours } / Double(weSleep.count)
+                    let sleepDiffH = weAvgSleep - wdAvgSleep
+                    if abs(sleepDiffH) >= 0.5 {
+                        if sleepDiffH > 0 {
+                            lines.append("   😴 周末多睡 \(String(format: "%.1f", sleepDiffH))h — 工作日可能欠下了睡眠债")
+                        } else {
+                            lines.append("   😴 工作日反而多睡 \(String(format: "%.1f", -sleepDiffH))h — 周末活动较多")
+                        }
+                    }
+                }
+            }
+        }
+
+        // --- Consistency score (coefficient of variation for steps) ---
+        let stepValues = summaries.map(\.steps).filter { $0 > 0 }
+        if stepValues.count >= 3 {
+            let cv = coefficient(of: stepValues)
+            lines.append("")
+            if cv < 0.2 {
+                lines.append("🎯 活动非常规律（波动仅 \(Int(cv * 100))%），节律感很好！")
+            } else if cv < 0.4 {
+                lines.append("📊 活动比较规律（波动 \(Int(cv * 100))%），偶有高低起伏。")
+            } else {
+                lines.append("🎢 活动波动较大（\(Int(cv * 100))%），试试每天固定时间散步来建立节奏。")
+            }
+        }
+
+        // --- Cross-metric insight: sleep vs exercise correlation ---
+        if summaries.count >= 4 {
+            let paired = summaries.filter { $0.exerciseMinutes > 0 && $0.sleepHours > 0 }
+            if paired.count >= 3 {
+                let exerciseThreshold = paired.reduce(0) { $0 + $1.exerciseMinutes } / Double(paired.count)
+                let activeDays = paired.filter { $0.exerciseMinutes >= exerciseThreshold }
+                let restDays = paired.filter { $0.exerciseMinutes < exerciseThreshold }
+
+                if !activeDays.isEmpty && !restDays.isEmpty {
+                    let sleepOnActive = activeDays.reduce(0) { $0 + $1.sleepHours } / Double(activeDays.count)
+                    let sleepOnRest = restDays.reduce(0) { $0 + $1.sleepHours } / Double(restDays.count)
+                    let diff = sleepOnActive - sleepOnRest
+
+                    if abs(diff) >= 0.3 {
+                        if diff > 0 {
+                            lines.append("💡 运动多的日子平均多睡 \(String(format: "%.1f", diff))h — 运动促进了睡眠质量。")
+                        } else {
+                            lines.append("💡 运动多的日子反而少睡 \(String(format: "%.1f", -diff))h — 注意运动后留够恢复时间。")
+                        }
+                    }
+                }
+            }
+        }
+
+        // --- Anomaly detection: flag unusually low days ---
+        if stepValues.count >= 5 {
+            let mean = stepValues.reduce(0, +) / Double(stepValues.count)
+            let threshold = mean * 0.4 // Below 40% of average
+            let lowDays = summaries.filter { $0.steps > 0 && $0.steps < threshold }
+            if !lowDays.isEmpty && lowDays.count <= 2 {
+                let fmt = DateFormatter()
+                fmt.dateFormat = "M月d日(E)"
+                fmt.locale = Locale(identifier: "zh_CN")
+                let dayNames = lowDays.prefix(2).map { fmt.string(from: $0.date) }.joined(separator: "、")
+                lines.append("⚠️ \(dayNames)活动量明显偏低，那天是否身体不适或特别忙碌？")
+            } else if lowDays.count > 2 {
+                lines.append("⚠️ 有 \(lowDays.count) 天活动量低于平均的 40%，建议关注每日基础活动量。")
+            }
+        }
+
+        // --- Overall verdict (enhanced with cross-metric awareness) ---
         var score = 0
-        if totalSteps / dayCount >= 8000 { score += 1 }
-        if totalExercise / dayCount >= 30 { score += 1 }
-        if avgSleep >= 7 && avgSleep <= 9 { score += 1 }
+        var weakAreas: [String] = []
+        if avgSteps >= 8000 { score += 1 } else { weakAreas.append("步数") }
+        if avgExercise >= 30 { score += 1 } else if totalExercise > 0 { weakAreas.append("运动时长") }
+        if avgSleep >= 7 && avgSleep <= 9 { score += 1 } else if avgSleep > 0 { weakAreas.append("睡眠") }
 
         lines.append("")
         switch score {
         case 3:
             lines.append("✅ 整体状态很好！步数、运动和睡眠都在健康范围。")
         case 2:
-            lines.append("💪 状态不错，还有一项指标可以再提升。")
+            lines.append("💪 状态不错！\(weakAreas.joined(separator: "和"))还有提升空间。")
         case 1:
-            lines.append("💡 有改善空间，试着从最容易的一项开始。")
+            let tip = weakAreas.first ?? "活动"
+            lines.append("💡 \(tip)是最容易改善的一项，从它开始试试？")
         default:
             lines.append("🌱 健康之旅从第一步开始，慢慢来。")
         }

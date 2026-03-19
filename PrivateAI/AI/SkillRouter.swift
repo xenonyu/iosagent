@@ -3,7 +3,7 @@ import Foundation
 // MARK: - Query Intent
 
 enum QueryIntent {
-    case exercise(range: QueryTimeRange)
+    case exercise(range: QueryTimeRange, workoutFilter: String?)
     case location(range: QueryTimeRange)
     case mood(range: QueryTimeRange)
     case recommendation(topic: String)
@@ -301,7 +301,8 @@ struct SkillRouter {
                                 "hiit", "力量训练", "核心训练", "普拉提", "搏击",
                                 "exercise", "workout", "steps", "run", "walk", "fitness",
                                 "calories", "hiking", "swim", "cycling", "yoga"]) {
-            return .exercise(range: range)
+            let filter = extractWorkoutFilter(from: lower)
+            return .exercise(range: range, workoutFilter: filter)
         }
 
         // --- Location / Places ---
@@ -931,6 +932,71 @@ struct SkillRouter {
             return "gift_general"
         }
         return "general"
+    }
+
+    // MARK: - Workout Filter
+
+    /// Detects whether the user is asking about a specific workout type.
+    /// Returns the HKWorkoutActivityType rawValue as a String, or nil for general exercise queries.
+    private static func extractWorkoutFilter(from text: String) -> String? {
+        // Order matters: check specific types before generic keywords
+        if containsAny(text, ["跑步", "跑了", "跑量", "配速", "running", "run "]) { return "running" }
+        if containsAny(text, ["骑行", "骑车", "骑了", "cycling", "bike", "bicycle"]) { return "cycling" }
+        if containsAny(text, ["游泳", "游了", "swim"]) { return "swimming" }
+        if containsAny(text, ["瑜伽", "yoga"]) { return "yoga" }
+        if containsAny(text, ["步行", "走路", "散步", "走了多", "走了几", "walking"]) { return "walking" }
+        if containsAny(text, ["徒步", "登山", "爬山", "hiking", "hike"]) { return "hiking" }
+        if containsAny(text, ["hiit", "高强度间歇", "间歇训练"]) { return "hiit" }
+        if containsAny(text, ["力量训练", "举铁", "撸铁", "strength"]) { return "strength" }
+        if containsAny(text, ["核心训练", "core training"]) { return "core" }
+        if containsAny(text, ["普拉提", "pilates"]) { return "pilates" }
+        if containsAny(text, ["搏击", "拳击", "boxing"]) { return "boxing" }
+        if containsAny(text, ["跳绳", "jump rope"]) { return "jumpRope" }
+        if containsAny(text, ["篮球", "basketball"]) { return "basketball" }
+        if containsAny(text, ["足球", "soccer", "football"]) { return "soccer" }
+        if containsAny(text, ["网球", "tennis"]) { return "tennis" }
+        if containsAny(text, ["羽毛球", "badminton"]) { return "badminton" }
+        if containsAny(text, ["乒乓球", "table tennis", "ping pong"]) { return "tableTennis" }
+        if containsAny(text, ["椭圆机", "elliptical"]) { return "elliptical" }
+        if containsAny(text, ["划船机", "rowing"]) { return "rowing" }
+        if containsAny(text, ["攀岩", "climbing"]) { return "climbing" }
+        if containsAny(text, ["滑雪", "skiing"]) { return "skiing" }
+        if containsAny(text, ["舞蹈", "跳舞", "dance"]) { return "dance" }
+        if containsAny(text, ["冥想", "meditation"]) { return "mindAndBody" }
+        if containsAny(text, ["太极", "tai chi"]) { return "taiChi" }
+        // nil = user asked about general exercise, not a specific type
+        return nil
+    }
+
+    /// Maps workout filter string to HKWorkoutActivityType rawValues.
+    static func workoutFilterTypeIDs(_ filter: String) -> [UInt] {
+        switch filter {
+        case "running":     return [37]
+        case "cycling":     return [13]
+        case "swimming":    return [46]
+        case "yoga":        return [50]
+        case "walking":     return [52]
+        case "hiking":      return [26]
+        case "hiit":        return [25]
+        case "strength":    return [20, 58]  // functional + traditional
+        case "core":        return [62]
+        case "pilates":     return [74]
+        case "boxing":      return [35, 47]  // boxing + kickboxing
+        case "jumpRope":    return [76]
+        case "basketball":  return [3]
+        case "soccer":      return [17]
+        case "tennis":      return [45]
+        case "badminton":   return [2]
+        case "tableTennis": return [56]
+        case "elliptical":  return [15]
+        case "rowing":      return [43]
+        case "climbing":    return [10]
+        case "skiing":      return [32]
+        case "dance":       return [63]
+        case "mindAndBody": return [60]
+        case "taiChi":      return [73]
+        default:            return []
+        }
     }
 
     // MARK: - Health Metric

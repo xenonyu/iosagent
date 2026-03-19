@@ -17,8 +17,12 @@ struct HealthSkill: ClawSkill {
 
     func execute(intent: QueryIntent, context: SkillContext, completion: @escaping (String) -> Void) {
         switch intent {
-        case .exercise(let range):
-            respondExercise(range: range, context: context, completion: completion)
+        case .exercise(let range, let workoutFilter):
+            if let filter = workoutFilter {
+                respondWorkoutType(filter: filter, range: range, context: context, completion: completion)
+            } else {
+                respondExercise(range: range, context: context, completion: completion)
+            }
         case .health(let metric, let range):
             respondHealth(metric: metric, range: range, context: context, completion: completion)
         case .streak:
@@ -229,6 +233,249 @@ struct HealthSkill: ClawSkill {
         }
 
         return lines
+    }
+
+    // MARK: - Workout-Type-Specific Response
+
+    /// When the user asks about a specific workout (e.g., "跑步了多少"), give a focused, rich response
+    /// for that activity type with type-appropriate metrics (pace for running, speed for cycling, etc.)
+    private func respondWorkoutType(filter: String, range: QueryTimeRange, context: SkillContext, completion: @escaping (String) -> Void) {
+        let interval = range.interval
+        let fetchDays = fetchDaysNeeded(for: range)
+        let typeIDs = SkillRouter.workoutFilterTypeIDs(filter)
+
+        context.healthService.fetchSummaries(days: fetchDays) { allSummaries in
+            let filtered = allSummaries.filter { interval.contains($0.date) }
+            let allWorkouts = filtered.flatMap { $0.workouts }
+            let targetWorkouts = allWorkouts.filter { typeIDs.contains($0.activityType) }
+
+            // Determine display name from first matched workout, or from filter keyword
+            let typeName = targetWorkouts.first?.typeName ?? self.filterDisplayName(filter)
+            let typeEmoji = targetWorkouts.first?.typeEmoji ?? "🏅"
+
+            var lines: [String] = ["\(typeEmoji) \(range.label)的\(typeName)数据\n"]
+
+            guard !targetWorkouts.isEmpty else {
+                // No workouts of this type found
+                if !context.healthService.isHealthDataAvailable {
+                    lines.append("此设备不支持 HealthKit（如 iPad）。")
+                } else if allWorkouts.isEmpty {
+                    lines.append("\(range.label)没有任何运动记录。请确认已在「设置 → iosclaw → 健康」开启权限。")
+                } else {
+                    // Has other workouts but not this type
+                    lines.append("\(range.label)没有\(typeName)记录。")
+                    // Show what types were actually done
+                    let otherTypes = Set(allWorkouts.map { $0.typeName })
+                    if !otherTypes.isEmpty {
+                        lines.append("不过有其他运动：\(otherTypes.joined(separator: "、"))")
+                        lines.append("\n💡 试试问我「\(range.label)运动了多少」查看全部运动数据。")
+                    }
+                }
+                completion(lines.joined(separator: "\n"))
+                return
+            }
+
+            // --- Core stats ---
+            let totalSessions = targetWorkouts.count
+            let totalDuration = targetWorkouts.reduce(0) { $0 + $1.duration }
+            let totalCalories = targetWorkouts.reduce(0) { $0 + $1.totalCalories }
+            let totalDistance = targetWorkouts.reduce(0) { $0 + $1.totalDistance }
+            let avgDuration = totalDuration / Double(totalSessions)
+            let uniqueDays = Set(targetWorkouts.map { Calendar.current.startOfDay(for: $0.startDate) }).count
+
+            lines.append("📊 共 \(totalSessions) 次\(typeName)，\(uniqueDays) 天有记录")
+
+            // Duration
+            let totalMins = Int(totalDuration / 60)
+            if totalMins >= 60 {
+                lines.append("⏱ 总时长：\(totalMins / 60)h\(totalMins % 60)m（场均 \(Int(avgDuration / 60))分钟）")
+            } else {
+                lines.append("⏱ 总时长：\(totalMins)分钟（场均 \(Int(avgDuration / 60))分钟）")
+            }
+
+            // Calories
+            if totalCalories >= 10 {
+                lines.append("🔥 消耗热量：\(Int(totalCalories)) 千卡（场均 \(Int(totalCalories / Double(totalSessions)))）")
+            }
+
+            // Distance-based metrics (running, walking, cycling, swimming, hiking)
+            let distanceTypes = ["running", "walking", "cycling", "swimming", "hiking"]
+            if distanceTypes.contains(filter) && totalDistance > 100 {
+                let km = totalDistance / 1000
+                lines.append("📏 总距离：\(String(format: "%.1f", km)) 公里")
+
+                // Per-session distance
+                if totalSessions > 1 {
+                    let avgKm = km / Double(totalSessions)
+                    lines.append("   场均距离：\(String(format: "%.1f", avgKm)) 公里")
+                }
+
+                // Pace for running/walking
+                if (filter == "running" || filter == "walking") && km > 0.1 && totalDuration > 0 {
+                    // Show per-session pace breakdown
+                    lines.append("")
+                    lines.append("⚡ 配速详情")
+                    let sortedByDate = targetWorkouts.sorted { $0.startDate < $1.startDate }
+                    let fmt = DateFormatter()
+                    fmt.dateFormat = "M/d"
+                    for w in sortedByDate {
+                        let wKm = w.totalDistance / 1000
+                        guard wKm > 0.1 && w.duration > 0 else { continue }
+                        let paceMinPerKm = (w.duration / 60) / wKm
+                        guard paceMinPerKm > 0 && paceMinPerKm < 30 else { continue }
+                        let paceMin = Int(paceMinPerKm)
+                        let paceSec = Int((paceMinPerKm - Double(paceMin)) * 60)
+                        let wMins = Int(w.duration / 60)
+                        lines.append("  \(fmt.string(from: w.startDate))  \(String(format: "%.1f", wKm))km · \(paceMin)'\(String(format: "%02d", paceSec))\" · \(wMins)min")
+                    }
+
+                    // Average pace
+                    let avgPace = (totalDuration / 60) / km
+                    if avgPace > 0 && avgPace < 30 {
+                        let avgPaceMin = Int(avgPace)
+                        let avgPaceSec = Int((avgPace - Double(avgPaceMin)) * 60)
+                        lines.append("  📐 平均配速：\(avgPaceMin)'\(String(format: "%02d", avgPaceSec))\"/km")
+                    }
+
+                    // Pace trend (if 2+ sessions with valid pace)
+                    let paces: [(Date, Double)] = sortedByDate.compactMap { w in
+                        let wKm = w.totalDistance / 1000
+                        guard wKm > 0.1 && w.duration > 0 else { return nil }
+                        let pace = (w.duration / 60) / wKm
+                        guard pace > 0 && pace < 30 else { return nil }
+                        return (w.startDate, pace)
+                    }
+                    if paces.count >= 2 {
+                        let firstPace = paces.first!.1
+                        let lastPace = paces.last!.1
+                        let diff = firstPace - lastPace  // lower pace = faster
+                        if abs(diff) > 0.2 {
+                            if diff > 0 {
+                                lines.append("  📈 配速在进步！从 \(Self.formatPace(firstPace)) 提升到 \(Self.formatPace(lastPace))")
+                            } else {
+                                lines.append("  📉 配速略有放缓（\(Self.formatPace(firstPace)) → \(Self.formatPace(lastPace))），注意恢复和节奏。")
+                            }
+                        }
+                    }
+                }
+
+                // Speed for cycling
+                if filter == "cycling" && km > 0.1 && totalDuration > 0 {
+                    let avgSpeedKmh = km / (totalDuration / 3600)
+                    lines.append("💨 平均速度：\(String(format: "%.1f", avgSpeedKmh)) km/h")
+                    // Best session by speed
+                    if totalSessions > 1 {
+                        let bestSession = targetWorkouts
+                            .filter { $0.totalDistance > 100 && $0.duration > 0 }
+                            .max { ($0.totalDistance / $0.duration) < ($1.totalDistance / $1.duration) }
+                        if let best = bestSession {
+                            let bestSpeed = (best.totalDistance / 1000) / (best.duration / 3600)
+                            let fmt = DateFormatter()
+                            fmt.dateFormat = "M月d日"
+                            lines.append("🏆 最快一次：\(fmt.string(from: best.startDate)) \(String(format: "%.1f", bestSpeed)) km/h")
+                        }
+                    }
+                }
+            }
+
+            // Best session (by calories or duration)
+            if totalSessions > 1 {
+                if let bestByCal = targetWorkouts.max(by: { $0.totalCalories < $1.totalCalories }),
+                   bestByCal.totalCalories > 10 {
+                    let fmt = DateFormatter()
+                    fmt.dateFormat = "M月d日"
+                    lines.append("\n🏆 最高消耗：\(fmt.string(from: bestByCal.startDate)) \(Int(bestByCal.totalCalories))千卡 · \(bestByCal.durationFormatted)")
+                }
+            }
+
+            // Time-of-day pattern
+            let hourCounts = self.workoutTimeDistribution(targetWorkouts)
+            if let (period, count) = hourCounts.max(by: { $0.value < $1.value }), count > 1 {
+                lines.append("\n⏰ 你通常在\(period)\(typeName)（\(count)次）")
+            }
+
+            // Frequency insight
+            if uniqueDays > 1 {
+                let spanDays = max(1, Calendar.current.dateComponents([.day],
+                    from: targetWorkouts.map(\.startDate).min()!,
+                    to: targetWorkouts.map(\.startDate).max()!).day ?? 1)
+                if spanDays >= 3 {
+                    let freqDays = Double(spanDays) / Double(totalSessions)
+                    if freqDays <= 2 {
+                        lines.append("📅 平均每 \(String(format: "%.0f", freqDays)) 天\(typeName)一次，频率很高！")
+                    } else {
+                        lines.append("📅 平均约 \(String(format: "%.0f", freqDays)) 天\(typeName)一次")
+                    }
+                }
+            }
+
+            // Context: also mention overall exercise if there are other types
+            let otherWorkouts = allWorkouts.filter { !typeIDs.contains($0.activityType) }
+            if !otherWorkouts.isEmpty {
+                let otherTypes = Set(otherWorkouts.map { $0.typeName }).prefix(3)
+                lines.append("\n💡 \(range.label)还有其他运动：\(otherTypes.joined(separator: "、"))。问我「\(range.label)运动了多少」查看全部。")
+            }
+
+            completion(lines.joined(separator: "\n"))
+        }
+    }
+
+    /// Formats a pace value (minutes per km) as "X'YY\"" string.
+    private static func formatPace(_ paceMinPerKm: Double) -> String {
+        let paceMin = Int(paceMinPerKm)
+        let paceSec = Int((paceMinPerKm - Double(paceMin)) * 60)
+        return "\(paceMin)'\(String(format: "%02d", paceSec))\""
+    }
+
+    /// Returns display name for a workout filter when no actual workout record is available.
+    private func filterDisplayName(_ filter: String) -> String {
+        switch filter {
+        case "running": return "跑步"
+        case "cycling": return "骑行"
+        case "swimming": return "游泳"
+        case "yoga": return "瑜伽"
+        case "walking": return "步行"
+        case "hiking": return "徒步"
+        case "hiit": return "高强度间歇"
+        case "strength": return "力量训练"
+        case "core": return "核心训练"
+        case "pilates": return "普拉提"
+        case "boxing": return "搏击"
+        case "jumpRope": return "跳绳"
+        case "basketball": return "篮球"
+        case "soccer": return "足球"
+        case "tennis": return "网球"
+        case "badminton": return "羽毛球"
+        case "tableTennis": return "乒乓球"
+        case "elliptical": return "椭圆机"
+        case "rowing": return "划船机"
+        case "climbing": return "攀岩"
+        case "skiing": return "滑雪"
+        case "dance": return "舞蹈"
+        case "mindAndBody": return "冥想"
+        case "taiChi": return "太极"
+        default: return "运动"
+        }
+    }
+
+    /// Analyzes workout sessions by time-of-day, returns {period: count} for the most common periods.
+    private func workoutTimeDistribution(_ workouts: [WorkoutRecord]) -> [String: Int] {
+        var dist: [String: Int] = [:]
+        for w in workouts {
+            let hour = Calendar.current.component(.hour, from: w.startDate)
+            let period: String
+            switch hour {
+            case 5..<9:   period = "清晨"
+            case 9..<12:  period = "上午"
+            case 12..<14: period = "午间"
+            case 14..<17: period = "下午"
+            case 17..<20: period = "傍晚"
+            case 20..<23: period = "晚上"
+            default:       period = "深夜"
+            }
+            dist[period, default: 0] += 1
+        }
+        return dist
     }
 
     // MARK: - Health Metric

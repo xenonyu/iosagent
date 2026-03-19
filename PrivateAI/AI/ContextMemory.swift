@@ -160,7 +160,7 @@ final class ContextMemory {
     /// Extracts the QueryTimeRange from an existing intent, if it carries one.
     private func extractRange(from intent: QueryIntent) -> QueryTimeRange? {
         switch intent {
-        case .exercise(let r):   return r
+        case .exercise(let r, _): return r
         case .location(let r):   return r
         case .mood(let r):       return r
         case .summary(let r):    return r
@@ -176,7 +176,7 @@ final class ContextMemory {
     /// For intents that don't carry a time range, returns them unchanged.
     private func applyRange(_ range: QueryTimeRange, to intent: QueryIntent) -> QueryIntent {
         switch intent {
-        case .exercise:          return .exercise(range: range)
+        case .exercise(_, let f): return .exercise(range: range, workoutFilter: f)
         case .location:          return .location(range: range)
         case .mood:              return .mood(range: range)
         case .summary:           return .summary(range: range)
@@ -190,7 +190,7 @@ final class ContextMemory {
 
     private func inheritIntent(_ intent: QueryIntent, withRange range: QueryTimeRange) -> QueryIntent {
         switch intent {
-        case .exercise:         return .exercise(range: range)
+        case .exercise(_, let f): return .exercise(range: range, workoutFilter: f)
         case .location:         return .location(range: range)
         case .mood:             return .mood(range: range)
         case .summary:          return .summary(range: range)

@@ -617,6 +617,23 @@ struct SkillRouter {
             return .summary(range: .lastWeek)
         }
 
+        // --- Vague time-based questions ---
+        // Catches natural queries like "明天怎么样", "昨天如何", "后天好不好",
+        // "下周怎样", "上个月怎么样" that have explicit time context + open-ended
+        // question words but no specific skill keyword.
+        // Route: future → calendar (what's planned), past/present → summary (what happened).
+        let vagueQuestionWords = [
+            "怎么样", "怎样", "如何", "好不好", "好吗", "咋样",
+            "how's", "how is", "how was", "how will", "what's up"
+        ]
+        if containsAny(lower, vagueQuestionWords) && hasExplicitTimeReference(lower) {
+            if range.isFuture {
+                return .calendar(range: range)
+            } else {
+                return .summary(range: range)
+            }
+        }
+
         return .unknown
     }
 

@@ -362,6 +362,17 @@ struct CalendarSkill: ClawSkill {
 
     // MARK: - Multi-Day Response (This Week / Range)
 
+    /// Detects whether the user's original query is focused on finding free time.
+    /// "这周什么时候有空", "本周哪天比较空闲", "下周有没有空" → true
+    private func isFreeTimeFocusedQuery(_ query: String) -> Bool {
+        let lower = query.lowercased()
+        let freeTimeKeywords = ["有空", "空闲", "空不空", "哪天空", "什么时候空",
+                                "有没有空", "哪天有时间", "什么时候有时间",
+                                "哪天轻松", "哪天不忙", "比较闲", "比较空",
+                                "free time", "available", "which day", "when am i free"]
+        return freeTimeKeywords.contains(where: { lower.contains($0) })
+    }
+
     private func buildMultiDayResponse(events: [CalendarEventItem], range: QueryTimeRange, interval: DateInterval, spanDays: Int, context: SkillContext) -> String {
         var lines: [String] = []
         let cal = Calendar.current
@@ -372,16 +383,33 @@ struct CalendarSkill: ClawSkill {
         let timedEvents = events.filter { !$0.isAllDay }
         let totalMinutes = timedEvents.reduce(0.0) { $0 + $1.duration } / 60.0
 
-        // --- Summary header ---
-        lines.append("📅 \(range.label)日程总览")
-        lines.append("共 \(events.count) 个事件，跨 \(spanDays) 天\(totalMinutes >= 60 ? "，约 \(formatDuration(totalMinutes)) 有安排" : "")。\n")
-
         // --- Group by day ---
         let grouped = Dictionary(grouping: events) { cal.startOfDay(for: $0.startDate) }
         let sortedDays = grouped.keys.sorted()
 
+        let isFreeTimeFocus = isFreeTimeFocusedQuery(context.originalQuery)
+
+        // --- Summary header ---
+        if isFreeTimeFocus {
+            lines.append("📅 \(range.label)空闲时间一览")
+        } else {
+            lines.append("📅 \(range.label)日程总览")
+        }
+        lines.append("共 \(events.count) 个事件，跨 \(spanDays) 天\(totalMinutes >= 60 ? "，约 \(formatDuration(totalMinutes)) 有安排" : "")。\n")
+
+        // --- Free-time-focused: show cross-day free slots prominently ---
+        if isFreeTimeFocus {
+            let freeOverview = buildMultiDayFreeSlots(
+                grouped: grouped, interval: interval, spanDays: spanDays
+            )
+            if !freeOverview.isEmpty {
+                lines.append(contentsOf: freeOverview)
+                lines.append("")
+            }
+        }
+
         // --- Busiest day insight ---
-        if sortedDays.count > 1 {
+        if sortedDays.count > 1 && !isFreeTimeFocus {
             let busiestDay = sortedDays.max { (grouped[$0]?.count ?? 0) < (grouped[$1]?.count ?? 0) }
             if let busiest = busiestDay, let count = grouped[busiest]?.count, count > 1 {
                 lines.append("📊 最忙的一天：\(dateFmt.string(from: busiest))（\(count) 个事件）\n")
@@ -389,7 +417,8 @@ struct CalendarSkill: ClawSkill {
         }
 
         // --- Day-by-day listing ---
-        for day in sortedDays.prefix(7) {
+        let maxDisplayDays = isFreeTimeFocus ? 10 : 7
+        for day in sortedDays.prefix(maxDisplayDays) {
             guard let dayEvents = grouped[day] else { continue }
             let dayTimed = dayEvents.filter { !$0.isAllDay }
             let dayBusy = busyScore(timedCount: dayTimed.count, totalMinutes: dayTimed.reduce(0.0) { $0 + $1.duration } / 60.0)
@@ -398,16 +427,64 @@ struct CalendarSkill: ClawSkill {
                 var line = "  • \(event.isAllDay ? "全天" : event.timeDisplay) \(event.title)"
                 if !event.location.isEmpty { line += "  📍\(event.location)" }
                 lines.append(line)
-                if let preview = notesPreview(event.notes) {
+                // In free-time-focused mode, skip notes to keep output concise
+                if !isFreeTimeFocus, let preview = notesPreview(event.notes) {
                     lines.append("    💬 \(preview)")
                 }
             }
         }
 
+        // --- Remaining days summary (when truncated) ---
+        if sortedDays.count > maxDisplayDays {
+            let remaining = Array(sortedDays.dropFirst(maxDisplayDays))
+            let remainingEventCount = remaining.reduce(0) { $0 + (grouped[$1]?.count ?? 0) }
+            let shortFmt = DateFormatter()
+            shortFmt.dateFormat = "M/d"
+            let dateList = remaining.prefix(5).map { shortFmt.string(from: $0) }.joined(separator: "、")
+            let tail = remaining.count > 5 ? " 等" : ""
+            lines.append("\n📋 还有 \(remaining.count) 天有安排（共 \(remainingEventCount) 个事件）：\(dateList)\(tail)")
+        }
+
         // --- Days with no events ---
         if sortedDays.count < spanDays {
             let freeDays = spanDays - sortedDays.count
-            lines.append("\n💚 其中 \(freeDays) 天没有安排，可以自由支配。")
+            if isFreeTimeFocus {
+                // In free-time mode, identify WHICH days are free
+                let freeDaysList = findFreeDates(grouped: grouped, interval: interval, spanDays: spanDays)
+                if !freeDaysList.isEmpty {
+                    let shortFmt = DateFormatter()
+                    shortFmt.dateFormat = "M月d日（E）"
+                    shortFmt.locale = Locale(identifier: "zh_CN")
+                    let isFuture = interval.start >= Calendar.current.startOfDay(for: Date())
+                    let futureFree = isFuture
+                        ? freeDaysList.filter { $0 >= Calendar.current.startOfDay(for: Date()) }
+                        : freeDaysList
+                    if !futureFree.isEmpty {
+                        lines.append("\n🟢 完全空闲的日子（\(futureFree.count) 天）：")
+                        futureFree.prefix(7).forEach { lines.append("  • \(shortFmt.string(from: $0))") }
+                        if futureFree.count > 7 {
+                            lines.append("  …还有 \(futureFree.count - 7) 天")
+                        }
+                    } else {
+                        lines.append("\n💚 其中 \(freeDays) 天没有安排，可以自由支配。")
+                    }
+                } else {
+                    lines.append("\n💚 其中 \(freeDays) 天没有安排，可以自由支配。")
+                }
+            } else {
+                lines.append("\n💚 其中 \(freeDays) 天没有安排，可以自由支配。")
+            }
+        }
+
+        // --- Multi-day free slots (non-focus mode: appended at end) ---
+        if !isFreeTimeFocus {
+            let freeOverview = buildMultiDayFreeSlots(
+                grouped: grouped, interval: interval, spanDays: spanDays
+            )
+            if !freeOverview.isEmpty {
+                lines.append("")
+                lines.append(contentsOf: freeOverview)
+            }
         }
 
         // --- Week-over-week comparison ---
@@ -430,6 +507,176 @@ struct CalendarSkill: ClawSkill {
         }
 
         return lines.joined(separator: "\n")
+    }
+
+    // MARK: - Multi-Day Free Slots
+
+    /// Identifies which days in the range have no events (completely free).
+    private func findFreeDates(grouped: [Date: [CalendarEventItem]], interval: DateInterval, spanDays: Int) -> [Date] {
+        let cal = Calendar.current
+        let startDay = cal.startOfDay(for: interval.start)
+        var freeDates: [Date] = []
+        for offset in 0..<spanDays {
+            guard let day = cal.date(byAdding: .day, value: offset, to: startDay) else { continue }
+            let dayStart = cal.startOfDay(for: day)
+            if grouped[dayStart] == nil || grouped[dayStart]?.isEmpty == true {
+                freeDates.append(dayStart)
+            }
+        }
+        return freeDates
+    }
+
+    /// Builds a cross-day free time overview: best free slots across all days in the range.
+    /// Answers the core question: "When am I free this week?"
+    private func buildMultiDayFreeSlots(
+        grouped: [Date: [CalendarEventItem]],
+        interval: DateInterval,
+        spanDays: Int
+    ) -> [String] {
+        let cal = Calendar.current
+        let now = Date()
+        let startDay = cal.startOfDay(for: interval.start)
+
+        struct DayFreeInfo {
+            let date: Date
+            let totalFreeMin: Double
+            let longestBlockMin: Double
+            let longestBlockStart: Date
+            let slots: [String]  // formatted slot strings
+        }
+
+        let timeFmt = DateFormatter()
+        timeFmt.dateFormat = "HH:mm"
+        let dayLabelFmt = DateFormatter()
+        dayLabelFmt.dateFormat = "M月d日（E）"
+        dayLabelFmt.locale = Locale(identifier: "zh_CN")
+
+        var dayFreeInfos: [DayFreeInfo] = []
+
+        for offset in 0..<spanDays {
+            guard let day = cal.date(byAdding: .day, value: offset, to: startDay) else { continue }
+            let dayStart = cal.startOfDay(for: day)
+            let isToday = cal.isDateInToday(day)
+
+            // Skip past days (except today)
+            if !isToday && dayStart < cal.startOfDay(for: now) { continue }
+
+            let workStart = cal.date(bySettingHour: 8, minute: 0, second: 0, of: day) ?? day
+            let workEnd = cal.date(bySettingHour: 22, minute: 0, second: 0, of: day) ?? day
+            let effectiveStart = (isToday && now > workStart) ? now : workStart
+            guard effectiveStart < workEnd else { continue }
+
+            let dayEvents = (grouped[dayStart] ?? []).filter { !$0.isAllDay }
+
+            // Build occupied intervals
+            let sorted = dayEvents.sorted { $0.startDate < $1.startDate }
+            var occupied: [(Date, Date)] = []
+            for event in sorted {
+                let s = max(event.startDate, workStart)
+                let e = min(event.endDate, workEnd)
+                guard s < e else { continue }
+                if let last = occupied.last, s <= last.1 {
+                    occupied[occupied.count - 1].1 = max(last.1, e)
+                } else {
+                    occupied.append((s, e))
+                }
+            }
+
+            // Find gaps
+            var slots: [String] = []
+            var totalFreeMin = 0.0
+            var longestBlockMin = 0.0
+            var longestBlockStart = effectiveStart
+            var cursor = effectiveStart
+
+            for (start, end) in occupied {
+                if start > cursor {
+                    let gapMin = start.timeIntervalSince(cursor) / 60
+                    if gapMin >= 30 {
+                        slots.append("\(timeFmt.string(from: cursor))–\(timeFmt.string(from: start))（\(formatDuration(gapMin))）")
+                        totalFreeMin += gapMin
+                        if gapMin > longestBlockMin {
+                            longestBlockMin = gapMin
+                            longestBlockStart = cursor
+                        }
+                    }
+                }
+                cursor = max(cursor, end)
+            }
+            // Tail gap
+            if cursor < workEnd {
+                let gapMin = workEnd.timeIntervalSince(cursor) / 60
+                if gapMin >= 30 {
+                    slots.append("\(timeFmt.string(from: cursor))–\(timeFmt.string(from: workEnd))（\(formatDuration(gapMin))）")
+                    totalFreeMin += gapMin
+                    if gapMin > longestBlockMin {
+                        longestBlockMin = gapMin
+                        longestBlockStart = cursor
+                    }
+                }
+            }
+
+            // If no events at all, the entire day is free
+            if dayEvents.isEmpty {
+                totalFreeMin = workEnd.timeIntervalSince(effectiveStart) / 60
+                longestBlockMin = totalFreeMin
+                longestBlockStart = effectiveStart
+                // Don't list individual slots for fully free days — handled elsewhere
+            }
+
+            if totalFreeMin >= 30 {
+                dayFreeInfos.append(DayFreeInfo(
+                    date: day,
+                    totalFreeMin: totalFreeMin,
+                    longestBlockMin: longestBlockMin,
+                    longestBlockStart: longestBlockStart,
+                    slots: slots
+                ))
+            }
+        }
+
+        guard !dayFreeInfos.isEmpty else { return [] }
+
+        var lines: [String] = []
+        lines.append("💚 空闲时段总览：")
+
+        // Sort by longest free block descending — most useful days first
+        let bestDays = dayFreeInfos
+            .filter { !$0.slots.isEmpty }
+            .sorted { $0.longestBlockMin > $1.longestBlockMin }
+
+        if bestDays.isEmpty { return [] }
+
+        // Show top recommendation
+        if let best = bestDays.first {
+            let blockLabel: String
+            if best.longestBlockMin >= 180 {
+                blockLabel = "非常充裕"
+            } else if best.longestBlockMin >= 120 {
+                blockLabel = "适合深度工作"
+            } else if best.longestBlockMin >= 60 {
+                blockLabel = "适合中等任务"
+            } else {
+                blockLabel = "可处理简单事务"
+            }
+            lines.append("  🏆 最佳空闲日：\(dayLabelFmt.string(from: best.date)) — 连续 \(formatDuration(best.longestBlockMin)) 空闲（\(blockLabel)）")
+        }
+
+        // Per-day free slots (up to 5 days)
+        for info in bestDays.prefix(5) {
+            let dayLabel = dayLabelFmt.string(from: info.date)
+            lines.append("  📍 \(dayLabel)：空闲 \(formatDuration(info.totalFreeMin))")
+            info.slots.prefix(3).forEach { lines.append("    · \($0)") }
+            if info.slots.count > 3 {
+                lines.append("    …还有 \(info.slots.count - 3) 个空闲段")
+            }
+        }
+
+        if bestDays.count > 5 {
+            lines.append("  …还有 \(bestDays.count - 5) 天有空闲时段")
+        }
+
+        return lines
     }
 
     // MARK: - Busy-ness Scoring

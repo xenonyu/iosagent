@@ -18,7 +18,33 @@ struct MoodSkill: ClawSkill {
         let events = CDLifeEvent.fetch(from: interval.start, to: interval.end, in: context.coreDataContext)
 
         if events.isEmpty {
-            completion("😊 \(range.label)暂无心情记录。\n通过对话告诉我你今天的心情，我会帮你记录下来！\n\n💡 试试说：「今天心情不错」、「有点累」或「今天很开心」，我会帮你记录并分析趋势。")
+            // Detect if user arrived here via an emotional expression (e.g. "好累", "压力大")
+            let query = context.originalQuery.lowercased()
+            let emotionalWords = ["累", "疲惫", "压力", "焦虑", "烦", "崩溃", "郁闷", "低落",
+                                  "难过", "伤心", "开心", "兴奋", "紧张", "无聊", "孤独", "沮丧",
+                                  "放松", "舒服", "丧", "满足", "充实"]
+            let isEmotionalExpression = emotionalWords.contains(where: { query.contains($0) })
+
+            if isEmotionalExpression {
+                // Empathize first, then guide to recording
+                let empathy: String
+                if SkillRouter.containsAny(query, ["累", "疲惫", "压力", "崩溃", "扛不住"]) {
+                    empathy = "听到你说累了/压力大，辛苦了 🫂"
+                } else if SkillRouter.containsAny(query, ["焦虑", "紧张", "不安", "慌"]) {
+                    empathy = "感受到你的焦虑，深呼吸一下 🫂"
+                } else if SkillRouter.containsAny(query, ["难过", "伤心", "沮丧", "郁闷", "低落", "丧"]) {
+                    empathy = "抱抱你，不开心的时候说出来就好 🫂"
+                } else if SkillRouter.containsAny(query, ["烦", "恼火", "生气"]) {
+                    empathy = "听起来今天不太顺利 😮‍💨"
+                } else if SkillRouter.containsAny(query, ["开心", "兴奋", "满足", "充实", "放松", "舒服"]) {
+                    empathy = "很高兴你心情不错！😊"
+                } else {
+                    empathy = "我听到你了 😊"
+                }
+                completion("\(empathy)\n\n目前还没有足够的心情记录来做趋势分析。\n试试说「记录一下，今天\(query)」，我会帮你保存，积累几天后就能发现心情与健康数据的关联。\n\n💡 例如：\n• 「记录一下，今天有点累」\n• 「帮我记一下，压力有点大」\n• 「今天心情不错，去散步了」")
+            } else {
+                completion("😊 \(range.label)暂无心情记录。\n通过对话告诉我你今天的心情，我会帮你记录下来！\n\n💡 试试说：「今天心情不错」、「有点累」或「今天很开心」，我会帮你记录并分析趋势。")
+            }
             return
         }
 

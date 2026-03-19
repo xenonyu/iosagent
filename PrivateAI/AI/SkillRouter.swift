@@ -268,6 +268,23 @@ struct SkillRouter {
             return expenseIntent
         }
 
+        // --- Emotion-first check (before event recording) ---
+        // "我今天很累", "今天压力好大" are emotional expressions that should route to mood
+        // analysis, not be captured as life events. Check for strong emotion keywords
+        // combined with event-recording triggers, but WITHOUT action verbs that indicate
+        // a recordable activity (去了, 做了, 吃了, 跑了, etc.).
+        let emotionPriorityKeywords = ["累", "疲惫", "压力", "焦虑", "烦", "崩溃", "郁闷",
+                                        "低落", "难过", "伤心", "开心", "兴奋", "紧张",
+                                        "无聊", "孤独", "沮丧", "放松", "舒服", "丧",
+                                        "tired", "stressed", "anxious", "depressed"]
+        let actionVerbs = ["去了", "做了", "吃了", "喝了", "跑了", "买了", "看了", "见了",
+                           "学了", "写了", "读了", "听了", "玩了", "到了", "回了", "完成"]
+        if containsAny(lower, ["我今天", "今天我", "今天好", "今天很", "最近好", "最近很"]) &&
+           containsAny(lower, emotionPriorityKeywords) &&
+           !containsAny(lower, actionVerbs) {
+            return .mood(range: range)
+        }
+
         // --- Event Recording ---
         if containsAny(lower, ["我今天", "今天我", "刚刚", "记录一下", "帮我记", "记一下", "i did", "i went", "i ate"]) {
             return parseAddEvent(from: text)
@@ -302,8 +319,30 @@ struct SkillRouter {
         }
 
         // --- Mood / Emotion ---
-        if containsAny(lower, ["心情", "情绪", "感觉", "开心", "难过", "心态",
-                                "mood", "feeling", "emotion", "happy", "sad", "stressed"]) {
+        // Covers explicit mood inquiry words AND common emotional expressions.
+        // Users naturally say "好累", "压力大", "最近很焦虑" — these must reach MoodSkill
+        // for health-mood correlation analysis, not fall through to .unknown.
+        if containsAny(lower, [
+            // Explicit mood inquiry
+            "心情", "情绪", "感觉", "心态", "状态",
+            // Positive emotions
+            "开心", "高兴", "快乐", "幸福", "满足", "充实",
+            "兴奋", "激动", "喜悦", "愉快", "愉悦",
+            // Negative emotions
+            "难过", "伤心", "沮丧", "郁闷", "低落", "抑郁", "丧",
+            "焦虑", "紧张", "不安", "慌", "恐惧",
+            "烦", "烦躁", "烦恼", "恼火", "生气", "愤怒",
+            "孤独", "寂寞", "空虚", "无聊",
+            // Physical-emotional states
+            "累", "疲惫", "疲倦", "精神不好", "没精神", "没劲",
+            "压力", "有压力", "崩溃", "受不了", "扛不住",
+            "放松", "平静", "安心", "舒服", "惬意",
+            // English
+            "mood", "feeling", "emotion", "emotional",
+            "happy", "sad", "stressed", "anxious", "tired",
+            "angry", "lonely", "excited", "calm", "depressed",
+            "frustrated", "bored", "overwhelmed", "relaxed"
+        ]) {
             return .mood(range: range)
         }
 

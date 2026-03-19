@@ -4473,12 +4473,13 @@ struct HealthSkill: ClawSkill {
                     let thisMoodAvg = thisMoods.reduce(0.0) { $0 + self.moodScoreForComparison($1) } / Double(thisMoods.count)
                     let lastMoodAvg = lastMoods.reduce(0.0) { $0 + self.moodScoreForComparison($1) } / Double(lastMoods.count)
                     let diff = thisMoodAvg - lastMoodAvg
+                    let prevLabel = self.comparisonPrevPeriodLabel(range: range)
                     if abs(diff) >= 0.3 {
                         if diff > 0 {
-                            lines.append("  😊 心情比上周好转（\(String(format: "%.1f", thisMoodAvg)) vs \(String(format: "%.1f", lastMoodAvg))）")
+                            lines.append("  😊 心情比\(prevLabel)好转（\(String(format: "%.1f", thisMoodAvg)) vs \(String(format: "%.1f", lastMoodAvg))）")
                             better += 1
                         } else {
-                            lines.append("  😔 心情比上周略低（\(String(format: "%.1f", thisMoodAvg)) vs \(String(format: "%.1f", lastMoodAvg))）")
+                            lines.append("  😔 心情比\(prevLabel)略低（\(String(format: "%.1f", thisMoodAvg)) vs \(String(format: "%.1f", lastMoodAvg))）")
                             worse += 1
                         }
                     }
@@ -4486,6 +4487,8 @@ struct HealthSkill: ClawSkill {
             }
 
             // ── Overall Verdict ──
+            let prevPeriod = self.comparisonPrevPeriodLabel(range: range)
+            let isDayLevel = (range == .today || range == .yesterday)
             lines.append("")
             if better > worse + 1 {
                 lines.append("💪 整体趋势向好，多项指标都在进步！")
@@ -4494,9 +4497,13 @@ struct HealthSkill: ClawSkill {
             } else if worse > better + 1 {
                 lines.append("💡 多项指标下降，注意休息和调整节奏。")
             } else if worse > better {
-                lines.append("💡 这周稍有松懈，下周找回节奏吧！")
+                if isDayLevel {
+                    lines.append("💡 比\(prevPeriod)有所下降，调整一下状态。")
+                } else {
+                    lines.append("💡 比\(prevPeriod)稍有松懈，找回节奏吧！")
+                }
             } else {
-                lines.append("📊 和上周基本持平，保持稳定也是一种力量。")
+                lines.append("📊 和\(prevPeriod)基本持平，保持稳定也是一种力量。")
             }
 
             // ── Cross-Data Narrative ──
@@ -4576,6 +4583,20 @@ struct HealthSkill: ClawSkill {
             } else {
                 return "\(range.label) vs 上期"
             }
+        }
+    }
+
+    /// Returns a short label for the previous period, used in verdict text.
+    /// e.g. "昨天", "上周", "上月", "上期"
+    private func comparisonPrevPeriodLabel(range: QueryTimeRange) -> String {
+        switch range {
+        case .today:     return "昨天"
+        case .yesterday: return "前天"
+        case .thisWeek:  return "上周"
+        case .lastWeek:  return "上上周"
+        case .thisMonth: return "上月"
+        case .lastMonth: return "前月"
+        default:         return "上期"
         }
     }
 

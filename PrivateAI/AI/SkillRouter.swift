@@ -308,6 +308,32 @@ struct SkillRouter {
             return .exerciseLastOccurrence(workoutFilter: filter)
         }
 
+        // --- Comparison priority (MUST check before exercise/health) ---
+        // "比昨天走得多吗", "跟上周比步数怎么样", "和昨天比睡得好吗"
+        // These combine comparison intent ("比昨天", "跟上周比") with a data keyword
+        // ("走", "步数", "睡"). Without this guard, exercise/health routes would swallow
+        // the query and show raw data instead of a comparison.
+        let comparisonTriggers = ["比昨天", "比前天", "比大前天",
+                                  "跟昨天比", "和昨天比", "跟前天比", "和前天比",
+                                  "跟上周比", "和上周比", "跟上个月比", "和上个月比",
+                                  "比上周", "比上个月", "比上月", "比之前", "比以前",
+                                  "compared to", "compared with", "than yesterday", "than last"]
+        if containsAny(lower, comparisonTriggers) {
+            let compRange: QueryTimeRange
+            if containsAny(lower, ["上个月", "上月", "跟上个月", "和上个月", "last month"]) {
+                compRange = .thisMonth
+            } else if containsAny(lower, ["上周", "跟上周", "和上周", "last week"]) {
+                compRange = .thisWeek
+            } else if containsAny(lower, ["昨天", "yesterday"]) {
+                compRange = .today
+            } else if containsAny(lower, ["前天"]) {
+                compRange = .yesterday
+            } else {
+                compRange = .thisWeek
+            }
+            return .comparison(range: compRange)
+        }
+
         // --- Streak with exercise context ---
         // Must be checked before general exercise: "运动打卡" / "坚持运动" / "连续锻炼"
         // should route to streak analysis, not exercise stats.
@@ -486,6 +512,10 @@ struct SkillRouter {
         //   "这周有进步吗" → thisWeek vs lastWeek
         //   No explicit time → defaults to thisWeek (most common use case)
         if containsAny(lower, ["比上周", "比上个月", "比上月", "比之前", "比以前", "比过去",
+                                // Day-level comparison: "比昨天多吗", "跟昨天比", "和前天比"
+                                "比昨天", "比前天", "比大前天",
+                                "跟昨天比", "和昨天比", "跟前天比", "和前天比",
+                                "跟上周比", "和上周比", "跟上个月比", "和上个月比",
                                 "对比", "比较", "vs",
                                 "趋势", "走势", "变化趋势",
                                 // Progress / improvement
@@ -499,17 +529,28 @@ struct SkillRouter {
                                 "有变化", "有什么变化", "有没有变化", "有改变",
                                 "变了吗", "变没变", "有不同",
                                 // English
-                                "compared to", "progress", "improving", "getting better",
+                                "compared to", "compared with", "than yesterday", "than last",
+                                "progress", "improving", "getting better",
                                 "getting worse", "decline", "improvement", "changed"]) {
             // Infer comparison scope from explicit time references:
-            // "比上个月" / "这个月" → month-level comparison
-            // "比上周" / "这周" → week-level comparison
+            // Day-level: "比昨天" → today vs yesterday, "比前天" → yesterday vs day-before
+            // Week-level: "比上周" / "这周" → thisWeek vs lastWeek
+            // Month-level: "比上个月" / "这个月" → thisMonth vs lastMonth
             // No explicit time → default to thisWeek (most natural comparison unit)
             let compRange: QueryTimeRange
-            if containsAny(lower, ["上个月", "上月", "这个月", "本月", "下个月", "下月", "last month", "this month", "next month"]) {
+            if containsAny(lower, ["上个月", "上月", "这个月", "本月", "下个月", "下月",
+                                    "跟上个月", "和上个月",
+                                    "last month", "this month", "next month"]) {
                 compRange = .thisMonth
-            } else if containsAny(lower, ["上周", "这周", "本周", "last week", "this week"]) {
+            } else if containsAny(lower, ["上周", "这周", "本周", "跟上周", "和上周",
+                                          "last week", "this week"]) {
                 compRange = .thisWeek
+            } else if containsAny(lower, ["昨天", "yesterday", "than yesterday"]) {
+                // "比昨天" means "how am I doing vs yesterday" → today is current period
+                compRange = .today
+            } else if containsAny(lower, ["前天"]) {
+                // "比前天" means "compare with day-before-yesterday" → yesterday is current period
+                compRange = .yesterday
             } else if hasExplicitTimeReference(lower) {
                 compRange = range
             } else {

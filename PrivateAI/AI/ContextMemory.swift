@@ -14,6 +14,7 @@ final class ContextMemory {
     private(set) var mentionedPeople: Set<String> = []
     private(set) var mentionedTopics: [String] = []
     private(set) var lastIntent: QueryIntent? = nil
+    private(set) var lastStreakResult: Int? = nil
 
     // MARK: - Public API
 
@@ -29,12 +30,17 @@ final class ContextMemory {
         lastIntent = intent
     }
 
+    func setLastStreak(_ streak: Int) {
+        lastStreakResult = streak
+    }
+
     func clear() {
         recentMessages = []
         lastTimeRange = .lastWeek
         mentionedPeople = []
         mentionedTopics = []
         lastIntent = nil
+        lastStreakResult = nil
     }
 
     // MARK: - Context Enrichment

@@ -2,6 +2,7 @@ import SwiftUI
 
 struct TimelineView: View {
     @ObservedObject var viewModel: TimelineViewModel
+    @State private var showMap = false
 
     var body: some View {
         NavigationStack {
@@ -12,14 +13,23 @@ struct TimelineView: View {
                 Divider()
 
                 // Event list
-                if viewModel.events.isEmpty {
+                if viewModel.filteredEvents.isEmpty {
                     emptyState
                 } else {
                     eventList
                 }
             }
             .navigationTitle("时光轴")
+            .searchable(text: $viewModel.searchText, prompt: "搜索事件...")
             .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button {
+                        showMap = true
+                    } label: {
+                        Image(systemName: "map.fill")
+                            .foregroundColor(Color("AccentPrimary"))
+                    }
+                }
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button {
                         viewModel.showAddEvent = true
@@ -31,6 +41,12 @@ struct TimelineView: View {
             }
             .sheet(isPresented: $viewModel.showAddEvent) {
                 AddEventSheet(viewModel: viewModel)
+            }
+            .sheet(isPresented: $viewModel.showEditEvent) {
+                EditEventSheet(viewModel: viewModel)
+            }
+            .sheet(isPresented: $showMap) {
+                LocationMapView()
             }
         }
     }
@@ -84,6 +100,14 @@ struct TimelineView: View {
                 Section {
                     ForEach(groupedEvents[dateKey] ?? []) { event in
                         EventRow(event: event)
+                            .swipeActions(edge: .leading) {
+                                Button {
+                                    viewModel.beginEdit(event)
+                                } label: {
+                                    Label("编辑", systemImage: "pencil")
+                                }
+                                .tint(.orange)
+                            }
                             .swipeActions(edge: .trailing) {
                                 Button(role: .destructive) {
                                     viewModel.deleteEvent(event)
@@ -106,7 +130,7 @@ struct TimelineView: View {
         let fmt = DateFormatter()
         fmt.dateFormat = "M月d日 EEEE"
         fmt.locale = Locale(identifier: "zh-Hans")
-        return Dictionary(grouping: viewModel.events) {
+        return Dictionary(grouping: viewModel.filteredEvents) {
             fmt.string(from: $0.timestamp)
         }
     }
@@ -244,6 +268,60 @@ struct AddEventSheet: View {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("保存") {
                         viewModel.addEvent()
+                        dismiss()
+                    }
+                    .disabled(viewModel.newEventTitle.isEmpty)
+                    .fontWeight(.semibold)
+                }
+            }
+        }
+        .presentationDetents([.large])
+    }
+}
+
+// MARK: - Edit Event Sheet
+
+struct EditEventSheet: View {
+    @ObservedObject var viewModel: TimelineViewModel
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("事件内容") {
+                    TextField("发生了什么？", text: $viewModel.newEventTitle)
+                    TextEditor(text: $viewModel.newEventContent)
+                        .frame(minHeight: 80)
+                }
+                Section("心情") {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 12) {
+                            ForEach(MoodType.allCases, id: \.rawValue) { mood in
+                                MoodButton(mood: mood, isSelected: viewModel.newEventMood == mood) {
+                                    viewModel.newEventMood = mood
+                                }
+                            }
+                        }
+                        .padding(.vertical, 4)
+                    }
+                }
+                Section("分类") {
+                    Picker("分类", selection: $viewModel.newEventCategory) {
+                        ForEach(EventCategory.allCases, id: \.rawValue) { cat in
+                            Label(cat.label, systemImage: cat.icon).tag(cat)
+                        }
+                    }
+                }
+            }
+            .navigationTitle("编辑事件")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") { viewModel.showEditEvent = false; dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("保存") {
+                        viewModel.updateEvent()
                         dismiss()
                     }
                     .disabled(viewModel.newEventTitle.isEmpty)

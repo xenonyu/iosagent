@@ -1,6 +1,7 @@
 import SwiftUI
 import Combine
 import CoreData
+import WidgetKit
 
 /// Central observable state shared across all views via EnvironmentObject.
 final class AppState: ObservableObject {
@@ -27,6 +28,7 @@ final class AppState: ObservableObject {
     let calendarService     = CalendarService()
     let photoService        = PhotoMetadataService()
     let notificationService = NotificationService()
+    var photoIndexService: PhotoIndexService?
 
     // MARK: - Init
 
@@ -52,7 +54,26 @@ final class AppState: ObservableObject {
         healthService.requestPermission { [weak self] granted in
             DispatchQueue.main.async {
                 self?.healthEnabled = granted
+                if granted {
+                    self?.refreshWidgetStats()
+                }
             }
+        }
+    }
+
+    // MARK: - Widget data sync
+
+    /// Fetches today's health summary and latest mood, then writes them to the
+    /// shared App Group UserDefaults so the widget can display up-to-date stats.
+    func refreshWidgetStats(mood: String? = nil) {
+        healthService.fetchDailySummary(for: Date()) { [weak self] summary in
+            guard self != nil else { return }
+            SharedDefaults.saveTodayStats(
+                steps: summary.steps,
+                sleepHours: summary.sleepHours,
+                mood: mood
+            )
+            WidgetCenter.shared.reloadTimelines(ofKind: "PrivateAIWidget")
         }
     }
 
@@ -94,6 +115,15 @@ final class AppState: ObservableObject {
                 DispatchQueue.main.async { self?.photoEnabled = granted }
             }
         }
+    }
+
+    /// Start background photo indexing (call after photo permission granted)
+    func startPhotoIndexing(context: NSManagedObjectContext) {
+        guard photoService.isAuthorized else { return }
+        if photoIndexService == nil {
+            photoIndexService = PhotoIndexService(context: context)
+        }
+        photoIndexService?.startIndexing()
     }
 
     func toggleNotifications(_ enabled: Bool, context: NSManagedObjectContext) {

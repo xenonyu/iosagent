@@ -8,6 +8,17 @@ final class TimelineViewModel: ObservableObject {
     @Published var selectedRange: QueryTimeRange = .lastWeek
     @Published var selectedCategory: EventCategory? = nil
     @Published var showAddEvent: Bool = false
+    @Published var searchText: String = ""
+    @Published var editingEvent: LifeEvent? = nil
+    @Published var showEditEvent: Bool = false
+
+    var filteredEvents: [LifeEvent] {
+        guard !searchText.isEmpty else { return events }
+        return events.filter {
+            $0.title.localizedCaseInsensitiveContains(searchText) ||
+            $0.content.localizedCaseInsensitiveContains(searchText)
+        }
+    }
 
     // New event form
     @Published var newEventTitle: String = ""
@@ -24,6 +35,10 @@ final class TimelineViewModel: ObservableObject {
         $selectedRange
             .combineLatest($selectedCategory)
             .sink { [weak self] _, _ in self?.loadEvents() }
+            .store(in: &cancellables)
+
+        $searchText
+            .sink { [weak self] _ in self?.loadEvents() }
             .store(in: &cancellables)
 
         loadEvents()
@@ -50,6 +65,31 @@ final class TimelineViewModel: ObservableObject {
         )
         CDLifeEvent.create(from: event, context: context)
         PersistenceController.shared.save()
+        resetForm()
+        loadEvents()
+    }
+
+    func beginEdit(_ event: LifeEvent) {
+        editingEvent = event
+        newEventTitle = event.title
+        newEventContent = event.content
+        newEventMood = event.mood
+        newEventCategory = event.category
+        showEditEvent = true
+    }
+
+    func updateEvent() {
+        guard let event = editingEvent else { return }
+        let req = CDLifeEvent.fetchRequest()
+        req.predicate = NSPredicate(format: "id == %@", event.id as CVarArg)
+        guard let cd = (try? context.fetch(req))?.first else { return }
+        cd.title = newEventTitle
+        cd.content = newEventContent
+        cd.mood = newEventMood.rawValue
+        cd.category = newEventCategory.rawValue
+        PersistenceController.shared.save()
+        editingEvent = nil
+        showEditEvent = false
         resetForm()
         loadEvents()
     }

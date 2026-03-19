@@ -16,8 +16,11 @@ final class PhotoMetadataService: ObservableObject {
     }
 
     var isAuthorized: Bool {
-        let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
-        return status == .authorized || status == .limited
+        // Check both the new access-level API and the legacy API for robustness
+        let newStatus = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        if newStatus == .authorized || newStatus == .limited { return true }
+        let legacyStatus = PHPhotoLibrary.authorizationStatus()
+        return legacyStatus == .authorized || legacyStatus == .limited
     }
 
     // MARK: - Fetch

@@ -1,6 +1,6 @@
-name: PrivateAI
+name: iosclaw
 options:
-  bundleIdPrefix: com.privateai
+  bundleIdPrefix: com.iosclaw
   deploymentTarget:
     iOS: "16.0"
   createIntermediateGroups: true
@@ -9,12 +9,12 @@ options:
 settings:
   base:
     SWIFT_VERSION: "5.9"
-    DEVELOPMENT_TEAM: ""
+    DEVELOPMENT_TEAM: "MS49M8LMJ8"
     ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES: YES
     TARGETED_DEVICE_FAMILY: "1,2"
 
 targets:
-  PrivateAI:
+  iosclaw:
     type: application
     platform: iOS
     deploymentTarget: "16.0"
@@ -24,7 +24,7 @@ targets:
           - "**/*.md"
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.privateai.assistant
+        PRODUCT_BUNDLE_IDENTIFIER: com.iosclaw.assistant
         INFOPLIST_FILE: PrivateAI/Resources/Info.plist
         SWIFT_VERSION: "5.9"
         TARGETED_DEVICE_FAMILY: "1,2"
@@ -47,3 +47,36 @@ targets:
         com.apple.developer.healthkit: true
         com.apple.developer.healthkit.access: []
         com.apple.developer.healthkit.background-delivery: true
+        com.apple.security.application-groups:
+          - group.com.iosclaw.assistant
+
+  iOSClawWidgetExtension:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "16.0"
+    sources:
+      - path: PrivateAIWidgetExtension
+        excludes:
+          - "**/*.md"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.iosclaw.assistant.widget
+        INFOPLIST_FILE: PrivateAIWidgetExtension/Info.plist
+        SWIFT_VERSION: "5.9"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks"
+        ENABLE_PREVIEWS: YES
+      debug:
+        DEBUG_INFORMATION_FORMAT: dwarf
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG
+      release:
+        DEBUG_INFORMATION_FORMAT: "dwarf-with-dsym"
+        SWIFT_OPTIMIZATION_LEVEL: "-Onone"
+    dependencies:
+      - sdk: WidgetKit.framework
+      - sdk: SwiftUI.framework
+    entitlements:
+      path: PrivateAIWidgetExtension/PrivateAIWidgetExtension.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.com.iosclaw.assistant

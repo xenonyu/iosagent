@@ -6,9 +6,33 @@ struct ProfileView: View {
     @State private var newInterest: String = ""
     @FocusState private var interestFieldFocused: Bool
 
+    private var todaySteps: Int {
+        UserDefaults(suiteName: "group.com.privateai.assistant")?.integer(forKey: "widget_today_steps") ?? 0
+    }
+    private var todaySleep: Double {
+        UserDefaults(suiteName: "group.com.privateai.assistant")?.double(forKey: "widget_today_sleep_hours") ?? 0
+    }
+    private var todayMood: String {
+        UserDefaults(suiteName: "group.com.privateai.assistant")?.string(forKey: "widget_today_mood") ?? ""
+    }
+
     var body: some View {
         NavigationStack {
             Form {
+                // Today's snapshot
+                if todaySteps > 0 || todaySleep > 0 || !todayMood.isEmpty {
+                    Section("今日快照") {
+                        HStack(spacing: 0) {
+                            ProfileStatCell(icon: "figure.walk", value: "\(todaySteps.formatted())", label: "步数", color: .blue)
+                            Divider()
+                            ProfileStatCell(icon: "moon.fill", value: String(format: "%.1f", todaySleep), label: "睡眠h", color: .indigo)
+                            Divider()
+                            ProfileStatCell(icon: "face.smiling", value: todayMood.isEmpty ? "—" : todayMood, label: "心情", color: .pink)
+                        }
+                        .frame(maxWidth: .infinity)
+                    }
+                }
+
                 // Basic Info
                 Section("基本信息") {
                     LabeledTextField(label: "姓名", text: $viewModel.profile.name, placeholder: "你叫什么名字？")
@@ -161,6 +185,23 @@ struct AddFamilySheet: View {
 }
 
 // MARK: - Helpers
+
+struct ProfileStatCell: View {
+    let icon: String
+    let value: String
+    let label: String
+    let color: Color
+
+    var body: some View {
+        VStack(spacing: 4) {
+            Image(systemName: icon).foregroundColor(color).font(.title3)
+            Text(value).font(.system(size: 18, weight: .bold, design: .rounded))
+            Text(label).font(.caption2).foregroundColor(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 8)
+    }
+}
 
 struct LabeledTextField: View {
     let label: String

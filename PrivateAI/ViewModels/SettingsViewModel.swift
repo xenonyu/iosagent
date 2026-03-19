@@ -57,4 +57,43 @@ final class SettingsViewModel: ObservableObject {
             showExportAlert = true
         }
     }
+
+    @Published var showImportPicker: Bool = false
+    @Published var importResult: String? = nil
+
+    func importData(from url: URL) {
+        guard url.startAccessingSecurityScopedResource() else { return }
+        defer { url.stopAccessingSecurityScopedResource() }
+
+        guard let data = try? Data(contentsOf: url),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            importResult = "❌ 文件格式错误，请使用本应用导出的 JSON 文件"
+            return
+        }
+
+        var importedCount = 0
+
+        // Import events
+        if let events = json["events"] as? [[String: Any]] {
+            for e in events {
+                guard let title = e["title"] as? String else { continue }
+                let content = e["content"] as? String ?? ""
+                let mood = MoodType(rawValue: e["mood"] as? String ?? "neutral") ?? .neutral
+                let category = EventCategory(rawValue: e["category"] as? String ?? "life") ?? .life
+                let timestamp: Date
+                if let ts = e["timestamp"] as? String {
+                    timestamp = ISO8601DateFormatter().date(from: ts) ?? Date()
+                } else {
+                    timestamp = Date()
+                }
+                let event = LifeEvent(title: title, content: content, mood: mood,
+                                      category: category, timestamp: timestamp)
+                CDLifeEvent.create(from: event, context: context)
+                importedCount += 1
+            }
+            try? context.save()
+        }
+
+        importResult = "✅ 成功导入 \(importedCount) 条事件记录"
+    }
 }

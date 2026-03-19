@@ -96,10 +96,22 @@ final class NotificationService: ObservableObject {
 
     private func dailyReminderBody() -> String {
         let hour = Calendar.current.component(.hour, from: Date())
+        let steps = UserDefaults(suiteName: "group.com.privateai.assistant")?
+            .integer(forKey: "widget_today_steps") ?? 0
+
         switch hour {
-        case 0..<12: return "早上好！记录一下今天的计划，让我帮你记住每个重要时刻。"
-        case 12..<18: return "下午好！今天过得怎么样？来聊聊吧。"
-        default: return "今天发生了什么？记录一下，让我帮你记住这一天。"
+        case 0..<12:
+            return "早上好！记录一下今天的计划，让我帮你记住每个重要时刻。"
+        case 12..<18:
+            let stepsText = steps > 0 ? "已走 \(steps.formatted()) 步，" : ""
+            return "下午好！\(stepsText)今天过得怎么样？来聊聊吧。"
+        default:
+            if steps >= 8000 {
+                return "今天走了 \(steps.formatted()) 步，达成目标！🎉 来记录一下今天的精彩吧。"
+            } else if steps > 0 {
+                return "今天走了 \(steps.formatted()) 步。来聊聊今天发生了什么？"
+            }
+            return "今天发生了什么？记录一下，让我帮你记住这一天。"
         }
     }
 

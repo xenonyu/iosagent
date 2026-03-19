@@ -1,7 +1,7 @@
 import SwiftUI
 
 @main
-struct PrivateAIApp: App {
+struct iOSClawApp: App {
     let persistence = PersistenceController.shared
     @StateObject private var appState = AppState()
 

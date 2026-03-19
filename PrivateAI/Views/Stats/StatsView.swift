@@ -6,70 +6,109 @@ struct StatsView: View {
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(spacing: 20) {
-                    // Range picker
-                    rangePicker
-                        .padding(.horizontal)
+            if viewModel.healthSummaries.isEmpty && viewModel.moodData.isEmpty && viewModel.locationData.isEmpty {
+                statsEmptyState
+                    .navigationTitle("数据统计")
+                    .navigationBarTitleDisplayMode(.large)
+            } else {
+                ScrollView {
+                    VStack(spacing: 20) {
+                        // Range picker
+                        rangePicker
+                            .padding(.horizontal)
 
-                    // Summary cards row
-                    summaryCards
-                        .padding(.horizontal)
+                        // Summary cards row
+                        summaryCards
+                            .padding(.horizontal)
 
-                    // Health / Steps chart
-                    if !viewModel.healthSummaries.isEmpty {
-                        ChartCard(title: "每日步数", icon: "figure.walk") {
-                            StepsChart(summaries: viewModel.healthSummaries)
+                        // Health / Steps chart
+                        if !viewModel.healthSummaries.isEmpty {
+                            ChartCard(title: "每日步数", icon: "figure.walk") {
+                                StepsChart(summaries: viewModel.healthSummaries)
+                            }
                         }
-                    }
 
-                    // Sleep chart
-                    if !viewModel.healthSummaries.isEmpty {
-                        ChartCard(title: "睡眠时长（小时）", icon: "moon.zzz.fill") {
-                            SleepChart(summaries: viewModel.healthSummaries)
+                        // Sleep chart
+                        if !viewModel.healthSummaries.isEmpty {
+                            ChartCard(title: "睡眠时长（小时）", icon: "moon.zzz.fill") {
+                                SleepChart(summaries: viewModel.healthSummaries)
+                            }
                         }
-                    }
 
-                    // Mood chart
-                    if !viewModel.moodData.isEmpty {
-                        ChartCard(title: "心情分布", icon: "face.smiling") {
-                            MoodChart(data: viewModel.moodData)
+                        // Mood chart
+                        if !viewModel.moodData.isEmpty {
+                            ChartCard(title: "心情分布", icon: "face.smiling") {
+                                MoodChart(data: viewModel.moodData)
+                            }
                         }
-                    }
 
-                    // Category breakdown
-                    if !viewModel.categoryData.isEmpty {
-                        ChartCard(title: "事件分类", icon: "list.bullet.rectangle") {
-                            CategoryChart(data: viewModel.categoryData)
+                        // Category breakdown
+                        if !viewModel.categoryData.isEmpty {
+                            ChartCard(title: "事件分类", icon: "list.bullet.rectangle") {
+                                CategoryChart(data: viewModel.categoryData)
+                            }
                         }
-                    }
 
-                    // Top locations
-                    if !viewModel.locationData.isEmpty {
-                        ChartCard(title: "常去地点", icon: "mappin.and.ellipse") {
-                            LocationChart(data: viewModel.locationData)
+                        // Top locations
+                        if !viewModel.locationData.isEmpty {
+                            ChartCard(title: "常去地点", icon: "mappin.and.ellipse") {
+                                LocationChart(data: viewModel.locationData)
+                            }
                         }
-                    }
 
-                    // Photo activity
-                    if !viewModel.photoActivityData.isEmpty {
-                        ChartCard(title: "拍照活跃度", icon: "camera") {
-                            PhotoActivityChart(data: viewModel.photoActivityData)
+                        // Photo activity
+                        if !viewModel.photoActivityData.isEmpty {
+                            ChartCard(title: "拍照活跃度", icon: "camera") {
+                                PhotoActivityChart(data: viewModel.photoActivityData)
+                            }
                         }
-                    }
 
-                    // Calendar events
-                    if !viewModel.calendarEvents.isEmpty {
-                        calendarEventsList
-                    }
+                        // Calendar events
+                        if !viewModel.calendarEvents.isEmpty {
+                            calendarEventsList
+                        }
 
-                    Spacer(minLength: 20)
+                        Spacer(minLength: 20)
+                    }
+                    .padding(.vertical, 16)
                 }
-                .padding(.vertical, 16)
+                .navigationTitle("数据统计")
+                .navigationBarTitleDisplayMode(.large)
             }
-            .navigationTitle("数据统计")
-            .navigationBarTitleDisplayMode(.large)
         }
+    }
+
+    // MARK: - Empty State
+
+    private var statsEmptyState: some View {
+        VStack(spacing: 20) {
+            Spacer()
+
+            Image(systemName: "chart.bar.xaxis")
+                .font(.system(size: 64))
+                .foregroundColor(.secondary.opacity(0.4))
+
+            Text("暂无统计数据")
+                .font(.title3.bold())
+
+            Text("开启健康、位置、日历权限\n并添加一些生活记录后\n这里会展示你的数据图表")
+                .multilineTextAlignment(.center)
+                .foregroundColor(.secondary)
+                .font(.subheadline)
+
+            NavigationLink(destination: EmptyView()) {
+                Label("前往设置开启权限", systemImage: "gearshape.fill")
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 10)
+                    .background(Color("AccentPrimary"))
+                    .foregroundColor(.white)
+                    .clipShape(Capsule())
+            }
+
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding()
     }
 
     // MARK: - Range Picker
@@ -341,28 +380,33 @@ struct CategoryChart: View {
     let data: [CategoryDataPoint]
 
     var body: some View {
-        Chart(data) { point in
-            SectorMark(
-                angle: .value("数量", point.count),
-                innerRadius: .ratio(0.5),
-                angularInset: 2
-            )
-            .foregroundStyle(by: .value("分类", point.category.label))
-            .cornerRadius(4)
-        }
-        .frame(height: 180)
-        .chartLegend(position: .trailing, alignment: .center)
-
-        // Text labels below
-        LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 6) {
-            ForEach(data) { point in
-                HStack(spacing: 4) {
-                    Image(systemName: point.category.icon)
+        VStack(alignment: .leading, spacing: 8) {
+            // Horizontal bar chart — works iOS 16+
+            Chart(data) { point in
+                BarMark(
+                    x: .value("数量", point.count),
+                    y: .value("分类", point.category.label)
+                )
+                .foregroundStyle(by: .value("分类", point.category.label))
+                .cornerRadius(4)
+                .annotation(position: .trailing) {
+                    Text("\(point.count)")
                         .font(.caption2)
-                    Text("\(point.category.label) (\(point.count))")
-                        .font(.caption)
+                        .foregroundColor(.secondary)
                 }
-                .foregroundColor(.secondary)
+            }
+            .frame(height: max(CGFloat(data.count * 36), 100))
+            .chartLegend(.hidden)
+
+            // Icon legend
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 4) {
+                ForEach(data) { point in
+                    HStack(spacing: 4) {
+                        Image(systemName: point.category.icon).font(.caption2)
+                        Text(point.category.label).font(.caption)
+                    }
+                    .foregroundColor(.secondary)
+                }
             }
         }
     }

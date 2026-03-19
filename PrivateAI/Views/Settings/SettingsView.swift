@@ -70,6 +70,51 @@ struct SettingsView: View {
                     Text("所有数据只存在本机，不会上传到任何服务器。")
                 }
 
+                // Photo Indexing
+                if appState.photoEnabled {
+                    Section {
+                        if let indexService = appState.photoIndexService {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text("相册索引")
+                                        .font(.body)
+                                    if indexService.isIndexing {
+                                        Text("正在索引... \(indexService.indexedCount)/\(indexService.totalCount)")
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
+                                    } else {
+                                        Text("已索引 \(indexService.indexedPhotoCount) 张照片")
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
+                                    }
+                                }
+                                Spacer()
+                                if indexService.isIndexing {
+                                    ProgressView(value: indexService.progress)
+                                        .frame(width: 60)
+                                } else {
+                                    Button("重建索引") {
+                                        appState.startPhotoIndexing(context: context)
+                                    }
+                                    .font(.caption)
+                                    .foregroundColor(Color("AccentPrimary"))
+                                }
+                            }
+                        } else {
+                            Button {
+                                appState.startPhotoIndexing(context: context)
+                            } label: {
+                                Label("开始索引相册", systemImage: "photo.badge.arrow.down")
+                                    .foregroundColor(Color("AccentPrimary"))
+                            }
+                        }
+                    } header: {
+                        Label("AI 照片搜索", systemImage: "sparkle.magnifyingglass")
+                    } footer: {
+                        Text("索引照片的分类标签、人脸、位置信息，支持自然语言搜索如「大峡谷的自拍」。数据仅存本机。")
+                    }
+                }
+
                 // Notification Settings
                 Section {
                     PermissionRow(
@@ -140,6 +185,13 @@ struct SettingsView: View {
                             .foregroundColor(Color("AccentPrimary"))
                     }
 
+                    Button {
+                        viewModel.showImportPicker = true
+                    } label: {
+                        Label("导入备份数据", systemImage: "square.and.arrow.down")
+                            .foregroundColor(Color("AccentPrimary"))
+                    }
+
                     Button(role: .destructive) {
                         viewModel.showClearConfirm = true
                     } label: {
@@ -160,6 +212,26 @@ struct SettingsView: View {
                 }
             }
             .navigationTitle("设置")
+            .fileImporter(
+                isPresented: $viewModel.showImportPicker,
+                allowedContentTypes: [.json],
+                allowsMultipleSelection: false
+            ) { result in
+                switch result {
+                case .success(let urls):
+                    if let url = urls.first { viewModel.importData(from: url) }
+                case .failure:
+                    viewModel.importResult = "❌ 文件选择失败"
+                }
+            }
+            .alert("导入结果", isPresented: Binding(
+                get: { viewModel.importResult != nil },
+                set: { if !$0 { viewModel.importResult = nil } }
+            )) {
+                Button("确定") { viewModel.importResult = nil }
+            } message: {
+                Text(viewModel.importResult ?? "")
+            }
             .confirmationDialog(
                 "确定清除所有数据？",
                 isPresented: $viewModel.showClearConfirm,

@@ -414,7 +414,9 @@ struct SkillRouter {
 
         // --- Health Metrics ---
         if containsAny(lower, ["睡眠", "睡了", "睡得", "睡觉", "入睡", "失眠", "熬夜", "早睡", "晚睡",
-                                "心率", "血压", "卡路里", "热量", "千卡", "大卡", "健康", "血氧", "脉搏",
+                                "睡不好", "睡不着", "睡不够", "没睡好", "没睡够",
+                                "夜醒", "浅眠", "多梦", "嗜睡", "打鼾", "打呼噜",
+                                "心率", "心跳", "血压", "卡路里", "热量", "千卡", "大卡", "健康", "血氧", "脉搏",
                                 "身体", "体质", "体能", "精力", "活力", "身体状况", "恢复",
                                 "能运动吗", "适合运动", "能不能练", "能锻炼", "适合锻炼",
                                 "精神", "体力", "recovery", "readiness",
@@ -426,7 +428,9 @@ struct SkillRouter {
                                 "体重", "体重变化", "多少斤", "多重", "几斤", "几公斤",
                                 "瘦了", "胖了", "增重", "减重", "称重",
                                 "weight", "body mass", "weigh",
-                                "sleep", "heart rate", "calories", "health", "slept",
+                                "sleep", "slept", "insomnia",
+                                "heart rate", "heartbeat",
+                                "calories", "health",
                                 "energy", "burned", "body",
                                 "spo2", "氧饱和", "氧含量", "blood oxygen",
                                 "vo2", "vo2max", "摄氧量", "最大摄氧", "有氧耐力", "心肺适能",
@@ -577,9 +581,11 @@ struct SkillRouter {
         }
 
         // --- Photo Search (AI visual search) ---
+        // "帮我找自拍照", "找一下猫的图", "搜照片"
+        // Also accepts photo-inherent words: 合照/合影/自拍 don't need an extra "照片" noun.
         if containsAny(lower, ["找照片", "找一下", "找一张", "找到", "搜照片", "帮我找",
                                 "find photo", "search photo", "look for photo"]) &&
-           containsAny(lower, ["照片", "自拍", "photo", "图", "pic", "拍"]) {
+           containsAny(lower, ["照片", "自拍", "合照", "合影", "photo", "图", "pic", "拍"]) {
             return .photoSearch(query: text)
         }
 
@@ -632,10 +638,27 @@ struct SkillRouter {
             return .photoSearch(query: text)
         }
 
+        // --- Photo Search (search intent + content keyword) ---
+        // Catches "找自拍", "帮我找合照", "有没有猫的图", "看看夜景", "搜风景"
+        // When user expresses a search/browse intent AND a visual content keyword,
+        // they want to find specific photos — not see aggregate stats.
+        // "自拍"/"合照"/"合影" are photo-inherent: "找自拍" = "find my selfies".
+        let photoSearchIntents = ["找", "搜", "帮我", "看看", "有没有", "有什么", "哪些",
+                                  "给我看", "show me", "find", "search", "look for"]
+        if containsAny(lower, photoSearchIntents) && containsAny(lower, photoContentKeywords) {
+            return .photoSearch(query: text)
+        }
+
         // --- Photos (stats) ---
+        // Only reached when there's no search intent — user is asking about photo volume/patterns.
+        // e.g. "这周拍了多少照片", "最近照片多吗", "相册有多少张"
         if containsAny(lower, ["照片", "拍了", "拍过", "图片", "相册", "记录了几张",
-                                "拍照", "自拍", "截图", "相机",
-                                "photo", "picture", "shot", "camera", "image", "selfie"]) {
+                                "拍照", "截图", "相机",
+                                "photo", "picture", "shot", "camera", "image"]) {
+            return .photos(range: range)
+        }
+        // "自拍"/"selfie" alone (without search intent) → stats is a reasonable default
+        if containsAny(lower, ["自拍", "selfie"]) {
             return .photos(range: range)
         }
 
@@ -1077,8 +1100,12 @@ struct SkillRouter {
     // MARK: - Health Metric
 
     private static func extractHealthMetric(from text: String) -> String {
-        if containsAny(text, ["睡眠", "睡了", "睡得", "睡觉", "入睡", "失眠", "熬夜", "早睡", "晚睡", "sleep", "slept"]) { return "sleep" }
-        if containsAny(text, ["心率", "脉搏", "heart rate", "HRV", "hrv", "心率变异", "变异性", "静息心率", "resting heart"]) { return "heartRate" }
+        if containsAny(text, ["睡眠", "睡了", "睡得", "睡觉", "入睡", "失眠", "熬夜", "早睡", "晚睡",
+                              "睡不好", "睡不着", "睡不够", "没睡好", "没睡够",
+                              "夜醒", "浅眠", "多梦", "嗜睡", "打鼾", "打呼噜",
+                              "sleep", "slept", "insomnia"]) { return "sleep" }
+        if containsAny(text, ["心率", "心跳", "脉搏", "heart rate", "heartbeat",
+                              "HRV", "hrv", "心率变异", "变异性", "静息心率", "resting heart"]) { return "heartRate" }
         if containsAny(text, ["步数", "走路", "步行", "多少步", "几步", "steps", "walk"]) { return "steps" }
         if containsAny(text, ["卡路里", "热量", "千卡", "大卡", "calories", "burned", "energy"]) { return "calories" }
         if containsAny(text, ["爬楼", "楼层", "几层", "爬了", "flights", "climbed", "floor"]) { return "flights" }

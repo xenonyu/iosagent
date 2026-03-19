@@ -13,6 +13,12 @@ struct SkillContext {
     let profile: UserProfileData
     let contextMemory: ContextMemory?
     let originalQuery: String
+
+    /// Lazy accessor for PhotoSearchService (searches CDPhotoIndex built by Vision).
+    /// Only created when actually needed to avoid unnecessary overhead.
+    var photoSearchService: PhotoSearchService {
+        PhotoSearchService(context: coreDataContext)
+    }
 }
 
 // MARK: - ClawSkill Protocol

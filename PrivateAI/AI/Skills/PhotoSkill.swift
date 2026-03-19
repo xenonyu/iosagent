@@ -186,7 +186,6 @@ struct PhotoSkill: ClawSkill {
 
         // --- If no specific filter matched, try location records from user's history ---
         if resultPhotos.isEmpty && searchDescription.isEmpty {
-            // Try matching query against user's saved location names
             if let locationFromHistory = matchLocationFromHistory(query: lower, context: context) {
                 resultPhotos = context.photoService.fetchNearby(
                     latitude: locationFromHistory.lat,
@@ -194,6 +193,22 @@ struct PhotoSkill: ClawSkill {
                     radiusMeters: 2000
                 )
                 searchDescription = "在「\(locationFromHistory.name)」附近"
+            }
+        }
+
+        // --- Vision-based content search via CDPhotoIndex ---
+        // Try Vision search when: (1) basic filters found nothing, or
+        // (2) query contains content keywords (selfie, animals, food, scenes)
+        //     that can't be answered by time/location alone.
+        let hasContentKeywords = Self.contentKeywords.contains { lower.contains($0) }
+        if resultPhotos.isEmpty || hasContentKeywords {
+            let visionResult = searchViaVisionIndex(query: lower, context: context)
+            if !visionResult.results.isEmpty {
+                return buildVisionSearchResults(
+                    results: visionResult.results,
+                    description: visionResult.description,
+                    query: query
+                )
             }
         }
 
@@ -207,6 +222,187 @@ struct PhotoSkill: ClawSkill {
         }
 
         return buildSearchResults(photos: resultPhotos, description: searchDescription)
+    }
+
+    // MARK: - Vision Index Search
+
+    /// Content keywords that should trigger Vision-based CDPhotoIndex search.
+    private static let contentKeywords: [String] = [
+        "自拍", "selfie", "合照", "合影", "group",
+        "猫", "cat", "狗", "dog", "动物", "animal", "宠物", "pet",
+        "海边", "沙滩", "海滩", "beach", "山", "mountain", "爬山",
+        "雪", "snow", "日落", "sunset", "夕阳",
+        "食物", "美食", "吃", "food", "餐",
+        "花", "flower", "植物", "plant",
+        "车", "car", "汽车",
+        "户外", "outdoor", "室内", "indoor",
+        "人", "人物", "face", "单人", "一个人",
+    ]
+
+    private struct VisionSearchResult {
+        let results: [PhotoSearchService.SearchResult]
+        let description: String
+    }
+
+    /// Uses PhotoSearchService to query CDPhotoIndex (Vision-classified tags + face counts).
+    private func searchViaVisionIndex(query: String, context: SkillContext) -> VisionSearchResult {
+        let searchService = context.photoSearchService
+        let photoQuery = searchService.parseQuery(query)
+
+        // Only proceed if the query parsed into something meaningful
+        let hasMeaningfulQuery = !photoQuery.keywords.isEmpty
+            || photoQuery.isSelfie == true
+            || photoQuery.minFaces != nil
+            || photoQuery.location != nil
+
+        guard hasMeaningfulQuery else {
+            return VisionSearchResult(results: [], description: "")
+        }
+
+        let results = searchService.search(query: photoQuery, limit: 30)
+
+        // Build a human-readable description of what we searched for
+        var descParts: [String] = []
+        if photoQuery.isSelfie == true {
+            descParts.append("自拍")
+        } else if let min = photoQuery.minFaces, min >= 2 {
+            descParts.append("合照")
+        }
+        if !photoQuery.keywords.isEmpty {
+            let keywordLabel = buildKeywordLabel(photoQuery.keywords)
+            if !keywordLabel.isEmpty { descParts.append(keywordLabel) }
+        }
+        if !photoQuery.locationName.isEmpty {
+            descParts.append("在\(photoQuery.locationName)")
+        }
+
+        let description = descParts.isEmpty ? "相关" : descParts.joined(separator: "·")
+        return VisionSearchResult(results: results, description: description)
+    }
+
+    /// Maps Vision tag keywords back to user-friendly Chinese labels.
+    private func buildKeywordLabel(_ keywords: [String]) -> String {
+        let mapping: [(tags: Set<String>, label: String)] = [
+            (["cat", "animal", "kitten"], "猫咪"),
+            (["dog", "animal", "puppy"], "狗狗"),
+            (["animal"], "动物"),
+            (["beach", "ocean", "sea", "coast"], "海边"),
+            (["mountain", "hill", "hiking"], "山景"),
+            (["snow", "winter", "skiing"], "雪景"),
+            (["sunset", "sky"], "日落"),
+            (["food", "meal", "restaurant"], "美食"),
+            (["flower", "plant", "garden"], "花草"),
+            (["car", "vehicle"], "车辆"),
+            (["outdoor"], "户外"),
+            (["indoor"], "室内"),
+        ]
+
+        let kwSet = Set(keywords.map { $0.lowercased() })
+        for entry in mapping {
+            if !kwSet.isDisjoint(with: entry.tags) {
+                return entry.label
+            }
+        }
+        return ""
+    }
+
+    /// Formats Vision-based search results with tag info and relevance.
+    private func buildVisionSearchResults(results: [PhotoSearchService.SearchResult],
+                                          description: String,
+                                          query: String) -> String {
+        let df = DateFormatter()
+        df.dateFormat = "M月d日 HH:mm"
+        df.locale = Locale(identifier: "zh_CN")
+
+        var lines = ["🔍 找到 **\(results.count) 张**\(description)的照片\n"]
+
+        // Check if CDPhotoIndex has data at all — if very few, remind user to index
+        let indexedCount = indexedPhotoCount(results: results)
+
+        // Date range
+        let dates = results.compactMap { $0.date }
+        if let earliest = dates.min(), let latest = dates.max() {
+            let dayDf = DateFormatter()
+            dayDf.dateFormat = "M月d日"
+            dayDf.locale = Locale(identifier: "zh_CN")
+            let cal = Calendar.current
+            if cal.isDate(earliest, inSameDayAs: latest) {
+                lines.append("📅 拍摄于 \(dayDf.string(from: earliest))")
+            } else {
+                lines.append("📅 时间跨度: \(dayDf.string(from: earliest)) ~ \(dayDf.string(from: latest))")
+            }
+        }
+
+        // Tag summary — show the most common tags across results
+        let tagSummary = buildTagSummary(results: results)
+        if !tagSummary.isEmpty {
+            lines.append("🏷️ 识别标签: \(tagSummary)")
+        }
+
+        // Face info
+        let withFaces = results.filter { $0.faceCount > 0 }
+        if !withFaces.isEmpty {
+            let maxFaces = withFaces.map { $0.faceCount }.max() ?? 0
+            if maxFaces == 1 {
+                lines.append("👤 单人照片为主")
+            } else {
+                lines.append("👥 最多 \(maxFaces) 人合照")
+            }
+        }
+
+        // Location info
+        let withLoc = results.filter { $0.latitude != 0 && $0.longitude != 0 }
+        if !withLoc.isEmpty {
+            lines.append("📍 \(withLoc.count) 张有位置信息")
+        }
+
+        // Show top results
+        lines.append("\n**匹配度最高的照片**:")
+        for result in results.prefix(8) {
+            var parts: [String] = []
+            if let date = result.date {
+                parts.append(df.string(from: date))
+            }
+            if result.faceCount > 0 {
+                parts.append("\(result.faceCount)人")
+            }
+            // Show top 2 readable tags
+            let readableTags = result.tags.prefix(3)
+                .filter { !$0.isEmpty }
+                .joined(separator: "/")
+            if !readableTags.isEmpty {
+                parts.append("[\(readableTags)]")
+            }
+            let relevance = result.relevanceScore > 15 ? "⭐" : (result.relevanceScore > 5 ? "✓" : "")
+            lines.append("  · \(parts.joined(separator: " "))\(relevance.isEmpty ? "" : " \(relevance)")")
+        }
+
+        if results.count > 8 {
+            lines.append("  …还有 \(results.count - 8) 张匹配")
+        }
+
+        // Hint about indexing if results seem sparse
+        lines.append("\n💡 搜索基于本地 AI 图像识别，在「设置」中可触发照片索引以覆盖更多照片。")
+
+        return lines.joined(separator: "\n")
+    }
+
+    /// Summarizes the most common tags across search results.
+    private func buildTagSummary(results: [PhotoSearchService.SearchResult]) -> String {
+        var tagCounts: [String: Int] = [:]
+        for result in results {
+            for tag in result.tags where !tag.isEmpty {
+                tagCounts[tag.lowercased(), default: 0] += 1
+            }
+        }
+        let topTags = tagCounts.sorted { $0.value > $1.value }
+            .prefix(5)
+            .map { $0.key }
+        return topTags.joined(separator: "、")
+    }
+
+    private func indexedPhotoCount(results: [PhotoSearchService.SearchResult]) -> Int {
+        return results.count
     }
 
     // MARK: - Search Results Formatting
@@ -266,9 +462,13 @@ struct PhotoSkill: ClawSkill {
         · 「找在北京拍的照片」— 按地点搜索
         · 「上周拍的照片」— 按时间搜索
         · 「我收藏的照片」— 查看收藏
-        · 「上个月在上海拍的照片」— 时间 + 地点
+        · 「找自拍照片」— 人脸识别搜索
+        · 「海边的照片」— AI 场景识别
+        · 「美食照片」— AI 内容分类
+        · 「找猫的照片」— AI 物体识别
 
-        💡 我可以根据拍摄时间和地点帮你找到照片。
+        💡 我可以根据时间、地点、内容和人脸帮你找到照片。
+        需要先在「设置」中完成照片索引才能使用 AI 内容搜索。
         """
     }
 

@@ -281,7 +281,9 @@ struct SkillRouter {
 
         // --- Location / Places ---
         if containsAny(lower, ["去过", "去哪", "哪里", "地点", "位置", "地方", "在哪",
-                                "where", "place", "location", "visit", "went to", "been to"]) {
+                                "足迹", "轨迹", "常去", "经常去", "出没", "到过", "待过",
+                                "where", "place", "location", "visit", "went to", "been to",
+                                "footprint", "places", "traveled"]) {
             return .location(range: range)
         }
 

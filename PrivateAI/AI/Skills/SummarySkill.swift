@@ -1,4 +1,5 @@
 import Foundation
+import CoreData
 
 /// Handles life summary, daily review, weekly insight, and event listing.
 struct SummarySkill: ClawSkill {
@@ -260,6 +261,10 @@ struct SummarySkill: ClawSkill {
                             lines.append("  🏆 拍照最多：\(dayFmt.string(from: bestDay))（\(count) 张）")
                         }
                     }
+
+                    // Photo content breakdown from Vision index
+                    let contentLines = self.buildPhotoContentSummary(interval: interval, context: context)
+                    lines.append(contentsOf: contentLines)
                 }
             }
 
@@ -664,6 +669,10 @@ struct SummarySkill: ClawSkill {
                             lines.append("  ⏰ 拍照高峰：\(period)（\(count) 张）")
                         }
                     }
+
+                    // Photo content breakdown from Vision index
+                    let contentLines = self.buildPhotoContentSummary(interval: interval, context: context)
+                    lines.append(contentsOf: contentLines)
                 }
             }
 
@@ -1064,6 +1073,10 @@ struct SummarySkill: ClawSkill {
                             lines.append("  🏆 拍照最多：\(dayFmt.string(from: bestDay))（\(count) 张）")
                         }
                     }
+
+                    // Photo content breakdown from Vision index
+                    let contentLines = self.buildPhotoContentSummary(interval: interval, context: context)
+                    lines.append(contentsOf: contentLines)
                 }
             }
 
@@ -1539,6 +1552,118 @@ struct SummarySkill: ClawSkill {
         case 6: return "周五"
         case 7: return "周六"
         default: return "未知"
+        }
+    }
+
+    // MARK: - Photo Content Summary (Vision Tags)
+
+    /// Semantic categories for classifying Vision tags — aligned with PhotoSkill's categories.
+    private static let photoTagCategories: [(label: String, emoji: String, tags: Set<String>)] = [
+        ("自拍",   "🤳", ["selfie", "portrait", "face"]),
+        ("合照",   "👥", ["group", "people", "crowd"]),
+        ("美食",   "🍜", ["food", "meal", "restaurant", "dish", "dessert", "cake", "coffee", "drink", "fruit"]),
+        ("风景",   "🏞️", ["landscape", "scenery", "nature", "mountain", "hill", "valley", "field"]),
+        ("海边",   "🏖️", ["beach", "ocean", "sea", "coast", "wave"]),
+        ("天空",   "🌤️", ["sky", "cloud", "sunset", "sunrise"]),
+        ("花草",   "🌸", ["flower", "plant", "garden", "tree", "forest"]),
+        ("动物",   "🐾", ["animal", "cat", "dog", "bird", "pet", "kitten", "puppy", "fish"]),
+        ("建筑",   "🏛️", ["building", "architecture", "house", "tower", "bridge", "church"]),
+        ("城市",   "🏙️", ["city", "street", "urban", "road", "traffic"]),
+        ("夜景",   "🌃", ["night", "light", "neon"]),
+        ("户外",   "⛰️", ["outdoor", "hiking", "camping", "park"]),
+        ("雪景",   "❄️", ["snow", "winter", "skiing", "ice"]),
+    ]
+
+    /// Queries CDPhotoIndex for the given date interval and returns a compact content breakdown line.
+    /// Returns nil if no indexed photos exist for the period.
+    ///
+    /// Example output: "  🏷️ 美食 5张 · 风景 3张 · 自拍 2张"
+    private func buildPhotoContentSummary(interval: DateInterval, context: SkillContext) -> [String] {
+        let request = NSFetchRequest<CDPhotoIndex>(entityName: "CDPhotoIndex")
+        request.predicate = NSPredicate(
+            format: "creationDate >= %@ AND creationDate <= %@",
+            interval.start as NSDate, interval.end as NSDate
+        )
+
+        guard let indexed = try? context.coreDataContext.fetch(request),
+              !indexed.isEmpty else {
+            return []
+        }
+
+        // Classify each indexed photo into semantic categories
+        var categoryCounts: [String: Int] = [:]
+        var selfieCount = 0
+        var groupCount = 0
+
+        for entry in indexed {
+            let entryTags = (entry.tags ?? "")
+                .split(separator: ",")
+                .map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
+            let tagSet = Set(entryTags)
+
+            // Face-based classification
+            let faces = Int(entry.faceCount)
+            if faces == 1 && entry.isFrontCamera {
+                selfieCount += 1
+            } else if faces >= 2 {
+                groupCount += 1
+            }
+
+            // Tag-based classification — first match only to avoid inflation
+            for category in Self.photoTagCategories {
+                if !tagSet.isDisjoint(with: category.tags) {
+                    categoryCounts[category.label, default: 0] += 1
+                    break
+                }
+            }
+        }
+
+        // Add face-based categories
+        if selfieCount > 0 { categoryCounts["自拍", default: 0] += selfieCount }
+        if groupCount > 0 { categoryCounts["合照", default: 0] += groupCount }
+
+        guard !categoryCounts.isEmpty else { return [] }
+
+        // Sort by count descending, take top entries
+        let sorted = categoryCounts.sorted { $0.value > $1.value }
+        let topCategories = sorted.prefix(4)
+
+        var lines: [String] = []
+
+        // Compact one-liner: "🏷️ 美食 5张 · 风景 3张 · 自拍 2张"
+        let parts = topCategories.map { (label, count) -> String in
+            let emoji = Self.photoTagCategories.first { $0.label == label }?.emoji ?? "📷"
+            return "\(emoji)\(label) \(count)张"
+        }
+        lines.append("  🏷️ \(parts.joined(separator: " · "))")
+
+        // Fun insight if one category dominates (≥40% of indexed photos)
+        if let top = topCategories.first {
+            let pct = Double(top.value) / Double(indexed.count) * 100
+            if pct >= 40 {
+                let insight = photoContentInsight(category: top.key, pct: Int(pct))
+                if !insight.isEmpty {
+                    lines.append("  \(insight)")
+                }
+            }
+        }
+
+        return lines
+    }
+
+    /// Returns a brief personality-style comment when a photo category dominates.
+    private func photoContentInsight(category: String, pct: Int) -> String {
+        switch category {
+        case "美食": return "🍽️ 这段时间是个美食记录者"
+        case "风景": return "📸 一直在用镜头捕捉风景"
+        case "自拍": return "✨ 自拍最多，记录每个精彩瞬间"
+        case "合照": return "🎉 合照不少，社交生活很丰富"
+        case "动物": return "🐱 萌宠出镜率很高"
+        case "海边": return "🌊 海风与阳光的记忆"
+        case "花草": return "🌿 生活充满自然气息"
+        case "建筑": return "🏛️ 对城市空间有独特审美"
+        case "夜景": return "🌃 夜色中的光影猎手"
+        default: return ""
         }
     }
 

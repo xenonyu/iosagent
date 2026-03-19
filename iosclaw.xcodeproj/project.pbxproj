@@ -42,6 +42,7 @@
 		7B85E497604C703863346C02 /* SkillRegistry.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE8A09E7AA4990FD0BA33713 /* SkillRegistry.swift */; };
 		7C2D5D42ED35AE82C6289768 /* TimelineViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1558EA8A85298EA80C91F20 /* TimelineViewModel.swift */; };
 		88BF0113CDE5D81000730AD6 /* LocationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B8339F6624C617E7B8DCDAC /* LocationService.swift */; };
+		91132942AAAC12535741AAB5 /* GreetingSkill.swift in Sources */ = {isa = PBXBuildFile; fileRef = FACC25FE9941AA10BA6893EA /* GreetingSkill.swift */; };
 		98D9FC941DE5E701DC0E557C /* PhotoSearchService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 56B2FE7E27D4FAA1D6E8940E /* PhotoSearchService.swift */; };
 		9E3ED1AFB416BF0BFDDEAA93 /* ContextMemory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 666F826153CDFB7991D2EADB /* ContextMemory.swift */; };
 		A3443515AA88879B78B6EF78 /* CalendarService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3DD1CBB61BD5F757E659DA7B /* CalendarService.swift */; };
@@ -131,6 +132,7 @@
 		EE946ED94A94BD4EC76A955D /* UnknownSkill.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UnknownSkill.swift; sourceTree = "<group>"; };
 		F1558EA8A85298EA80C91F20 /* TimelineViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimelineViewModel.swift; sourceTree = "<group>"; };
 		F8DC98337E771986CB495A63 /* ChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatView.swift; sourceTree = "<group>"; };
+		FACC25FE9941AA10BA6893EA /* GreetingSkill.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GreetingSkill.swift; sourceTree = "<group>"; };
 		FD7475206AF12DD9FDE4E568 /* PhotoMetadataService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotoMetadataService.swift; sourceTree = "<group>"; };
 		FDB27CEC9D33CCDF90C0F401 /* PrivateAIWidget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PrivateAIWidget.swift; sourceTree = "<group>"; };
 		FDCFA7B0F9CFCCAA2C6B874F /* QuickRecordView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuickRecordView.swift; sourceTree = "<group>"; };
@@ -196,6 +198,7 @@
 			children = (
 				42167BD1FB1325E7A4A9B494 /* CalendarSkill.swift */,
 				A70FF8187392AC19ACF2C265 /* CountdownSkill.swift */,
+				FACC25FE9941AA10BA6893EA /* GreetingSkill.swift */,
 				521E0A5E81B31CB156CA8448 /* HabitSkill.swift */,
 				1C1BB503360544C933017A41 /* HealthSkill.swift */,
 				0ACE818BAD02C2D8CBA59243 /* LocationSkill.swift */,
@@ -520,6 +523,7 @@
 				9E3ED1AFB416BF0BFDDEAA93 /* ContextMemory.swift in Sources */,
 				FB9010CD507564F884C9E8C5 /* CoreDataExtensions.swift in Sources */,
 				3E2E018A27AFE72A51667884 /* CountdownSkill.swift in Sources */,
+				91132942AAAC12535741AAB5 /* GreetingSkill.swift in Sources */,
 				3C56D125E9C220F924B1E0B4 /* HabitSkill.swift in Sources */,
 				71F709C5BB09A038E435AE40 /* HealthService.swift in Sources */,
 				418AC465E1B3DBED2C1B5BC4 /* HealthSkill.swift in Sources */,

@@ -21,7 +21,19 @@ enum QueryIntent {
     case countdown(topic: String)
     case todo(action: TodoAction, content: String)
     case habit(action: HabitAction, content: String)
+    case greeting(type: GreetingType)
     case unknown
+}
+
+// MARK: - Greeting Type
+
+enum GreetingType {
+    case hello          // 你好, hi, hello
+    case thanks         // 谢谢, thank you
+    case farewell       // 拜拜, bye, 再见
+    case presence       // 在吗, are you there
+    case selfIntro      // 你是谁, who are you
+    case howAreYou      // 你好吗, how are you
 }
 
 // MARK: - Skill Router
@@ -35,7 +47,14 @@ struct SkillRouter {
 
     static func parse(_ text: String) -> QueryIntent {
         let lower = text.lowercased()
+        let trimmed = lower.trimmingCharacters(in: .whitespacesAndNewlines)
         let range = extractTimeRange(from: lower)
+
+        // --- Greeting / Conversational ---
+        // Only match short utterances to avoid false positives on longer queries
+        if let greetingType = parseGreeting(trimmed) {
+            return .greeting(type: greetingType)
+        }
 
         // --- Event Recording ---
         if containsAny(lower, ["我今天", "今天我", "刚刚", "记录一下", "帮我记", "记一下", "i did", "i went", "i ate"]) {
@@ -354,6 +373,44 @@ struct SkillRouter {
             }
         }
         return ""
+    }
+
+    // MARK: - Greeting Parsing
+
+    /// Detects conversational greetings. Uses a length cap to avoid matching longer queries
+    /// that happen to contain a greeting word (e.g., "你好，帮我总结这周运动").
+    private static func parseGreeting(_ trimmed: String) -> GreetingType? {
+        // Only match short messages (≤15 chars) to avoid false positives
+        guard trimmed.count <= 15 else { return nil }
+
+        // Self-intro: "你是谁", "who are you"
+        if containsAny(trimmed, ["你是谁", "你叫什么", "who are you", "what are you", "介绍一下你自己"]) {
+            return .selfIntro
+        }
+        // How are you: "你好吗", "你怎么样"
+        if containsAny(trimmed, ["你好吗", "你怎么样", "how are you", "你还好吗"]) {
+            return .howAreYou
+        }
+        // Thanks
+        if containsAny(trimmed, ["谢谢", "感谢", "多谢", "thank", "thanks", "thx"]) {
+            return .thanks
+        }
+        // Farewell
+        if containsAny(trimmed, ["拜拜", "再见", "回头见", "下次见", "晚安", "bye", "goodbye",
+                                   "good night", "see you", "gn"]) {
+            return .farewell
+        }
+        // Presence
+        if containsAny(trimmed, ["在吗", "在不在", "你在吗", "are you there", "hello?", "你在不在"]) {
+            return .presence
+        }
+        // Hello (check last to avoid matching "你好吗" as hello)
+        if containsAny(trimmed, ["你好", "嗨", "哈喽", "hello", "hey", "hi", "嘿",
+                                   "早上好", "下午好", "晚上好", "早安", "午安",
+                                   "good morning", "good afternoon", "good evening"]) {
+            return .hello
+        }
+        return nil
     }
 
     // MARK: - Helpers

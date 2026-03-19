@@ -47,11 +47,14 @@ final class ContextMemory {
 
     /// Returns a resolved intent by inheriting context from previous turns.
     ///
-    /// Handles three follow-up scenarios:
+    /// Handles four follow-up scenarios:
     /// 1. "那昨天呢?" → unknown intent + follow-up → inherits previous skill, changes time range
     /// 2. "昨天" (bare time) → unknown intent + time-only → inherits previous skill, changes time range
     /// 3. "睡眠呢?" → known intent + follow-up + no explicit time → inherits time range from previous turn
     ///    (e.g. after "今天走了多少步？", "睡眠呢" should mean today's sleep, not default lastWeek)
+    /// 4. "心率" / "睡眠" / "步数" → short bare-keyword query with no explicit time
+    ///    → implicitly a follow-up, inherits time range from context
+    ///    (e.g. after "今天走了多少步", just "心率" should mean today's heart rate)
     func resolveIntent(from rawText: String) -> QueryIntent {
         let lower = rawText.lowercased()
         let trimmed = lower.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -74,7 +77,7 @@ final class ContextMemory {
             return inheritIntent(last, withRange: newRange)
         }
 
-        // Scenario 3: Known intent + follow-up signal + no explicit time in query
+        // Scenario 3: Known intent + explicit follow-up signal + no explicit time in query
         // → keep the new skill but inherit time range from the previous turn.
         // Example: "今天走了多少步？" then "睡眠呢？"
         //   newIntent = .health(sleep, lastWeek)  ← wrong default range
@@ -87,7 +90,33 @@ final class ContextMemory {
             }
         }
 
+        // Scenario 4: Short bare-keyword query with no follow-up marker and no explicit time
+        // → implicitly a follow-up in conversational context, inherit time range.
+        // Users naturally type just "心率", "睡眠", "步数", "运动", "日程", "照片"
+        // after a previous query — these should inherit the time context rather than
+        // defaulting to .lastWeek which feels disconnected.
+        // Guard: only trigger when there's a recent intent AND the query is short enough
+        // to be a bare keyword (≤8 characters for CJK, ≤15 for English), AND the new
+        // intent carries a time range (so we can meaningfully replace it).
+        if !isFollowUp, let last = lastIntent, !newIntent.isUnknown {
+            let queryHasExplicitTime = hasExplicitTimeReference(lower)
+            let isShortQuery = trimmed.count <= shortQueryThreshold(trimmed)
+            if !queryHasExplicitTime && isShortQuery,
+               let previousRange = extractRange(from: last),
+               extractRange(from: newIntent) != nil {
+                return applyRange(previousRange, to: newIntent)
+            }
+        }
+
         return newIntent
+    }
+
+    /// Returns the max character count for a query to be considered "short" (bare keyword).
+    /// CJK characters carry more meaning per character, so the threshold is lower.
+    private func shortQueryThreshold(_ text: String) -> Int {
+        // If primarily CJK (Chinese), use a tighter limit
+        let cjkCount = text.unicodeScalars.filter { $0.value >= 0x4E00 && $0.value <= 0x9FFF }.count
+        return cjkCount > text.count / 2 ? 8 : 15
     }
 
     /// Checks if the input is primarily a time reference with no other meaningful content.

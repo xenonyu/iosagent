@@ -2488,13 +2488,31 @@ struct HealthSkill: ClawSkill {
         lines.append("\(scoreEmoji) 恢复指数：\(score.total) / 100 — \(readiness)")
         lines.append("   \(barStr)")
 
+        // Data completeness note: when dimensions are missing, the score is still
+        // accurate for the available data but the user should know it's partial.
+        if score.missingDimensionCount > 0 {
+            let availableCount = 4 - score.missingDimensionCount
+            lines.append("   基于 \(availableCount)/4 项指标评估")
+        }
+
         // Dimension breakdown
         lines.append("")
         for dim in score.dimensions {
-            let dimBar = max(1, dim.score * 5 / dim.maxScore)
-            let dimBarStr = String(repeating: "●", count: dimBar) + String(repeating: "○", count: 5 - dimBar)
-            lines.append("\(dim.emoji) \(dim.name) \(dimBarStr) \(dim.score)/\(dim.maxScore)")
-            lines.append("   \(dim.detail)")
+            if dim.maxScore == 0 {
+                // Dimension excluded from scoring — show as greyed-out
+                lines.append("\(dim.emoji) \(dim.name)  —  \(dim.detail)")
+            } else {
+                let dimBar = max(1, dim.score * 5 / dim.maxScore)
+                let dimBarStr = String(repeating: "●", count: dimBar) + String(repeating: "○", count: 5 - dimBar)
+                lines.append("\(dim.emoji) \(dim.name) \(dimBarStr) \(dim.score)/\(dim.maxScore)")
+                lines.append("   \(dim.detail)")
+            }
+        }
+
+        // Suggest Apple Watch for more complete recovery analysis
+        if score.missingDimensionCount >= 2 {
+            lines.append("")
+            lines.append("⌚ 佩戴 Apple Watch 可获取 HRV 和静息心率数据，恢复评估会更全面精准。")
         }
 
         // --- Calendar-Aware Training Recommendation ---
@@ -2772,10 +2790,12 @@ struct HealthSkill: ClawSkill {
         dateFmt.locale = Locale(identifier: "zh_CN")
 
         var dailyScores: [(date: Date, score: Int, label: String)] = []
+        var totalMissingDimensions = 0
         for day in sorted {
             let score = computeDailyRecoveryScore(day: day, baseline: baseline)
             let label = sorted.count <= 7 ? dayFmt.string(from: day.date) : dateFmt.string(from: day.date)
             dailyScores.append((day.date, score.total, label))
+            totalMissingDimensions += score.missingDimensionCount
         }
 
         guard !dailyScores.isEmpty else {
@@ -2910,6 +2930,13 @@ struct HealthSkill: ClawSkill {
             lines.append("⚠️ 恢复偏低，建议减少高强度训练，优先保障 7 小时以上睡眠。")
         }
 
+        // Data completeness: if most days are missing Watch data, note it once
+        let avgMissing = sorted.isEmpty ? 0 : totalMissingDimensions / sorted.count
+        if avgMissing >= 2 {
+            lines.append("")
+            lines.append("⌚ 评分基于睡眠和运动数据。佩戴 Apple Watch 可获取 HRV 和静息心率，让恢复评估更全面。")
+        }
+
         completion(lines.joined(separator: "\n"))
     }
 
@@ -2920,16 +2947,20 @@ struct HealthSkill: ClawSkill {
     private struct RecoveryScore {
         let total: Int
         let dimensions: [(name: String, emoji: String, score: Int, maxScore: Int, detail: String)]
+        /// Number of dimensions that had no data and were excluded from scoring.
+        let missingDimensionCount: Int
     }
 
     private func computeDailyRecoveryScore(day: HealthSummary, baseline: [HealthSummary]) -> RecoveryScore {
         var totalScore: Double = 0
         var maxPossible: Double = 0
         var dimensions: [(name: String, emoji: String, score: Int, maxScore: Int, detail: String)] = []
+        var missingCount = 0
 
         // --- 1. Sleep Recovery (35 pts) ---
-        maxPossible += 35
+        // Sleep data comes from iPhone or Apple Watch — usually available.
         if day.sleepHours > 0 {
+            maxPossible += 35
             var sleepScore: Double = 0
             let sleepDays = baseline.filter { $0.sleepHours > 0 }
             let avgSleep = sleepDays.isEmpty ? 7.5 : sleepDays.reduce(0) { $0 + $1.sleepHours } / Double(sleepDays.count)
@@ -2962,14 +2993,16 @@ struct HealthSkill: ClawSkill {
                 : "\(String(format: "%.1f", day.sleepHours))h"
             dimensions.append(("睡眠恢复", "😴", Int(sleepScore), 35, sleepDetail))
         } else {
-            totalScore += 15
-            dimensions.append(("睡眠恢复", "😴", 15, 35, "无数据"))
+            missingCount += 1
+            dimensions.append(("睡眠恢复", "😴", 0, 0, "无数据（未纳入评分）"))
         }
 
         // --- 2. HRV Status (30 pts) ---
-        maxPossible += 30
+        // HRV requires Apple Watch — skip entirely when unavailable instead of
+        // injecting a phantom mid-point score that would dilute the final result.
         let hrvDays = baseline.filter { $0.hrv > 0 }
         if day.hrv > 0 && !hrvDays.isEmpty {
+            maxPossible += 30
             let avgHRV = hrvDays.reduce(0) { $0 + $1.hrv } / Double(hrvDays.count)
             let ratio = day.hrv / avgHRV
 
@@ -2985,6 +3018,7 @@ struct HealthSkill: ClawSkill {
             let pctStr = pctChange >= 0 ? "+\(pctChange)%" : "\(pctChange)%"
             dimensions.append(("心率变异性", "📳", Int(hrvScore), 30, "\(Int(day.hrv)) ms（\(pctStr)）"))
         } else if day.hrv > 0 {
+            maxPossible += 30
             var hrvScore: Double = 0
             if day.hrv >= 50 { hrvScore = 25 }
             else if day.hrv >= 30 { hrvScore = 18 }
@@ -2992,14 +3026,15 @@ struct HealthSkill: ClawSkill {
             totalScore += hrvScore
             dimensions.append(("心率变异性", "📳", Int(hrvScore), 30, "\(Int(day.hrv)) ms"))
         } else {
-            totalScore += 15
-            dimensions.append(("心率变异性", "📳", 15, 30, "无数据"))
+            missingCount += 1
+            dimensions.append(("心率变异性", "📳", 0, 0, "无数据（需 Apple Watch）"))
         }
 
         // --- 3. Resting HR (20 pts) ---
-        maxPossible += 20
+        // Resting HR also requires Apple Watch — skip when unavailable.
         let rhrDays = baseline.filter { $0.restingHeartRate > 0 }
         if day.restingHeartRate > 0 && !rhrDays.isEmpty {
+            maxPossible += 20
             let avgRHR = rhrDays.reduce(0) { $0 + $1.restingHeartRate } / Double(rhrDays.count)
             let diff = day.restingHeartRate - avgRHR
 
@@ -3016,6 +3051,7 @@ struct HealthSkill: ClawSkill {
             else { diffStr = "\(Int(diff))" }
             dimensions.append(("静息心率", "🫀", Int(rhrScore), 20, "\(Int(day.restingHeartRate)) BPM（\(diffStr)）"))
         } else if day.restingHeartRate > 0 {
+            maxPossible += 20
             var rhrScore: Double = 0
             if day.restingHeartRate <= 65 { rhrScore = 18 }
             else if day.restingHeartRate <= 75 { rhrScore = 14 }
@@ -3023,11 +3059,12 @@ struct HealthSkill: ClawSkill {
             totalScore += rhrScore
             dimensions.append(("静息心率", "🫀", Int(rhrScore), 20, "\(Int(day.restingHeartRate)) BPM"))
         } else {
-            totalScore += 10
-            dimensions.append(("静息心率", "🫀", 10, 20, "无数据"))
+            missingCount += 1
+            dimensions.append(("静息心率", "🫀", 0, 0, "无数据（需 Apple Watch）"))
         }
 
         // --- 4. Training Load (15 pts) ---
+        // Training load uses exercise minutes which are available from iPhone.
         maxPossible += 15
         let recentExercise = baseline.suffix(3).reduce(0) { $0 + $1.exerciseMinutes }
         let avgDailyExercise = baseline.reduce(0) { $0 + $1.exerciseMinutes } / Double(max(baseline.count, 1))
@@ -3054,7 +3091,7 @@ struct HealthSkill: ClawSkill {
         dimensions.append(("训练负荷", "🏋️", Int(loadScore), 15, loadDetail))
 
         let finalScore = maxPossible > 0 ? Int(totalScore / maxPossible * 100) : 50
-        return RecoveryScore(total: finalScore, dimensions: dimensions)
+        return RecoveryScore(total: finalScore, dimensions: dimensions, missingDimensionCount: missingCount)
     }
 
     /// Returns emoji + label for a recovery score value.

@@ -37,6 +37,7 @@ enum QueryIntent {
     case search(keyword: String)
     case note(action: NoteAction, content: String)
     case textTool(action: TextToolAction, content: String)
+    case dailyQuote(category: QuoteCategory)
     case unknown
 
     /// Whether this intent could not be matched to any known skill.
@@ -44,6 +45,17 @@ enum QueryIntent {
         if case .unknown = self { return true }
         return false
     }
+}
+
+// MARK: - Quote Category
+
+enum QuoteCategory {
+    case motivational   // 励志
+    case wisdom         // 智慧
+    case life           // 生活
+    case perseverance   // 坚持
+    case dailyPick      // 今日一句 (deterministic per day)
+    case random         // 随机
 }
 
 // MARK: - Text Tool Action
@@ -215,6 +227,11 @@ struct SkillRouter {
         // --- Text Tools ---
         if let textToolIntent = parseTextTool(lower, original: text) {
             return textToolIntent
+        }
+
+        // --- Daily Quote / Motivation ---
+        if let quoteCategory = parseQuote(lower) {
+            return .dailyQuote(category: quoteCategory)
         }
 
         // --- Greeting / Conversational ---
@@ -1775,5 +1792,35 @@ struct SkillRouter {
 
     static func containsAny(_ text: String, _ keywords: [String]) -> Bool {
         keywords.contains { text.contains($0) }
+    }
+
+    // MARK: - Daily Quote Parsing
+
+    private static func parseQuote(_ lower: String) -> QuoteCategory? {
+        let quoteKeywords = ["名言", "名句", "语录", "格言", "一句话", "每日一句", "今日一句",
+                             "鸡汤", "金句", "quote", "daily quote", "motivat", "inspire",
+                             "激励我", "鼓励我", "励志", "来句", "来一句", "说句"]
+        guard containsAny(lower, quoteKeywords) else { return nil }
+
+        // Daily pick
+        if containsAny(lower, ["每日", "今日", "今天的", "daily"]) {
+            return .dailyPick
+        }
+
+        // Category-specific
+        if containsAny(lower, ["励志", "激励", "鼓励", "加油", "motivat", "inspire"]) {
+            return .motivational
+        }
+        if containsAny(lower, ["智慧", "哲理", "哲学", "wisdom"]) {
+            return .wisdom
+        }
+        if containsAny(lower, ["生活", "人生", "life"]) {
+            return .life
+        }
+        if containsAny(lower, ["坚持", "毅力", "不放弃", "persever"]) {
+            return .perseverance
+        }
+
+        return .random
     }
 }

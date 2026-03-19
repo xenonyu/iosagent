@@ -30,6 +30,7 @@ enum QueryIntent {
     case breathing(type: BreathingType)
     case bmi(heightCM: Double, weightKG: Double)
     case sleepCalc(query: SleepCalcQuery)
+    case passwordGen(type: PasswordGenType)
     case unknown
 }
 
@@ -80,6 +81,16 @@ enum SleepCalcQuery {
     case bedtimeFor(wakeHour: Int, wakeMin: Int)   // 几点睡 → 给定起床时间
     case wakeTimeFor(sleepHour: Int, sleepMin: Int) // 几点起 → 给定入睡时间
     case overview                                    // 通用睡眠计算
+}
+
+// MARK: - Password Generation Type
+
+enum PasswordGenType {
+    case standard(length: Int)   // letters + digits
+    case strong(length: Int)     // letters + digits + symbols
+    case pin(digits: Int)        // numeric PIN
+    case memorable               // word-based easy-to-remember
+    case overview                // show all options
 }
 
 // MARK: - Water Track Action
@@ -133,6 +144,11 @@ struct SkillRouter {
         // --- Breathing / Relaxation ---
         if let breathingType = parseBreathing(lower) {
             return .breathing(type: breathingType)
+        }
+
+        // --- Password Generator ---
+        if let pwdType = parsePasswordGen(lower) {
+            return .passwordGen(type: pwdType)
         }
 
         // --- Greeting / Conversational ---
@@ -1146,6 +1162,51 @@ struct SkillRouter {
         }
 
         return (nil, nil)
+    }
+
+    // MARK: - Password Generator Parser
+
+    private static func parsePasswordGen(_ text: String) -> PasswordGenType? {
+        let pwdKeywords = ["密码", "password", "passwd", "口令", "pin码", "pin code",
+                           "验证码", "生成密码", "随机密码", "安全密码"]
+        guard containsAny(text, pwdKeywords) else { return nil }
+
+        // PIN code
+        if containsAny(text, ["pin码", "pin code", "pin", "数字密码", "数字码", "纯数字"]) {
+            let digits = extractNumber(from: text) ?? 6
+            return .pin(digits: digits)
+        }
+
+        // Memorable / easy to remember
+        if containsAny(text, ["好记", "易记", "容易记", "memorable", "easy to remember", "记得住"]) {
+            return .memorable
+        }
+
+        // Strong password
+        if containsAny(text, ["强密码", "安全密码", "复杂密码", "strong", "secure", "特殊字符"]) {
+            let length = extractNumber(from: text) ?? 16
+            return .strong(length: length)
+        }
+
+        // Standard with optional custom length
+        if containsAny(text, ["生成", "创建", "给我", "来个", "来一个", "generate", "create", "make"]) {
+            let length = extractNumber(from: text) ?? 12
+            return .standard(length: length)
+        }
+
+        // Generic "密码" mention — show overview
+        return .overview
+    }
+
+    /// Extract the first integer from text (for password length, PIN digits, etc.)
+    private static func extractNumber(from text: String) -> Int? {
+        let nsText = text as NSString
+        guard let regex = try? NSRegularExpression(pattern: "(\\d+)", options: []),
+              let match = regex.firstMatch(in: text, options: [], range: NSRange(location: 0, length: nsText.length)),
+              match.numberOfRanges >= 2 else {
+            return nil
+        }
+        return Int(nsText.substring(with: match.range(at: 1)))
     }
 
     static func containsAny(_ text: String, _ keywords: [String]) -> Bool {

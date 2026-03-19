@@ -63,6 +63,7 @@ final class ClawEngine {
         registry.register(BMISkill())
         registry.register(SleepCalculatorSkill())
         registry.register(BreathingSkill())
+        registry.register(PasswordGeneratorSkill())
         registry.register(GreetingSkill())
         registry.register(UnknownSkill())
     }

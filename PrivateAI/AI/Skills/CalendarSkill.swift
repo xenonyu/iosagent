@@ -27,7 +27,7 @@ struct CalendarSkill: ClawSkill {
         let events = context.calendarService.fetchEvents(from: interval.start, to: interval.end)
 
         if events.isEmpty {
-            return buildEmptyResponse(range: range)
+            return buildEmptyResponse(range: range, isAuthorized: context.calendarService.isAuthorized)
         }
 
         let cal = Calendar.current
@@ -71,7 +71,18 @@ struct CalendarSkill: ClawSkill {
 
     // MARK: - Empty State
 
-    private func buildEmptyResponse(range: QueryTimeRange) -> String {
+    private func buildEmptyResponse(range: QueryTimeRange, isAuthorized: Bool) -> String {
+        // Permission not granted — guide user to enable it instead of falsely claiming "no events"
+        if !isAuthorized {
+            return """
+            📅 日历权限未开启，无法查看你的日程。
+
+            请前往「设置 → iosclaw → 日历」开启权限。
+            开启后我就能帮你查看日程、分析会议安排、找空闲时段了。
+            """
+        }
+
+        // Permission granted but no events in the requested range
         if range.isFuture || range == .today {
             return "📅 \(range.label)没有任何日程安排。\n\n✨ 这段时间完全自由！可以用来做自己想做的事。"
         }
@@ -81,7 +92,7 @@ struct CalendarSkill: ClawSkill {
         if interval.end >= cal.startOfDay(for: now) {
             return "📅 \(range.label)没有任何日程安排。\n\n✨ 这段时间完全自由！可以用来做自己想做的事。"
         }
-        return "📅 \(range.label)的日历里没有事件记录。\n请确认已开启日历权限，或者前往日历 App 添加行程。"
+        return "📅 \(range.label)的日历里没有事件记录。"
     }
 
     // MARK: - Single Day Response (Today / Tomorrow / Specific Day)

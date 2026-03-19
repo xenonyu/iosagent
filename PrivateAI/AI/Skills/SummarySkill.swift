@@ -286,7 +286,17 @@ struct SummarySkill: ClawSkill {
             }
 
             if !hasAnyData {
-                lines.append("暂无足够的数据生成总结。\n请多与我互动，记录生活点滴，或开启日历权限让总结更完整！")
+                var tips: [String] = ["暂无足够的数据生成总结。\n\n可以这样让总结更丰富："]
+                if !context.calendarService.isAuthorized {
+                    tips.append("• 开启「日历」权限 → 查看日程安排")
+                }
+                if !context.photoService.isAuthorized {
+                    tips.append("• 开启「照片」权限 → 查看拍照记录")
+                }
+                tips.append("• 开启「健康」权限 → 查看运动和睡眠数据")
+                tips.append("• 开启「位置」权限 → 查看去过的地方")
+                tips.append("\n前往「设置 → iosclaw」开启相关权限即可。")
+                lines.append(tips.joined(separator: "\n"))
             }
 
             completion(lines.joined(separator: "\n"))

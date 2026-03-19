@@ -56,14 +56,24 @@ struct HealthSkill: ClawSkill {
             var lines: [String] = ["🏃 \(range.label)的运动数据\n"]
 
             if filtered.isEmpty && events.isEmpty {
-                lines.append("暂无运动记录。开启健康权限后可以自动追踪你的运动数据。")
+                if !context.healthService.isHealthDataAvailable {
+                    lines.append("此设备不支持 HealthKit（如 iPad）。\n需要在 iPhone 上使用才能获取运动数据。")
+                } else {
+                    lines.append("暂无运动记录。\n\n请前往「设置 → iosclaw → 健康」开启权限，开启后可以自动追踪步数、运动时长、消耗热量等。")
+                }
                 completion(lines.joined(separator: "\n"))
                 return
             }
 
             let daysWithData = filtered.filter { $0.hasData }
             guard !daysWithData.isEmpty else {
-                lines.append("这段时间暂无运动数据记录。")
+                var emptyMsg = "\(range.label)暂无运动数据记录。"
+                if range == .today {
+                    emptyMsg += "\n今天可能还没有足够的活动。试试问我「昨天运动了多少」？"
+                } else if range == .yesterday || range.interval.duration < 86400 * 2 {
+                    emptyMsg += "\n试试扩大范围：「这周运动了多少」？"
+                }
+                lines.append(emptyMsg)
                 completion(lines.joined(separator: "\n"))
                 return
             }
@@ -237,7 +247,15 @@ struct HealthSkill: ClawSkill {
             }
 
             guard !withData.isEmpty else {
-                completion("📊 暂无健康数据。\n请在设置中开启健康权限以获取详细数据。")
+                if !context.healthService.isHealthDataAvailable {
+                    completion("📊 此设备不支持 HealthKit。\n需要在 iPhone 上使用才能获取健康数据。")
+                } else {
+                    var msg = "📊 \(range.label)暂无健康数据。\n请前往「设置 → iosclaw → 健康」确认已开启权限。"
+                    if range == .today {
+                        msg += "\n\n💡 也可以试试「昨天健康怎么样」查看已有数据。"
+                    }
+                    completion(msg)
+                }
                 return
             }
 

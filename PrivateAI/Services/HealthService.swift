@@ -8,6 +8,9 @@ final class HealthService: ObservableObject {
     private let store = HKHealthStore()
     private var isAvailable: Bool { HKHealthStore.isHealthDataAvailable() }
 
+    /// Whether HealthKit is available on this device (iPad doesn't support HealthKit).
+    var isHealthDataAvailable: Bool { isAvailable }
+
     // MARK: - Types to read
 
     private var readTypes: Set<HKObjectType> {

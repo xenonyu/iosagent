@@ -188,6 +188,24 @@ struct CalendarSkill: ClawSkill {
         }
     }
 
+    // MARK: - Weekend Detection
+
+    /// Returns true when the given date falls on Saturday or Sunday.
+    private func isWeekend(_ date: Date) -> Bool {
+        let wd = Calendar.current.component(.weekday, from: date)
+        return wd == 1 || wd == 7  // 1 = Sunday, 7 = Saturday
+    }
+
+    /// Returns a short Chinese weekday name for weekend-context messaging.
+    private func weekdayLabel(_ date: Date) -> String {
+        let wd = Calendar.current.component(.weekday, from: date)
+        switch wd {
+        case 1: return "周日"
+        case 7: return "周六"
+        default: return ""
+        }
+    }
+
     // MARK: - Empty State
 
     private func buildEmptyResponse(range: QueryTimeRange, isAuthorized: Bool) -> String {
@@ -203,12 +221,21 @@ struct CalendarSkill: ClawSkill {
 
         // Permission granted but no events in the requested range
         if range.isFuture || range == .today {
+            // Weekend-specific celebration for free weekend days
+            let targetDate = range.interval.start
+            if isWeekend(targetDate) {
+                return "📅 \(range.label)没有任何日程安排。\n\n🏖️ \(weekdayLabel(targetDate))完全属于自己！好好享受休息时光吧。"
+            }
             return "📅 \(range.label)没有任何日程安排。\n\n✨ 这段时间完全自由！可以用来做自己想做的事。"
         }
         let interval = range.interval
         let cal = Calendar.current
         let now = Date()
         if interval.end >= cal.startOfDay(for: now) {
+            let targetDate = interval.start
+            if isWeekend(targetDate) {
+                return "📅 \(range.label)没有任何日程安排。\n\n🏖️ \(weekdayLabel(targetDate))完全属于自己！好好享受休息时光吧。"
+            }
             return "📅 \(range.label)没有任何日程安排。\n\n✨ 这段时间完全自由！可以用来做自己想做的事。"
         }
         return "📅 \(range.label)的日历里没有事件记录。"
@@ -359,6 +386,18 @@ struct CalendarSkill: ClawSkill {
             lines.append("")
         }
 
+        // --- Weekend context insight ---
+        if isWeekend(date) && !timedEvents.isEmpty {
+            let weekendMeetingMin = timedEvents.reduce(0.0) { $0 + $1.duration } / 60.0
+            let dayLabel = weekdayLabel(date)
+            if timedEvents.count >= 3 || weekendMeetingMin >= 180 {
+                lines.append("🏖️ \(dayLabel)安排了 \(timedEvents.count) 个事项（\(formatDuration(weekendMeetingMin))），周末节奏偏紧 — 记得给自己留出放松时间。")
+            } else {
+                lines.append("🏖️ \(dayLabel)有 \(timedEvents.count) 个安排，处理完就好好休息吧。")
+            }
+            lines.append("")
+        }
+
         // --- Free time slots (for today and future days) ---
         if isToday || isFutureDay {
             let freeSlots = findFreeSlots(events: timedEvents, date: date, onlyFuture: isToday)
@@ -413,7 +452,13 @@ struct CalendarSkill: ClawSkill {
         } else {
             lines.append("📅 \(range.label)日程总览")
         }
-        lines.append("共 \(events.count) 个事件，跨 \(spanDays) 天\(totalMinutes >= 60 ? "，约 \(formatDuration(totalMinutes)) 有安排" : "")。\n")
+        // Count weekend events to surface in summary
+        let weekendEvents = timedEvents.filter { isWeekend($0.startDate) }
+        var headerSuffix = ""
+        if !weekendEvents.isEmpty {
+            headerSuffix = "（其中周末 \(weekendEvents.count) 个）"
+        }
+        lines.append("共 \(events.count) 个事件，跨 \(spanDays) 天\(totalMinutes >= 60 ? "，约 \(formatDuration(totalMinutes)) 有安排" : "")\(headerSuffix)。\n")
 
         // --- Free-time-focused: show cross-day free slots prominently ---
         if isFreeTimeFocus {
@@ -440,7 +485,8 @@ struct CalendarSkill: ClawSkill {
             guard let dayEvents = grouped[day] else { continue }
             let dayTimed = dayEvents.filter { !$0.isAllDay }
             let dayBusy = busyScore(timedCount: dayTimed.count, totalMinutes: dayTimed.reduce(0.0) { $0 + $1.duration } / 60.0)
-            lines.append("📌 \(dateFmt.string(from: day)) \(dayBusy.emoji)")
+            let weekendTag = isWeekend(day) ? " 🏖️" : ""
+            lines.append("📌 \(dateFmt.string(from: day)) \(dayBusy.emoji)\(weekendTag)")
             dayEvents.forEach { event in
                 var line = "  • \(event.isAllDay ? "全天" : event.timeDisplay) \(event.title)"
                 if !event.location.isEmpty { line += "  📍\(event.location)" }
@@ -1053,6 +1099,25 @@ struct CalendarSkill: ClawSkill {
                 verdict = "会议过密，建议合并或推迟部分会议 ⚠️"
             }
             lines.append("  📊 平均专注率 \(Int(avgFocus * 100))%，\(verdict)")
+        }
+
+        // Weekday vs weekend balance insight
+        let weekdayData = dayFocusData.filter { !isWeekend($0.date) }
+        let weekendData = dayFocusData.filter { isWeekend($0.date) }
+        let weekendMeetings = weekendData.reduce(0) { $0 + $1.meetingCount }
+        let weekdayMeetings = weekdayData.reduce(0) { $0 + $1.meetingCount }
+        if weekendMeetings > 0 && !weekendData.isEmpty {
+            let weekendAvg = Double(weekendMeetings) / Double(weekendData.count)
+            let weekdayAvg = weekdayData.isEmpty ? 0 : Double(weekdayMeetings) / Double(weekdayData.count)
+            if weekendMeetings >= 3 {
+                lines.append("  🏖️ 周末有 \(weekendMeetings) 个会议，休息时间被压缩 — 注意工作生活平衡")
+            } else if weekdayAvg > 0 && weekendAvg >= weekdayAvg * 0.8 {
+                lines.append("  🏖️ 周末日程密度接近工作日，建议适当减少周末安排")
+            } else {
+                lines.append("  🏖️ 周末有少量安排（\(weekendMeetings) 个），整体节奏合理")
+            }
+        } else if !weekendData.isEmpty && weekendMeetings == 0 && totalMeetings > 0 {
+            lines.append("  🏖️ 周末完全空闲，工作生活边界清晰 👍")
         }
 
         return lines

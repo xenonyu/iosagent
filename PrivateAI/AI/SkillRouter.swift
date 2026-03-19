@@ -329,6 +329,9 @@ struct SkillRouter {
                                 "哪儿", "哪些地方", "什么地方",
                                 "活动范围", "出行距离", "走了多远", "跑了多远",
                                 "移动距离", "出行分析", "活动半径", "行动范围",
+                                "通勤", "上班路上", "下班路上", "上下班", "路上花多",
+                                "回家要多久", "上班要多久", "通勤时间", "通勤多久",
+                                "commute", "commuting",
                                 "where", "place", "location", "visit", "went to", "been to",
                                 "footprint", "places", "traveled", "visited",
                                 "travel distance", "activity radius", "how far"]) {

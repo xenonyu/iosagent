@@ -64,12 +64,17 @@ struct LocationSkill: ClawSkill {
             }
         }
 
-        // 6. Period-over-period comparison (only for multi-day ranges)
+        // 6. Commute analysis (home ↔ work transitions)
+        if let commuteSection = buildCommuteAnalysis(records: records, profiles: profiles, range: range) {
+            sections.append(commuteSection)
+        }
+
+        // 7. Period-over-period comparison (only for multi-day ranges)
         if let comparison = buildPeriodComparison(currentRecords: records, currentProfiles: profiles, range: range, context: context) {
             sections.append(comparison)
         }
 
-        // 7. Activity summary
+        // 8. Activity summary
         let summary = buildActivitySummary(records: records, range: range)
         sections.append(summary)
 
@@ -670,6 +675,192 @@ struct LocationSkill: ClawSkill {
                 sin(dLon / 2) * sin(dLon / 2)
         let c = 2 * atan2(sqrt(a), sqrt(1 - a))
         return R * c
+    }
+
+    // MARK: - Commute Analysis
+
+    /// Analyzes home ↔ work commute patterns by detecting daily transitions.
+    /// For each day with both home and work records, estimates the commute time
+    /// as the gap between leaving one zone and arriving at the other.
+    /// Requires at least 2 commute days to show meaningful patterns.
+    private func buildCommuteAnalysis(records: [LocationRecord], profiles: [PlaceProfile], range: QueryTimeRange) -> String? {
+        // Need enough data and at least home + work detected
+        guard profiles.count >= 2, records.count >= 5 else { return nil }
+        // Only meaningful for multi-day ranges
+        guard range != .today && range != .yesterday else { return nil }
+
+        guard let homeIdx = detectHome(profiles: profiles) else { return nil }
+        let homeProfile = profiles[homeIdx]
+        guard let workIdx = detectWork(profiles: profiles, excludeIndices: [homeIdx]) else { return nil }
+        let workProfile = profiles[workIdx]
+
+        // Get records belonging to home and work clusters
+        let homeRecords = findRecordsForProfile(homeProfile, in: records)
+        let workRecords = findRecordsForProfile(workProfile, in: records)
+        guard !homeRecords.isEmpty && !workRecords.isEmpty else { return nil }
+
+        let cal = Calendar.current
+        let dayFmt = DateFormatter()
+        dayFmt.dateFormat = "yyyy-MM-dd"
+
+        // Group home and work records by day
+        var homeByDay: [String: [LocationRecord]] = [:]
+        var workByDay: [String: [LocationRecord]] = [:]
+        for r in homeRecords {
+            homeByDay[dayFmt.string(from: r.timestamp), default: []].append(r)
+        }
+        for r in workRecords {
+            workByDay[dayFmt.string(from: r.timestamp), default: []].append(r)
+        }
+
+        // For each day with both home and work, estimate commute times
+        var morningCommutes: [(day: String, weekday: Int, minutes: Double)] = []
+        var eveningCommutes: [(day: String, weekday: Int, minutes: Double)] = []
+
+        let commonDays = Set(homeByDay.keys).intersection(Set(workByDay.keys))
+        for day in commonDays {
+            guard let homeRecs = homeByDay[day], let workRecs = workByDay[day] else { continue }
+            let sortedHome = homeRecs.sorted { $0.timestamp < $1.timestamp }
+            let sortedWork = workRecs.sorted { $0.timestamp < $1.timestamp }
+
+            guard let date = dayFmt.date(from: day) else { continue }
+            let weekday = cal.component(.weekday, from: date)
+
+            // Morning commute: last home record before noon → first work record
+            // (leaving home in the morning, arriving at work)
+            let morningHome = sortedHome.filter { cal.component(.hour, from: $0.timestamp) < 12 }
+            let morningWork = sortedWork.filter { cal.component(.hour, from: $0.timestamp) < 14 }
+
+            if let lastHome = morningHome.last, let firstWork = morningWork.first,
+               firstWork.timestamp > lastHome.timestamp {
+                let gap = firstWork.timestamp.timeIntervalSince(lastHome.timestamp) / 60.0
+                // Reasonable commute: 5 min to 3 hours
+                if gap >= 5 && gap <= 180 {
+                    morningCommutes.append((day: day, weekday: weekday, minutes: gap))
+                }
+            }
+
+            // Evening commute: last work record after noon → first home record in evening
+            let eveningWork = sortedWork.filter { cal.component(.hour, from: $0.timestamp) >= 12 }
+            let eveningHome = sortedHome.filter { cal.component(.hour, from: $0.timestamp) >= 15 }
+
+            if let lastWork = eveningWork.last, let firstHome = eveningHome.first,
+               firstHome.timestamp > lastWork.timestamp {
+                let gap = firstHome.timestamp.timeIntervalSince(lastWork.timestamp) / 60.0
+                if gap >= 5 && gap <= 180 {
+                    eveningCommutes.append((day: day, weekday: weekday, minutes: gap))
+                }
+            }
+        }
+
+        let totalCommutes = morningCommutes.count + eveningCommutes.count
+        guard totalCommutes >= 2 else { return nil }
+
+        var lines: [String] = ["🚌 通勤分析"]
+        lines.append("  🏠 \(homeProfile.name) ↔ 🏢 \(workProfile.name)")
+
+        // Morning commute stats
+        if morningCommutes.count >= 2 {
+            let avgMorning = morningCommutes.reduce(0.0) { $0 + $1.minutes } / Double(morningCommutes.count)
+            let minMorning = morningCommutes.min(by: { $0.minutes < $1.minutes })!
+            let maxMorning = morningCommutes.max(by: { $0.minutes < $1.minutes })!
+            lines.append("")
+            lines.append("  ☀️ 早通勤（\(morningCommutes.count) 天数据）")
+            lines.append("     平均 \(formatCommute(avgMorning))")
+            if morningCommutes.count >= 3 {
+                lines.append("     最快 \(formatCommute(minMorning.minutes)) · 最慢 \(formatCommute(maxMorning.minutes))")
+            }
+
+            // Weekday variation
+            let weekdayMorning = morningCommutes.filter { $0.weekday >= 2 && $0.weekday <= 6 }
+            if weekdayMorning.count >= 3 {
+                let byWeekday = Dictionary(grouping: weekdayMorning, by: { $0.weekday })
+                let avgByDay = byWeekday.mapValues { recs in
+                    recs.reduce(0.0) { $0 + $1.minutes } / Double(recs.count)
+                }
+                if let fastest = avgByDay.min(by: { $0.value < $1.value }),
+                   let slowest = avgByDay.max(by: { $0.value < $1.value }),
+                   fastest.key != slowest.key && (slowest.value - fastest.value) >= 5 {
+                    lines.append("     \(weekdayName(fastest.key))最快（\(formatCommute(fastest.value))），\(weekdayName(slowest.key))最慢（\(formatCommute(slowest.value))）")
+                }
+            }
+        } else if morningCommutes.count == 1 {
+            lines.append("")
+            lines.append("  ☀️ 早通勤：约 \(formatCommute(morningCommutes[0].minutes))")
+        }
+
+        // Evening commute stats
+        if eveningCommutes.count >= 2 {
+            let avgEvening = eveningCommutes.reduce(0.0) { $0 + $1.minutes } / Double(eveningCommutes.count)
+            let minEvening = eveningCommutes.min(by: { $0.minutes < $1.minutes })!
+            let maxEvening = eveningCommutes.max(by: { $0.minutes < $1.minutes })!
+            lines.append("")
+            lines.append("  🌆 晚通勤（\(eveningCommutes.count) 天数据）")
+            lines.append("     平均 \(formatCommute(avgEvening))")
+            if eveningCommutes.count >= 3 {
+                lines.append("     最快 \(formatCommute(minEvening.minutes)) · 最慢 \(formatCommute(maxEvening.minutes))")
+            }
+        } else if eveningCommutes.count == 1 {
+            lines.append("")
+            lines.append("  🌆 晚通勤：约 \(formatCommute(eveningCommutes[0].minutes))")
+        }
+
+        // Compare morning vs evening
+        if morningCommutes.count >= 2 && eveningCommutes.count >= 2 {
+            let avgMorning = morningCommutes.reduce(0.0) { $0 + $1.minutes } / Double(morningCommutes.count)
+            let avgEvening = eveningCommutes.reduce(0.0) { $0 + $1.minutes } / Double(eveningCommutes.count)
+            let diff = avgEvening - avgMorning
+            if abs(diff) >= 5 {
+                lines.append("")
+                if diff > 0 {
+                    lines.append("  💡 晚高峰比早高峰平均多花 \(formatCommute(diff)) — 下班路上更堵")
+                } else {
+                    lines.append("  💡 早高峰比晚高峰平均多花 \(formatCommute(-diff)) — 上班路上更堵")
+                }
+            }
+        }
+
+        // Total commute time burden
+        let allCommutes = morningCommutes.map(\.minutes) + eveningCommutes.map(\.minutes)
+        if allCommutes.count >= 4 {
+            let avgRoundTrip: Double
+            if morningCommutes.count >= 2 && eveningCommutes.count >= 2 {
+                let m = morningCommutes.reduce(0.0) { $0 + $1.minutes } / Double(morningCommutes.count)
+                let e = eveningCommutes.reduce(0.0) { $0 + $1.minutes } / Double(eveningCommutes.count)
+                avgRoundTrip = m + e
+            } else {
+                let avg = allCommutes.reduce(0, +) / Double(allCommutes.count)
+                avgRoundTrip = avg * 2
+            }
+            let weeklyHours = avgRoundTrip * 5 / 60
+            lines.append("")
+            lines.append("  📊 每日往返约 \(formatCommute(avgRoundTrip))，每周约 \(String(format: "%.1f", weeklyHours)) 小时在路上")
+        }
+
+        return lines.joined(separator: "\n")
+    }
+
+    /// Formats commute time in minutes to a human-readable string.
+    private func formatCommute(_ minutes: Double) -> String {
+        let mins = Int(minutes)
+        if mins >= 60 {
+            return "\(mins / 60)小时\(mins % 60)分钟"
+        }
+        return "\(mins)分钟"
+    }
+
+    /// Returns Chinese weekday name from Calendar weekday number (1=Sun..7=Sat).
+    private func weekdayName(_ weekday: Int) -> String {
+        switch weekday {
+        case 1: return "周日"
+        case 2: return "周一"
+        case 3: return "周二"
+        case 4: return "周三"
+        case 5: return "周四"
+        case 6: return "周五"
+        case 7: return "周六"
+        default: return ""
+        }
     }
 
     // MARK: - Period-over-Period Comparison

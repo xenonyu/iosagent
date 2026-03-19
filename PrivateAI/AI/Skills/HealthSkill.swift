@@ -2340,70 +2340,200 @@ struct HealthSkill: ClawSkill {
     private func respondStreak(context: SkillContext, completion: @escaping (String) -> Void) {
         context.healthService.fetchSummaries(days: 30) { summaries in
             let sorted = summaries.sorted { $0.date > $1.date }
-            var currentStreak = 0
-            var longestStreak = 0
-            var tempStreak = 0
-            var date = Calendar.current.startOfDay(for: Date())
+            let cal = Calendar.current
 
-            // Calculate current streak
-            for summary in sorted {
-                let summaryDay = Calendar.current.startOfDay(for: summary.date)
-                if summaryDay == date && summary.steps >= 8000 {
-                    currentStreak += 1
-                    date = Calendar.current.date(byAdding: .day, value: -1, to: date) ?? date
-                } else if summaryDay == date {
-                    break
-                }
+            // --- Multi-metric streak calculation ---
+            struct MetricStreak {
+                var current: Int = 0
+                var longest: Int = 0
             }
 
-            // Calculate longest streak in the 30-day window
-            let chronological = summaries.sorted { $0.date < $1.date }
-            for summary in chronological {
-                if summary.steps >= 8000 {
-                    tempStreak += 1
-                    longestStreak = max(longestStreak, tempStreak)
-                } else {
-                    tempStreak = 0
+            // Calculate streaks for each metric by walking backwards from today
+            func calculateStreak(_ predicate: (HealthSummary) -> Bool) -> MetricStreak {
+                var result = MetricStreak()
+                var date = cal.startOfDay(for: Date())
+                var counting = true
+
+                // Current streak: walk backwards from today
+                for summary in sorted {
+                    let summaryDay = cal.startOfDay(for: summary.date)
+                    if summaryDay == date {
+                        if counting {
+                            if predicate(summary) {
+                                result.current += 1
+                            } else {
+                                counting = false
+                            }
+                        }
+                        date = cal.date(byAdding: .day, value: -1, to: date) ?? date
+                    }
                 }
+
+                // Longest streak in 30-day window
+                var temp = 0
+                let chronological = summaries.sorted { $0.date < $1.date }
+                for summary in chronological {
+                    if predicate(summary) {
+                        temp += 1
+                        result.longest = max(result.longest, temp)
+                    } else {
+                        temp = 0
+                    }
+                }
+
+                return result
             }
 
-            let todaySteps = sorted.first?.steps ?? 0
-            var lines: [String] = []
+            let stepsStreak = calculateStreak { $0.steps >= 8000 }
+            let exerciseStreak = calculateStreak { $0.exerciseMinutes >= 30 }
+            let sleepStreak = calculateStreak { $0.sleepHours >= 7 && $0.sleepHours <= 9 }
+            // Triple ring: all 3 health goals met on the same day
+            let tripleStreak = calculateStreak { $0.steps >= 8000 && $0.exerciseMinutes >= 30 && $0.sleepHours >= 7 && $0.sleepHours <= 9 }
 
-            if currentStreak == 0 {
-                lines.append("🎯 步数打卡（≥8000步）\n")
+            let today = sorted.first
+            let todaySteps = today?.steps ?? 0
+            let todayExercise = today?.exerciseMinutes ?? 0
+            let todaySleep = today?.sleepHours ?? 0
+
+            var lines: [String] = ["🔥 健康连续打卡\n"]
+
+            // --- Triple Ring (the aspirational goal) ---
+            if tripleStreak.current >= 1 {
+                lines.append("🏅 全勤连续打卡：\(tripleStreak.current) 天！")
+                lines.append("   步数 + 运动 + 睡眠 三项达标")
+                if tripleStreak.current >= 7 {
+                    lines.append("   🏆 一周全勤，自律的力量令人佩服！")
+                } else if tripleStreak.current >= 3 {
+                    lines.append("   💪 三天以上的全勤，习惯正在养成！")
+                }
+                if tripleStreak.longest > tripleStreak.current {
+                    lines.append("   📊 近 30 天最长全勤：\(tripleStreak.longest) 天")
+                }
+                lines.append("")
+            }
+
+            // --- Individual Metric Streaks ---
+            // Steps
+            lines.append("👟 步数打卡（≥8,000 步）")
+            if stepsStreak.current > 0 {
+                lines.append("   连续 \(stepsStreak.current) 天达标\(streakEmoji(stepsStreak.current))")
+            } else {
                 if todaySteps > 0 {
                     let remaining = max(0, Int(8000 - todaySteps))
-                    lines.append("今天已走 \(Int(todaySteps).formatted()) 步")
                     if remaining > 0 {
-                        lines.append("还差 \(remaining.formatted()) 步达标，大约 \(remaining / 100) 分钟步行 🚶")
+                        lines.append("   今天 \(Int(todaySteps).formatted()) 步，还差 \(remaining.formatted()) 步（约 \(remaining / 100) 分钟步行）")
+                    } else {
+                        lines.append("   ✅ 今天已达标 \(Int(todaySteps).formatted()) 步")
                     }
                 } else {
-                    lines.append("今天还没有步数记录哦！")
+                    lines.append("   今天还没有步数记录")
                 }
-                if longestStreak > 0 {
-                    lines.append("\n📊 近 30 天最长连续：\(longestStreak) 天，可以再挑战一次！")
-                }
+            }
+            if stepsStreak.longest > stepsStreak.current && stepsStreak.longest >= 2 {
+                lines.append("   📊 近 30 天最长：\(stepsStreak.longest) 天")
+            }
+
+            // Exercise
+            lines.append("\n⏱ 运动打卡（≥30 分钟）")
+            if exerciseStreak.current > 0 {
+                lines.append("   连续 \(exerciseStreak.current) 天达标\(streakEmoji(exerciseStreak.current))")
             } else {
-                lines.append("🔥 步数连续打卡：**\(currentStreak) 天**！\n")
-                if currentStreak >= 14 {
-                    lines.append("两周以上的坚持，运动已经成为你的习惯了！🏆")
-                } else if currentStreak >= 7 {
-                    lines.append("整整一周！坚持下去就是质变 💪")
-                } else if currentStreak >= 3 {
-                    lines.append("连续 \(currentStreak) 天，好习惯正在养成！")
+                if todayExercise > 0 {
+                    let remaining = max(0, Int(30 - todayExercise))
+                    if remaining > 0 {
+                        lines.append("   今天 \(Int(todayExercise)) 分钟，还差 \(remaining) 分钟")
+                    } else {
+                        lines.append("   ✅ 今天已达标 \(Int(todayExercise)) 分钟")
+                    }
                 } else {
-                    lines.append("好的开始！明天继续，让连续记录更长 🔥")
+                    lines.append("   今天还没有运动记录")
                 }
-                if longestStreak > currentStreak {
-                    lines.append("\n📊 历史最长连续：\(longestStreak) 天，还差 \(longestStreak - currentStreak) 天打破记录！")
-                } else if currentStreak == longestStreak && currentStreak >= 3 {
-                    lines.append("\n🏅 这是你近 30 天的最长连续记录！")
+            }
+            if exerciseStreak.longest > exerciseStreak.current && exerciseStreak.longest >= 2 {
+                lines.append("   📊 近 30 天最长：\(exerciseStreak.longest) 天")
+            }
+
+            // Sleep
+            lines.append("\n😴 睡眠打卡（7-9 小时）")
+            if sleepStreak.current > 0 {
+                lines.append("   连续 \(sleepStreak.current) 天达标\(streakEmoji(sleepStreak.current))")
+            } else {
+                if todaySleep > 0 {
+                    if todaySleep < 7 {
+                        let deficit = String(format: "%.1f", 7 - todaySleep)
+                        lines.append("   昨晚睡了 \(String(format: "%.1f", todaySleep))h，少了 \(deficit) 小时")
+                    } else if todaySleep > 9 {
+                        lines.append("   昨晚睡了 \(String(format: "%.1f", todaySleep))h，超过 9 小时可能影响精力")
+                    }
+                } else {
+                    lines.append("   暂无睡眠记录")
                 }
+            }
+            if sleepStreak.longest > sleepStreak.current && sleepStreak.longest >= 2 {
+                lines.append("   📊 近 30 天最长：\(sleepStreak.longest) 天")
+            }
+
+            // --- 30-Day Consistency Summary ---
+            let daysWithData = summaries.filter { $0.hasData }
+            if daysWithData.count >= 7 {
+                lines.append("\n📈 近 30 天达标率")
+                let stepGoalDays = summaries.filter { $0.steps >= 8000 }.count
+                let exerciseGoalDays = summaries.filter { $0.exerciseMinutes >= 30 }.count
+                let sleepGoalDays = summaries.filter { $0.sleepHours >= 7 && $0.sleepHours <= 9 }.count
+                let total = daysWithData.count
+
+                let stepRate = stepGoalDays * 100 / total
+                let exerciseRate = exerciseGoalDays * 100 / total
+                let sleepRate = sleepGoalDays * 100 / total
+
+                lines.append("   👟 步数 \(rateBar(pct: stepRate)) \(stepRate)%（\(stepGoalDays)/\(total) 天）")
+                lines.append("   ⏱ 运动 \(rateBar(pct: exerciseRate)) \(exerciseRate)%（\(exerciseGoalDays)/\(total) 天）")
+                lines.append("   😴 睡眠 \(rateBar(pct: sleepRate)) \(sleepRate)%（\(sleepGoalDays)/\(total) 天）")
+
+                // Find the weakest metric for actionable advice
+                let rates = [("步数", stepRate), ("运动", exerciseRate), ("睡眠", sleepRate)]
+                if let weakest = rates.min(by: { $0.1 < $1.1 }), weakest.1 < 50 {
+                    lines.append("")
+                    switch weakest.0 {
+                    case "步数":
+                        lines.append("💡 步数达标率最低，试试设置每天固定的散步时间。")
+                    case "运动":
+                        lines.append("💡 运动达标率最低，每天 30 分钟快走也算，从简单的开始。")
+                    case "睡眠":
+                        lines.append("💡 睡眠达标率最低，固定就寝时间是最有效的改善方式。")
+                    default:
+                        break
+                    }
+                } else if rates.allSatisfy({ $0.1 >= 70 }) {
+                    lines.append("")
+                    lines.append("🌟 三项达标率都在 70% 以上，健康习惯非常稳定！")
+                }
+            }
+
+            // --- Motivation based on best streak ---
+            let bestCurrent = max(stepsStreak.current, exerciseStreak.current, sleepStreak.current)
+            if bestCurrent == 0 && tripleStreak.current == 0 {
+                lines.append("")
+                lines.append("💪 今天是新起点！每一天的坚持都在为明天的连续记录铺路。")
             }
 
             completion(lines.joined(separator: "\n"))
         }
+    }
+
+    /// Returns an emoji suffix for streak length milestones.
+    private func streakEmoji(_ days: Int) -> String {
+        if days >= 21 { return " 🏆🔥" }
+        if days >= 14 { return " 🏆" }
+        if days >= 7 { return " 💪" }
+        if days >= 3 { return " 🔥" }
+        return " ✅"
+    }
+
+    /// A mini bar chart (6 blocks) for percentage rates.
+    private func rateBar(pct: Int) -> String {
+        let filled = max(0, min(6, pct * 6 / 100))
+        return "[\(String(repeating: "▓", count: filled))\(String(repeating: "░", count: 6 - filled))]"
     }
 
     // MARK: - Comparison

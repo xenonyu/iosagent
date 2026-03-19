@@ -416,7 +416,10 @@ struct SkillRouter {
         }
 
         // --- Streak ---
-        if containsAny(lower, ["连续", "打卡", "坚持", "streak", "连续几天", "streak days"]) {
+        if containsAny(lower, ["连续", "打卡", "坚持了", "坚持多少", "坚持几天",
+                                "达标率", "达标天数", "完成率", "合环",
+                                "streak", "连续几天", "streak days", "consecutive",
+                                "连续打卡", "健康打卡", "运动打卡", "步数打卡", "睡眠打卡"]) {
             return .streak
         }
 

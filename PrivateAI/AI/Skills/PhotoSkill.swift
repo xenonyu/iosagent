@@ -771,14 +771,12 @@ struct PhotoSkill: ClawSkill {
 
     // MARK: - Time Range Extraction
 
+    /// Delegates to SkillRouter's full time parser which handles:
+    /// 前天/大前天/大后天, specific weekdays (周一/下周三), relative days (最近3天/5天前),
+    /// 上上周, and all standard ranges — instead of the previous 6-keyword subset.
     private func extractTimeRange(from text: String) -> QueryTimeRange? {
-        if containsAny(text, ["今天", "today"]) { return .today }
-        if containsAny(text, ["昨天", "yesterday"]) { return .yesterday }
-        if containsAny(text, ["这周", "本周", "this week"]) { return .thisWeek }
-        if containsAny(text, ["上周", "上个星期", "last week"]) { return .lastWeek }
-        if containsAny(text, ["这个月", "本月", "this month"]) { return .thisMonth }
-        if containsAny(text, ["上个月", "上月", "last month"]) { return .lastMonth }
-        return nil
+        guard SkillRouter.hasExplicitTimeReference(text) else { return nil }
+        return SkillRouter.extractTimeRange(from: text)
     }
 
     // MARK: - Location Clustering

@@ -664,10 +664,13 @@ struct SkillRouter {
             "这周", "本周", "上周", "上上周", "下周",
             "这个月", "本月", "上个月", "下个月",
             "今年", "最近", "近期",
+            // Relative day patterns: "5天前", "3天内", "过去五天"
+            "天前", "天内", "天里", "过去",
             "today", "yesterday", "tomorrow",
             "this week", "last week", "next week",
             "this month", "last month",
-            "recently", "lately"
+            "recently", "lately",
+            "days ago", "past"
         ]
         // Also check for specific weekday patterns (周一, 星期三, monday, etc.)
         let weekdayPatterns = ["周一", "周二", "周三", "周四", "周五", "周六", "周日", "周天",

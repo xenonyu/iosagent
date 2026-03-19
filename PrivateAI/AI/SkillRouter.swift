@@ -31,7 +31,17 @@ enum QueryIntent {
     case bmi(heightCM: Double, weightKG: Double)
     case sleepCalc(query: SleepCalcQuery)
     case passwordGen(type: PasswordGenType)
+    case pomodoro(action: PomodoroAction)
     case unknown
+}
+
+// MARK: - Pomodoro Action
+
+enum PomodoroAction {
+    case start(minutes: Int)  // record a completed focus session
+    case today                // today's focus summary
+    case history              // weekly focus history
+    case goal(sessions: Int)  // set daily pomodoro goal
 }
 
 // MARK: - Breathing Type
@@ -255,6 +265,11 @@ struct SkillRouter {
         if containsAny(lower, ["提醒我", "帮我记个", "记个待办", "添加待办", "新增待办", "add task", "add todo", "remind me"]) {
             let content = extractTodoContent(from: text)
             return .todo(action: .add, content: content)
+        }
+
+        // --- Pomodoro / Focus Timer ---
+        if let pomodoroIntent = parsePomodoro(lower, original: text) {
+            return pomodoroIntent
         }
 
         // --- Water Tracking ---
@@ -1207,6 +1222,57 @@ struct SkillRouter {
             return nil
         }
         return Int(nsText.substring(with: match.range(at: 1)))
+    }
+
+    // MARK: - Pomodoro Parsing
+
+    private static func parsePomodoro(_ lower: String, original: String) -> QueryIntent? {
+        guard containsAny(lower, ["番茄", "pomodoro", "专注", "focus", "番茄钟",
+                                    "专注时间", "focus session", "集中精力",
+                                    "专注了", "专注完"]) else { return nil }
+
+        // Set goal
+        if containsAny(lower, ["目标", "设置", "设定", "goal", "set"]) {
+            let sessions = extractNumber(from: lower) ?? 0
+            return .pomodoro(action: .goal(sessions: sessions))
+        }
+
+        // History / weekly
+        if containsAny(lower, ["本周", "这周", "一周", "历史", "统计", "报告",
+                                "week", "history", "stats", "report"]) {
+            return .pomodoro(action: .history)
+        }
+
+        // Today's summary
+        if containsAny(lower, ["今天", "today", "多少", "几个", "how many", "进度"]) {
+            return .pomodoro(action: .today)
+        }
+
+        // Record completed session — default action
+        if containsAny(lower, ["完成", "做完", "结束", "done", "finish", "complete",
+                                "开始", "start", "记录", "记一个", "打卡",
+                                "专注了", "专注完"]) {
+            let minutes = extractPomodoroMinutes(from: lower)
+            return .pomodoro(action: .start(minutes: minutes))
+        }
+
+        // Fallback: show today's summary
+        return .pomodoro(action: .today)
+    }
+
+    private static func extractPomodoroMinutes(from text: String) -> Int {
+        // Match "25分钟", "50min", "30分", "45 minutes"
+        let nsText = text as NSString
+        if let regex = try? NSRegularExpression(
+            pattern: "(\\d+)\\s*(?:分钟|分|min|minutes|minute)",
+            options: .caseInsensitive
+        ), let match = regex.firstMatch(in: text, options: [],
+                                         range: NSRange(location: 0, length: nsText.length)),
+           match.numberOfRanges >= 2 {
+            let numStr = nsText.substring(with: match.range(at: 1))
+            if let n = Int(numStr), n >= 1, n <= 240 { return n }
+        }
+        return 25 // default pomodoro length
     }
 
     static func containsAny(_ text: String, _ keywords: [String]) -> Bool {

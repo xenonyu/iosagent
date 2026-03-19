@@ -23,6 +23,7 @@
 		3C56D125E9C220F924B1E0B4 /* HabitSkill.swift in Sources */ = {isa = PBXBuildFile; fileRef = 521E0A5E81B31CB156CA8448 /* HabitSkill.swift */; };
 		3E2E018A27AFE72A51667884 /* CountdownSkill.swift in Sources */ = {isa = PBXBuildFile; fileRef = A70FF8187392AC19ACF2C265 /* CountdownSkill.swift */; };
 		3F7172537283DC3F88EC22D3 /* TimelineView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0624FDC274E59C094C592A70 /* TimelineView.swift */; };
+		4016A858DD3A5644FCCDDCF7 /* PomodoroSkill.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA627A47035AAD4125262EB4 /* PomodoroSkill.swift */; };
 		418AC465E1B3DBED2C1B5BC4 /* HealthSkill.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C1BB503360544C933017A41 /* HealthSkill.swift */; };
 		4CF7C65794A081ACC3D39695 /* BreathingSkill.swift in Sources */ = {isa = PBXBuildFile; fileRef = 185318DE001F2471C0C32502 /* BreathingSkill.swift */; };
 		53F1B2B9286DB0DF74C9ED13 /* ClawEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 21F123D2B27E6BFA0F919E5F /* ClawEngine.swift */; };
@@ -38,6 +39,7 @@
 		6AEDC1267F87115071627444 /* SummarySkill.swift in Sources */ = {isa = PBXBuildFile; fileRef = 85E0695CE3DE415DB52E76A0 /* SummarySkill.swift */; };
 		6BE93856803F4FAF6FA63F3A /* UnitConversionSkill.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3100F32ADD102580E12A1694 /* UnitConversionSkill.swift */; };
 		6C60D45ABA7261F2CE713B5F /* ProfileSkill.swift in Sources */ = {isa = PBXBuildFile; fileRef = 492BC549B0855C78CEA7D1E7 /* ProfileSkill.swift */; };
+		6D2E2974EA9B5E60A66BCBB4 /* PasswordGeneratorSkill.swift in Sources */ = {isa = PBXBuildFile; fileRef = 23F6F86CEB807580710A58C2 /* PasswordGeneratorSkill.swift */; };
 		6DD3A7EEF424C809B15CFB30 /* SharedDefaults.swift in Sources */ = {isa = PBXBuildFile; fileRef = 99AF9DD82D5100CDCE39CA58 /* SharedDefaults.swift */; };
 		71F709C5BB09A038E435AE40 /* HealthService.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4EAD2565F4E6FF7A9A9C208 /* HealthService.swift */; };
 		7270F3188B86BD0BFF71BE12 /* AppModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE255D68FA924DCE7659C147 /* AppModels.swift */; };
@@ -85,6 +87,7 @@
 		1B534D5CB1E9EF01490A5E41 /* ProfileView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProfileView.swift; sourceTree = "<group>"; };
 		1C1BB503360544C933017A41 /* HealthSkill.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HealthSkill.swift; sourceTree = "<group>"; };
 		21F123D2B27E6BFA0F919E5F /* ClawEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClawEngine.swift; sourceTree = "<group>"; };
+		23F6F86CEB807580710A58C2 /* PasswordGeneratorSkill.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PasswordGeneratorSkill.swift; sourceTree = "<group>"; };
 		25595B2A2DACBF32C25598E6 /* iOSClawWidgetExtension.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = iOSClawWidgetExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		283CD90008D11942D3C5AE72 /* LocationMapView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationMapView.swift; sourceTree = "<group>"; };
 		29EDF0AABD473CD3FEAE585C /* AppState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppState.swift; sourceTree = "<group>"; };
@@ -147,6 +150,7 @@
 		EE946ED94A94BD4EC76A955D /* UnknownSkill.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UnknownSkill.swift; sourceTree = "<group>"; };
 		F1558EA8A85298EA80C91F20 /* TimelineViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimelineViewModel.swift; sourceTree = "<group>"; };
 		F8DC98337E771986CB495A63 /* ChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatView.swift; sourceTree = "<group>"; };
+		FA627A47035AAD4125262EB4 /* PomodoroSkill.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PomodoroSkill.swift; sourceTree = "<group>"; };
 		FACC25FE9941AA10BA6893EA /* GreetingSkill.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GreetingSkill.swift; sourceTree = "<group>"; };
 		FD7475206AF12DD9FDE4E568 /* PhotoMetadataService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotoMetadataService.swift; sourceTree = "<group>"; };
 		FDB27CEC9D33CCDF90C0F401 /* PrivateAIWidget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PrivateAIWidget.swift; sourceTree = "<group>"; };
@@ -223,7 +227,9 @@
 				0ACE818BAD02C2D8CBA59243 /* LocationSkill.swift */,
 				5D0677EAD4A98FD7B4BB601E /* MathSkill.swift */,
 				7DC0818F57D4D75FB86E927F /* MoodSkill.swift */,
+				23F6F86CEB807580710A58C2 /* PasswordGeneratorSkill.swift */,
 				9866A64E357AEC07B359C569 /* PhotoSkill.swift */,
+				FA627A47035AAD4125262EB4 /* PomodoroSkill.swift */,
 				492BC549B0855C78CEA7D1E7 /* ProfileSkill.swift */,
 				E0D30AC57225B6B7E6E63177 /* RandomDecisionSkill.swift */,
 				A0E0CB3253163E40232B6BB4 /* RecommendationSkill.swift */,
@@ -562,12 +568,14 @@
 				DA591A730D53CF3079AF1F88 /* MessageBubble.swift in Sources */,
 				D582284312622B63296DC0C5 /* MoodSkill.swift in Sources */,
 				D0F682968363DF65DCE52908 /* NotificationService.swift in Sources */,
+				6D2E2974EA9B5E60A66BCBB4 /* PasswordGeneratorSkill.swift in Sources */,
 				F4A751F258E406F00E96B0CC /* PersistenceController.swift in Sources */,
 				1CBE700BAE9C065E1DFCE259 /* PhotoIndexService.swift in Sources */,
 				31B4B740BF0E0D8FE7904BE4 /* PhotoMetadataService.swift in Sources */,
 				C02261E3D1741A5AB5880365 /* PhotoSearchResultView.swift in Sources */,
 				98D9FC941DE5E701DC0E557C /* PhotoSearchService.swift in Sources */,
 				7856E40D88C449A411CE64AA /* PhotoSkill.swift in Sources */,
+				4016A858DD3A5644FCCDDCF7 /* PomodoroSkill.swift in Sources */,
 				E524593459B21701FF78EA50 /* PrivateAI.xcdatamodeld in Sources */,
 				0D30AD56F5E48A735FD34A96 /* PrivateAIApp.swift in Sources */,
 				6C60D45ABA7261F2CE713B5F /* ProfileSkill.swift in Sources */,

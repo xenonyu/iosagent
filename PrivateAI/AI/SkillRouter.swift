@@ -27,7 +27,19 @@ enum QueryIntent {
     case math(expression: String)
     case unitConversion(value: Double, fromUnit: String, toUnit: String)
     case waterTrack(action: WaterAction, amount: Int)
+    case breathing(type: BreathingType)
     case unknown
+}
+
+// MARK: - Breathing Type
+
+enum BreathingType {
+    case calm478      // 4-7-8 technique (inhale 4, hold 7, exhale 8)
+    case boxBreathing // box breathing (4-4-4-4)
+    case deepBreath   // simple deep breathing
+    case energize     // energizing breath (quick inhale/exhale)
+    case sleepAid     // pre-sleep relaxation breathing
+    case overview     // show all available techniques
 }
 
 // MARK: - Date Time Query
@@ -96,6 +108,11 @@ struct SkillRouter {
         // --- Math / Calculator ---
         if let expr = parseMathExpression(lower, original: text) {
             return .math(expression: expr)
+        }
+
+        // --- Breathing / Relaxation ---
+        if let breathingType = parseBreathing(lower) {
+            return .breathing(type: breathingType)
         }
 
         // --- Greeting / Conversational ---
@@ -843,6 +860,48 @@ struct SkillRouter {
         }
 
         return nil
+    }
+
+    // MARK: - Breathing Parsing
+
+    /// Detects breathing exercise / relaxation queries.
+    private static func parseBreathing(_ text: String) -> BreathingType? {
+        guard containsAny(text, ["呼吸", "深呼吸", "冥想", "放松", "静心", "减压", "缓解压力",
+                                   "breathing", "breathe", "meditat", "relax", "calm down",
+                                   "焦虑", "紧张", "anxiety", "stress relief"]) else {
+            return nil
+        }
+
+        // 4-7-8 technique
+        if containsAny(text, ["478", "4-7-8", "四七八"]) {
+            return .calm478
+        }
+        // Box breathing
+        if containsAny(text, ["box", "方块", "箱式", "4444", "4-4-4-4"]) {
+            return .boxBreathing
+        }
+        // Sleep aid
+        if containsAny(text, ["睡前", "助眠", "睡不着", "失眠", "sleep", "insomnia", "入睡"]) {
+            return .sleepAid
+        }
+        // Energize
+        if containsAny(text, ["提神", "清醒", "精神", "energi", "wake up", "活力"]) {
+            return .energize
+        }
+        // Deep breath (specific request)
+        if containsAny(text, ["深呼吸", "deep breath"]) {
+            return .deepBreath
+        }
+        // If they mention relaxation/calm keywords
+        if containsAny(text, ["放松", "静心", "减压", "calm", "relax", "缓解", "焦虑", "紧张", "anxiety", "stress"]) {
+            return .calm478
+        }
+        // General breathing / meditation → show overview
+        if containsAny(text, ["呼吸", "冥想", "breathing", "meditat"]) {
+            return .overview
+        }
+
+        return .overview
     }
 
     static func containsAny(_ text: String, _ keywords: [String]) -> Bool {

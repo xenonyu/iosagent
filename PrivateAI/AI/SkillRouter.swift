@@ -386,7 +386,9 @@ struct SkillRouter {
         // --- Health Metrics ---
         if containsAny(lower, ["睡眠", "睡了", "睡得", "睡觉", "入睡", "失眠", "熬夜", "早睡", "晚睡",
                                 "心率", "血压", "卡路里", "热量", "千卡", "大卡", "健康", "血氧", "脉搏",
-                                "身体", "体质", "体能", "精力", "活力", "身体状况",
+                                "身体", "体质", "体能", "精力", "活力", "身体状况", "恢复",
+                                "能运动吗", "适合运动", "能不能练", "能锻炼", "适合锻炼",
+                                "精神", "体力", "recovery", "readiness",
                                 "HRV", "hrv", "心率变异", "静息心率",
                                 "爬楼", "楼层", "爬了多少", "几层楼", "爬了几", "几层",
                                 "flights", "climbed",
@@ -736,6 +738,9 @@ struct SkillRouter {
         if containsAny(text, ["多远", "距离", "公里", "几公里", "distance", "km", "far"]) { return "distance" }
         if containsAny(text, ["体重", "多重", "几斤", "几公斤", "多少斤", "瘦了", "胖了",
                                "增重", "减重", "称重", "weight", "body mass", "weigh"]) { return "weight" }
+        if containsAny(text, ["恢复", "精力", "精神", "活力", "体力", "状态好不好",
+                               "能运动", "适合运动", "能不能练", "能锻炼", "适合锻炼",
+                               "recovery", "readiness", "energy level", "ready to train"]) { return "recovery" }
         return "general"
     }
 

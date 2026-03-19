@@ -255,6 +255,8 @@ struct HealthSkill: ClawSkill {
                 respondDistance(summaries: withData, range: range, completion: completion)
             case "calories":
                 respondCalories(summaries: withData, range: range, completion: completion)
+            case "recovery":
+                respondRecovery(summaries: allSummaries, todaySummaries: withData, context: context, completion: completion)
             default:
                 respondOverview(summaries: withData, range: range, completion: completion)
             }
@@ -1187,6 +1189,273 @@ struct HealthSkill: ClawSkill {
                         lines.append("💪 同期日均运动 \(Int(avgExercise)) 分钟，运动配合减重效果不错！")
                     } else if change > 0 && avgExercise < 15 {
                         lines.append("💡 同期运动较少（日均 \(Int(avgExercise)) 分钟），增加运动量可能有帮助。")
+                    }
+                }
+            }
+
+            completion(lines.joined(separator: "\n"))
+        }
+    }
+
+    // MARK: - Recovery Readiness
+
+    /// Synthesizes HRV, sleep quality, resting HR, and recent training load into
+    /// a single "recovery readiness" score (0-100) with actionable training advice.
+    /// Uses today's data compared against the user's own 7-day baseline — not
+    /// population averages — so the insight is truly personal.
+    private func respondRecovery(summaries: [HealthSummary], todaySummaries: [HealthSummary],
+                                 context: SkillContext, completion: @escaping (String) -> Void) {
+        // Fetch 7 days of data for personal baseline comparison
+        context.healthService.fetchSummaries(days: 7) { weekSummaries in
+            let today = todaySummaries.first ?? weekSummaries.sorted(by: { $0.date > $1.date }).first
+            let baseline = weekSummaries.filter { $0.hasData }
+
+            guard let today = today, !baseline.isEmpty else {
+                completion("🔋 暂无足够的健康数据来评估恢复状态。\n请确保已开启健康权限，佩戴 Apple Watch 可提供更精准的恢复分析。")
+                return
+            }
+
+            var lines: [String] = ["🔋 今日恢复状态分析\n"]
+
+            var totalScore: Double = 0
+            var maxPossible: Double = 0
+            var dimensions: [(name: String, emoji: String, score: Int, maxScore: Int, detail: String)] = []
+
+            // --- 1. Sleep Recovery (35 pts) ---
+            maxPossible += 35
+            if today.sleepHours > 0 {
+                var sleepScore: Double = 0
+                let sleepDays = baseline.filter { $0.sleepHours > 0 }
+                let avgSleep = sleepDays.isEmpty ? 7.5 : sleepDays.reduce(0) { $0 + $1.sleepHours } / Double(sleepDays.count)
+
+                // Duration adequacy (20 pts): peak at 7-9h
+                if today.sleepHours >= 7 && today.sleepHours <= 9 {
+                    sleepScore += 20
+                } else if today.sleepHours >= 6 {
+                    sleepScore += 20 * (today.sleepHours - 5) / 2
+                } else if today.sleepHours > 9 && today.sleepHours <= 10 {
+                    sleepScore += 20 * (10 - today.sleepHours)
+                } else {
+                    sleepScore += 5
+                }
+
+                // Deep sleep bonus (15 pts) — the most restorative phase
+                if today.hasSleepPhases {
+                    let phaseTotal = today.sleepDeepHours + today.sleepREMHours + today.sleepCoreHours
+                    if phaseTotal > 0 {
+                        let deepPct = today.sleepDeepHours / phaseTotal * 100
+                        if deepPct >= 15 && deepPct <= 25 {
+                            sleepScore += 15
+                        } else if deepPct >= 10 {
+                            sleepScore += 10
+                        } else {
+                            sleepScore += 5
+                        }
+                    }
+                } else {
+                    // No phase data — use duration ratio to baseline
+                    sleepScore += today.sleepHours >= avgSleep ? 12 : 7
+                }
+
+                totalScore += sleepScore
+                let sleepDetail: String
+                if today.hasSleepPhases {
+                    sleepDetail = "\(String(format: "%.1f", today.sleepHours))h（深睡 \(String(format: "%.1f", today.sleepDeepHours))h）"
+                } else {
+                    sleepDetail = "\(String(format: "%.1f", today.sleepHours))h"
+                }
+                dimensions.append(("睡眠恢复", "😴", Int(sleepScore), 35, sleepDetail))
+            } else {
+                // No sleep data — give partial credit
+                totalScore += 15
+                dimensions.append(("睡眠恢复", "😴", 15, 35, "无数据"))
+            }
+
+            // --- 2. HRV Status (30 pts) — best single recovery indicator ---
+            maxPossible += 30
+            let hrvDays = baseline.filter { $0.hrv > 0 }
+            if today.hrv > 0 && !hrvDays.isEmpty {
+                let avgHRV = hrvDays.reduce(0) { $0 + $1.hrv } / Double(hrvDays.count)
+                let ratio = today.hrv / avgHRV
+
+                var hrvScore: Double = 0
+                if ratio >= 1.1 {
+                    hrvScore = 30  // Above baseline — excellent recovery
+                } else if ratio >= 0.95 {
+                    hrvScore = 25  // At baseline — good
+                } else if ratio >= 0.8 {
+                    hrvScore = 18  // Slightly below — moderate
+                } else if ratio >= 0.65 {
+                    hrvScore = 10  // Significantly below — poor
+                } else {
+                    hrvScore = 5   // Very low — body under stress
+                }
+
+                totalScore += hrvScore
+                let pctChange = Int((ratio - 1) * 100)
+                let pctStr = pctChange >= 0 ? "+\(pctChange)%" : "\(pctChange)%"
+                dimensions.append(("心率变异性", "📳", Int(hrvScore), 30, "\(Int(today.hrv)) ms（vs 基线 \(Int(avgHRV)) ms, \(pctStr)）"))
+            } else if today.hrv > 0 {
+                // HRV available but no baseline yet
+                var hrvScore: Double = 0
+                if today.hrv >= 50 { hrvScore = 25 }
+                else if today.hrv >= 30 { hrvScore = 18 }
+                else { hrvScore = 10 }
+                totalScore += hrvScore
+                dimensions.append(("心率变异性", "📳", Int(hrvScore), 30, "\(Int(today.hrv)) ms（基线建立中）"))
+            } else {
+                totalScore += 15
+                dimensions.append(("心率变异性", "📳", 15, 30, "无数据（需要 Apple Watch）"))
+            }
+
+            // --- 3. Resting HR (20 pts) — elevated RHR signals incomplete recovery ---
+            maxPossible += 20
+            let rhrDays = baseline.filter { $0.restingHeartRate > 0 }
+            if today.restingHeartRate > 0 && !rhrDays.isEmpty {
+                let avgRHR = rhrDays.reduce(0) { $0 + $1.restingHeartRate } / Double(rhrDays.count)
+                let diff = today.restingHeartRate - avgRHR
+
+                var rhrScore: Double = 0
+                if diff <= -2 {
+                    rhrScore = 20  // Lower than baseline — great recovery
+                } else if diff <= 2 {
+                    rhrScore = 17  // At baseline — normal
+                } else if diff <= 5 {
+                    rhrScore = 10  // Slightly elevated — incomplete recovery
+                } else {
+                    rhrScore = 4   // Elevated — body stressed
+                }
+
+                totalScore += rhrScore
+                let diffStr: String
+                if abs(diff) < 1 { diffStr = "与基线持平" }
+                else if diff > 0 { diffStr = "比基线高 \(Int(diff)) BPM" }
+                else { diffStr = "比基线低 \(Int(-diff)) BPM" }
+                dimensions.append(("静息心率", "🫀", Int(rhrScore), 20, "\(Int(today.restingHeartRate)) BPM（\(diffStr)）"))
+            } else if today.restingHeartRate > 0 {
+                var rhrScore: Double = 0
+                if today.restingHeartRate <= 65 { rhrScore = 18 }
+                else if today.restingHeartRate <= 75 { rhrScore = 14 }
+                else { rhrScore = 8 }
+                totalScore += rhrScore
+                dimensions.append(("静息心率", "🫀", Int(rhrScore), 20, "\(Int(today.restingHeartRate)) BPM"))
+            } else {
+                totalScore += 10
+                dimensions.append(("静息心率", "🫀", 10, 20, "无数据（需要 Apple Watch）"))
+            }
+
+            // --- 4. Training Load (15 pts) — recent exercise volume affects recovery need ---
+            maxPossible += 15
+            let recentExercise = baseline.suffix(3).reduce(0) { $0 + $1.exerciseMinutes }
+            let avgDailyExercise = baseline.reduce(0) { $0 + $1.exerciseMinutes } / Double(max(baseline.count, 1))
+
+            var loadScore: Double = 0
+            if recentExercise == 0 && avgDailyExercise == 0 {
+                loadScore = 12  // No training data — assume rested
+            } else {
+                let recent3DayAvg = recentExercise / 3.0
+                let loadRatio = avgDailyExercise > 0 ? recent3DayAvg / avgDailyExercise : 1.0
+
+                if loadRatio <= 0.5 {
+                    loadScore = 15  // Light recent training — well rested
+                } else if loadRatio <= 1.0 {
+                    loadScore = 12  // Normal training load
+                } else if loadRatio <= 1.5 {
+                    loadScore = 8   // Above-average load — some fatigue
+                } else {
+                    loadScore = 4   // Heavy recent training — likely fatigued
+                }
+            }
+            totalScore += loadScore
+
+            let loadDetail: String
+            if recentExercise > 0 {
+                loadDetail = "近3天均 \(Int(recentExercise / 3)) 分钟（周均 \(Int(avgDailyExercise)) 分钟）"
+            } else {
+                loadDetail = "近期无运动记录"
+            }
+            dimensions.append(("训练负荷", "🏋️", Int(loadScore), 15, loadDetail))
+
+            // --- Composite Score ---
+            let finalScore = maxPossible > 0 ? Int(totalScore / maxPossible * 100) : 50
+
+            // Score display with visual bar
+            let barFilled = max(1, finalScore / 10)
+            let barEmpty = 10 - barFilled
+            let barStr = String(repeating: "▓", count: barFilled) + String(repeating: "░", count: barEmpty)
+
+            let scoreEmoji: String
+            let readiness: String
+            if finalScore >= 85 {
+                scoreEmoji = "🟢"
+                readiness = "恢复充分"
+            } else if finalScore >= 70 {
+                scoreEmoji = "🟢"
+                readiness = "恢复良好"
+            } else if finalScore >= 55 {
+                scoreEmoji = "🟡"
+                readiness = "恢复中等"
+            } else if finalScore >= 40 {
+                scoreEmoji = "🟠"
+                readiness = "恢复不足"
+            } else {
+                scoreEmoji = "🔴"
+                readiness = "需要休息"
+            }
+
+            lines.append("\(scoreEmoji) 恢复指数：\(finalScore) / 100 — \(readiness)")
+            lines.append("   \(barStr)")
+
+            // Dimension breakdown
+            lines.append("")
+            for dim in dimensions {
+                let dimBar = max(1, dim.score * 5 / dim.maxScore)
+                let dimBarStr = String(repeating: "●", count: dimBar) + String(repeating: "○", count: 5 - dimBar)
+                lines.append("\(dim.emoji) \(dim.name) \(dimBarStr) \(dim.score)/\(dim.maxScore)")
+                lines.append("   \(dim.detail)")
+            }
+
+            // --- Training Recommendation ---
+            lines.append("")
+            lines.append("💡 训练建议")
+            if finalScore >= 85 {
+                lines.append("身体恢复充分，今天适合高强度训练！")
+                lines.append("可以挑战：间歇跑、HIIT、力量训练、速度训练")
+            } else if finalScore >= 70 {
+                lines.append("状态不错，适合中高强度训练。")
+                lines.append("推荐：稳态有氧、常规力量训练、球类运动")
+            } else if finalScore >= 55 {
+                lines.append("身体还在恢复，建议中低强度活动。")
+                lines.append("推荐：轻松慢跑、瑜伽、散步、拉伸")
+            } else if finalScore >= 40 {
+                lines.append("恢复不足，今天以轻度活动为主。")
+                lines.append("推荐：散步、轻度拉伸、冥想，避免高强度运动")
+            } else {
+                lines.append("身体需要休息，建议今天以恢复为主。")
+                lines.append("推荐：充足睡眠、轻度散步、放松活动")
+                lines.append("如果持续多天恢复不佳，请留意是否有过度训练或生活压力。")
+            }
+
+            // --- Trend if we have multi-day recovery data ---
+            if baseline.count >= 4 {
+                let recentDays = baseline.sorted { $0.date > $1.date }.prefix(3)
+                let olderDays = baseline.sorted { $0.date > $1.date }.suffix(from: min(3, baseline.count))
+
+                let recentHRV = recentDays.filter { $0.hrv > 0 }
+                let olderHRV = olderDays.filter { $0.hrv > 0 }
+
+                if recentHRV.count >= 2 && olderHRV.count >= 2 {
+                    let recentAvgHRV = recentHRV.reduce(0) { $0 + $1.hrv } / Double(recentHRV.count)
+                    let olderAvgHRV = olderHRV.reduce(0) { $0 + $1.hrv } / Double(olderHRV.count)
+                    let trendDiff = recentAvgHRV - olderAvgHRV
+
+                    if abs(trendDiff) >= 5 {
+                        lines.append("")
+                        if trendDiff > 0 {
+                            lines.append("📈 恢复趋势向好：近几天 HRV 上升 \(Int(trendDiff)) ms，身体在逐步恢复。")
+                        } else {
+                            lines.append("📉 恢复趋势下降：近几天 HRV 下降 \(Int(-trendDiff)) ms，注意休息和压力管理。")
+                        }
                     }
                 }
             }

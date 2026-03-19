@@ -5,6 +5,8 @@ struct ChatView: View {
     @Namespace private var bottomID
     @FocusState private var inputFocused: Bool
     @State private var isAtBottom: Bool = true
+    /// Tracks the message count to determine which messages should animate (only new ones).
+    @State private var previousMessageCount: Int = 0
 
     var body: some View {
         NavigationStack {
@@ -14,8 +16,8 @@ struct ChatView: View {
                     ZStack(alignment: .bottomTrailing) {
                     ScrollView {
                         LazyVStack(spacing: 12) {
-                            ForEach(viewModel.messages) { message in
-                                MessageBubble(message: message)
+                            ForEach(Array(viewModel.messages.enumerated()), id: \.element.id) { index, message in
+                                MessageBubble(message: message, animated: index >= previousMessageCount)
                                     .id(message.id)
                             }
 
@@ -66,9 +68,13 @@ struct ChatView: View {
                     }
                     .scrollDismissesKeyboard(.interactively)
                     .onTapGesture { inputFocused = false }
-                    .onReceive(viewModel.$messages) { _ in
+                    .onReceive(viewModel.$messages) { msgs in
                         withAnimation(.easeOut(duration: 0.3)) {
                             proxy.scrollTo(bottomID, anchor: .bottom)
+                        }
+                        // Update count after animation so only new messages animate in
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                            previousMessageCount = msgs.count
                         }
                     }
                     .onReceive(viewModel.$isThinking) { _ in
@@ -99,6 +105,8 @@ struct ChatView: View {
                     isListening: viewModel.isListening,
                     isFocused: $inputFocused,
                     onSend: {
+                        let impact = UIImpactFeedbackGenerator(style: .light)
+                        impact.impactOccurred()
                         viewModel.sendMessage()
                         inputFocused = false
                     },

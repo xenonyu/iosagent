@@ -2,7 +2,9 @@ import SwiftUI
 
 struct MessageBubble: View {
     let message: ChatMessage
+    var animated: Bool = false
     @State private var showCopied = false
+    @State private var appeared = false
 
     var body: some View {
         HStack(alignment: .bottom, spacing: 8) {
@@ -12,6 +14,14 @@ struct MessageBubble: View {
             } else {
                 aiBubble
                 Spacer(minLength: 60)
+            }
+        }
+        .opacity(animated && !appeared ? 0 : 1)
+        .offset(y: animated && !appeared ? 16 : 0)
+        .onAppear {
+            guard animated, !appeared else { return }
+            withAnimation(.spring(response: 0.4, dampingFraction: 0.75)) {
+                appeared = true
             }
         }
     }

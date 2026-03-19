@@ -107,12 +107,6 @@ final class ChatViewModel: ObservableObject {
         let intent = SkillRouter.parse(text)
         lastIntent = intent
 
-        // Photo search has dedicated UI handling
-        if case .photoSearch(let query) = intent {
-            handlePhotoSearch(query: query)
-            return
-        }
-
         // For known intents, handle locally via ClawEngine skills
         if !intent.isUnknown {
             engine.respond(to: text, preResolvedIntent: intent) { [weak self] response in

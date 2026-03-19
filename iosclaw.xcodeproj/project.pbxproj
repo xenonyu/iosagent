@@ -80,6 +80,7 @@
 		E81CDB4DE8DFE9297B1AE31B /* ProfileViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 12D2D7E53A79547B6F578CE6 /* ProfileViewModel.swift */; };
 		ECA0E8397A24F75986C80858 /* AppShortcuts.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3BD92C14F914FE6FA9523FAD /* AppShortcuts.swift */; };
 		F4A751F258E406F00E96B0CC /* PersistenceController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F94565A3BA37E7BA8CD84C2 /* PersistenceController.swift */; };
+		F4DABE71C84520810539E0C1 /* LunarCalendarSkill.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00D71AB9BB3C9F23276CA997 /* LunarCalendarSkill.swift */; };
 		F839C680EC0AFBFDA96B977D /* EventKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = C9E2B3C0F07557EC3D264638 /* EventKit.framework */; };
 		F915198557E5E945EB498F92 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B21481B5C58FF290408F4020 /* Assets.xcassets */; };
 		FB9010CD507564F884C9E8C5 /* CoreDataExtensions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 962026D3B009BC4C4A574862 /* CoreDataExtensions.swift */; };
@@ -87,6 +88,7 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		00D71AB9BB3C9F23276CA997 /* LunarCalendarSkill.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LunarCalendarSkill.swift; sourceTree = "<group>"; };
 		0624FDC274E59C094C592A70 /* TimelineView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimelineView.swift; sourceTree = "<group>"; };
 		0ACE818BAD02C2D8CBA59243 /* LocationSkill.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationSkill.swift; sourceTree = "<group>"; };
 		0F796E57D97A09EC743748D0 /* ExpenseSkill.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExpenseSkill.swift; sourceTree = "<group>"; };
@@ -241,6 +243,7 @@
 				521E0A5E81B31CB156CA8448 /* HabitSkill.swift */,
 				1C1BB503360544C933017A41 /* HealthSkill.swift */,
 				0ACE818BAD02C2D8CBA59243 /* LocationSkill.swift */,
+				00D71AB9BB3C9F23276CA997 /* LunarCalendarSkill.swift */,
 				5D0677EAD4A98FD7B4BB601E /* MathSkill.swift */,
 				7DC0818F57D4D75FB86E927F /* MoodSkill.swift */,
 				2DC2346D0A12850056702ADC /* NoteSkill.swift */,
@@ -586,6 +589,7 @@
 				1629AC2683D0413511958C4D /* LocationMapView.swift in Sources */,
 				88BF0113CDE5D81000730AD6 /* LocationService.swift in Sources */,
 				D4C5DBC76AB359E124BC3776 /* LocationSkill.swift in Sources */,
+				F4DABE71C84520810539E0C1 /* LunarCalendarSkill.swift in Sources */,
 				C6EE0A77CF47DF827278DE18 /* MainTabView.swift in Sources */,
 				5548A4F9F8B9B9B3780BC82E /* MathSkill.swift in Sources */,
 				DA591A730D53CF3079AF1F88 /* MessageBubble.swift in Sources */,

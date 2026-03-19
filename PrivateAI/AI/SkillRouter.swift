@@ -416,6 +416,15 @@ struct SkillRouter {
             return .photoSearch(query: text)
         }
 
+        // --- Photo Search (location + photo context) ---
+        if containsAny(lower, ["照片", "拍的", "photo"]) &&
+           containsAny(lower, ["在北京", "在上海", "在广州", "在深圳", "在杭州", "在成都",
+                                "在南京", "在西安", "在重庆", "在武汉", "在厦门", "在三亚",
+                                "在东京", "在巴黎", "在纽约", "在伦敦", "海边", "山上",
+                                "收藏", "喜欢", "最爱"]) {
+            return .photoSearch(query: text)
+        }
+
         // --- Photos (stats) ---
         if containsAny(lower, ["照片", "拍了", "拍过", "图片", "相册", "记录了几张",
                                 "photo", "picture", "shot", "camera", "image"]) {

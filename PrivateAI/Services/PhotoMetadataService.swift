@@ -1,5 +1,6 @@
 import Foundation
 import Photos
+import CoreLocation
 
 /// Reads only photo metadata (date + location). Never reads image content.
 /// No photos are uploaded or stored — only date/coordinate summaries.
@@ -86,6 +87,90 @@ final class PhotoMetadataService: ObservableObject {
             counts[day, default: 0] += 1
         }
         return counts
+    }
+
+    // MARK: - Location-Based Search
+
+    /// Fetches photos near a given coordinate within a radius (meters).
+    func fetchNearby(latitude: Double, longitude: Double, radiusMeters: Double = 50_000,
+                     from: Date? = nil, to: Date? = nil, limit: Int = 200) -> [PhotoMetadataItem] {
+        guard isAuthorized else { return [] }
+
+        let options = PHFetchOptions()
+        var predicateFormat = "creationDate != nil"
+        var args: [Any] = []
+
+        if let from = from {
+            predicateFormat += " AND creationDate >= %@"
+            args.append(from as NSDate)
+        }
+        if let to = to {
+            predicateFormat += " AND creationDate <= %@"
+            args.append(to as NSDate)
+        }
+
+        options.predicate = NSPredicate(format: predicateFormat, argumentArray: args)
+        options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
+
+        let results = PHAsset.fetchAssets(with: .image, options: options)
+        var items: [PhotoMetadataItem] = []
+
+        let center = CLLocation(latitude: latitude, longitude: longitude)
+
+        results.enumerateObjects { asset, _, stop in
+            guard let loc = asset.location else { return }
+            let dist = loc.distance(from: center)
+            if dist <= radiusMeters {
+                items.append(PhotoMetadataItem(
+                    id: asset.localIdentifier,
+                    date: asset.creationDate ?? Date(),
+                    latitude: loc.coordinate.latitude,
+                    longitude: loc.coordinate.longitude,
+                    isFavorite: asset.isFavorite
+                ))
+            }
+            // Stop after scanning enough assets to avoid excessive enumeration
+            if items.count >= limit { stop.pointee = true }
+        }
+
+        return items
+    }
+
+    /// Fetches only favorited photos in a date range.
+    func fetchFavorites(from: Date? = nil, to: Date? = nil, limit: Int = 100) -> [PhotoMetadataItem] {
+        guard isAuthorized else { return [] }
+
+        let options = PHFetchOptions()
+        var predicateFormat = "isFavorite == YES"
+        var args: [Any] = []
+
+        if let from = from {
+            predicateFormat += " AND creationDate >= %@"
+            args.append(from as NSDate)
+        }
+        if let to = to {
+            predicateFormat += " AND creationDate <= %@"
+            args.append(to as NSDate)
+        }
+
+        options.predicate = NSPredicate(format: predicateFormat, argumentArray: args)
+        options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
+        options.fetchLimit = limit
+
+        let results = PHAsset.fetchAssets(with: .image, options: options)
+        var items: [PhotoMetadataItem] = []
+
+        results.enumerateObjects { asset, _, _ in
+            items.append(PhotoMetadataItem(
+                id: asset.localIdentifier,
+                date: asset.creationDate ?? Date(),
+                latitude: asset.location?.coordinate.latitude,
+                longitude: asset.location?.coordinate.longitude,
+                isFavorite: asset.isFavorite
+            ))
+        }
+
+        return items
     }
 }
 

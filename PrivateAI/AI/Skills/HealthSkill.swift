@@ -302,7 +302,10 @@ struct HealthSkill: ClawSkill {
         if !bedDays.isEmpty {
             let avgInBed = bedDays.reduce(0) { $0 + $1.inBedHours } / Double(bedDays.count)
             let avgAsleep = bedDays.reduce(0) { $0 + $1.sleepHours } / Double(bedDays.count)
-            let totalBedTime = avgInBed + avgAsleep // inBed is the awake-in-bed portion
+            // HealthKit's .inBed can represent either:
+            // 1. Total bed time (Apple Watch) — sleep stages are subsets, so inBed >= sleep
+            // 2. Only awake-in-bed time (some third-party apps) — inBed < sleep
+            let totalBedTime = avgInBed >= avgAsleep ? avgInBed : avgInBed + avgAsleep
             if totalBedTime > 0 {
                 let efficiency = (avgAsleep / totalBedTime) * 100
                 lines.append("")
@@ -491,7 +494,8 @@ struct HealthSkill: ClawSkill {
         if !bedDays.isEmpty {
             let avgInBed = bedDays.reduce(0) { $0 + $1.inBedHours } / Double(bedDays.count)
             let avgAsleep = bedDays.reduce(0) { $0 + $1.sleepHours } / Double(bedDays.count)
-            let totalBed = avgInBed + avgAsleep
+            // Handle both Apple Watch (inBed = total bed time) and third-party apps (inBed = awake only)
+            let totalBed = avgInBed >= avgAsleep ? avgInBed : avgInBed + avgAsleep
             if totalBed > 0 {
                 let eff = avgAsleep / totalBed
                 if eff >= 0.9 { score += 20 }

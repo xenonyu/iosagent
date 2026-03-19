@@ -745,12 +745,14 @@ struct SkillRouter {
         let timeKeywords = [
             "今天", "昨天", "前天", "大前天", "明天", "后天", "大后天",
             "这周", "本周", "上周", "上上周", "下周",
+            "周末", "这个周末", "本周末", "上周末", "下周末",
             "这个月", "本月", "上个月", "下个月", "下月",
             "今年", "最近", "近期",
             // Relative day patterns: "5天前", "3天内", "过去五天"
             "天前", "天内", "天里", "过去",
             "today", "yesterday", "tomorrow",
             "this week", "last week", "next week",
+            "weekend", "this weekend", "next weekend", "last weekend",
             "this month", "last month",
             "recently", "lately",
             "days ago", "past"
@@ -803,6 +805,13 @@ struct SkillRouter {
         if containsAny(text, ["后天", "day after tomorrow"]) { return .dayAfterTomorrow }
         if containsAny(text, ["明天", "tomorrow"]) { return .tomorrow }
         if containsAny(text, ["下周", "下个星期", "下星期", "next week"]) { return .nextWeek }
+        // Weekend ranges — must check before "这周"/"上周" since "周末" contains "周"
+        // "下个周末", "下周末" → next weekend
+        if containsAny(text, ["下个周末", "下周末", "next weekend"]) { return .nextWeekend }
+        // "上个周末", "上周末" → last weekend
+        if containsAny(text, ["上个周末", "上周末", "last weekend"]) { return .lastWeekend }
+        // "这个周末", "这周末", "本周末", "周末" → this weekend
+        if containsAny(text, ["这个周末", "这周末", "本周末", "周末", "this weekend", "weekend"]) { return .thisWeekend }
         // Present
         if containsAny(text, ["今天", "today"]) { return .today }
         // Past ranges

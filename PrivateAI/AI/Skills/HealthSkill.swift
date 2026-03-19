@@ -4415,16 +4415,6 @@ struct HealthSkill: ClawSkill {
         }
     }
 
-    /// Format minutes into short duration string.
-    private static func formatDurationShort(_ minutes: Double) -> String {
-        if minutes >= 60 {
-            let h = Int(minutes) / 60
-            let m = Int(minutes) % 60
-            return m > 0 ? "\(h)h\(m)m" : "\(h)h"
-        }
-        return "\(Int(minutes))m"
-    }
-
     // MARK: - Helpers
 
     /// Builds a human-readable header label for the comparison period.

@@ -328,6 +328,12 @@ enum QueryTimeRange: Equatable {
     case specificDate(Date)
     /// A relative range of N days ending at now (e.g. "最近3天", "过去5天")
     case recentDays(Int)
+    /// This weekend (Saturday + Sunday of the current week)
+    case thisWeekend
+    /// Next weekend (Saturday + Sunday of next week)
+    case nextWeekend
+    /// Last weekend (Saturday + Sunday of last week)
+    case lastWeekend
 
     var interval: DateInterval {
         let cal = Calendar.current
@@ -388,13 +394,52 @@ enum QueryTimeRange: Equatable {
         case .recentDays(let n):
             let start = cal.date(byAdding: .day, value: -n, to: todayStart)!
             return DateInterval(start: start, end: now)
+        case .thisWeekend:
+            let sat = Self.weekendSaturday(for: now, offset: 0)
+            let mon = cal.date(byAdding: .day, value: 2, to: sat)!
+            return DateInterval(start: sat, end: mon)
+        case .nextWeekend:
+            let sat = Self.weekendSaturday(for: now, offset: 1)
+            let mon = cal.date(byAdding: .day, value: 2, to: sat)!
+            return DateInterval(start: sat, end: mon)
+        case .lastWeekend:
+            let sat = Self.weekendSaturday(for: now, offset: -1)
+            let mon = cal.date(byAdding: .day, value: 2, to: sat)!
+            return DateInterval(start: sat, end: mon)
         }
+    }
+
+    /// Returns the start-of-day Saturday for the weekend in the given week offset.
+    /// offset: 0 = this week, 1 = next week, -1 = last week.
+    private static func weekendSaturday(for date: Date, offset: Int) -> Date {
+        let cal = Calendar.current
+        let todayStart = cal.startOfDay(for: date)
+        let weekday = cal.component(.weekday, from: todayStart) // 1=Sun, 7=Sat
+        // Days until Saturday: Saturday is weekday 7
+        let daysUntilSat = (7 - weekday + 7) % 7
+        // If today is Sunday (weekday==1), "this weekend" means yesterday (Sat) + today (Sun)
+        // So we go back to the most recent Saturday
+        let thisSat: Date
+        if weekday == 7 {
+            // Today IS Saturday
+            thisSat = todayStart
+        } else if weekday == 1 {
+            // Today is Sunday — "this weekend" = yesterday (Sat) + today
+            thisSat = cal.date(byAdding: .day, value: -1, to: todayStart)!
+        } else {
+            // Weekday Mon-Fri — "this weekend" = upcoming Saturday
+            thisSat = cal.date(byAdding: .day, value: daysUntilSat, to: todayStart)!
+        }
+        return cal.date(byAdding: .day, value: offset * 7, to: thisSat)!
     }
 
     /// Whether this range represents a future time period.
     var isFuture: Bool {
         switch self {
-        case .tomorrow, .dayAfterTomorrow, .nextWeek, .nextMonth: return true
+        case .tomorrow, .dayAfterTomorrow, .nextWeek, .nextMonth, .nextWeekend: return true
+        case .thisWeekend:
+            // Future if the weekend hasn't ended yet
+            return interval.end > Date()
         case .specificDate(let date):
             return date > Calendar.current.startOfDay(for: Date())
         case .recentDays: return false
@@ -423,6 +468,12 @@ enum QueryTimeRange: Equatable {
             return fmt.string(from: date)
         case .recentDays(let n):
             return "最近\(n)天"
+        case .thisWeekend:
+            return "这个周末"
+        case .nextWeekend:
+            return "下个周末"
+        case .lastWeekend:
+            return "上个周末"
         }
     }
 }

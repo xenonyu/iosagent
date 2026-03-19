@@ -163,6 +163,7 @@ struct CalendarSkill: ClawSkill {
     /// `.today` → start of today … end of today (not "now")
     /// `.thisWeek` → start of week … end of week (not "now")
     /// `.thisMonth` → start of month … end of month (not "now")
+    /// `.thisWeekend` → Saturday 00:00 … Monday 00:00 (full weekend, not truncated at "now")
     /// Other ranges (yesterday, lastWeek, tomorrow, etc.) are already correct.
     private func calendarInterval(for range: QueryTimeRange) -> DateInterval {
         let cal = Calendar.current
@@ -183,6 +184,11 @@ struct CalendarSkill: ClawSkill {
             let monthStart = cal.date(from: monthComps)!
             let nextMonth = cal.date(byAdding: .month, value: 1, to: monthStart)!
             return DateInterval(start: monthStart, end: nextMonth)
+        case .thisWeekend, .nextWeekend, .lastWeekend:
+            // Weekend intervals are already computed as full Sat-Mon ranges in QueryTimeRange,
+            // but .thisWeekend.interval truncates at "now" if we're still in the weekend.
+            // Use the range.interval directly — it already covers Sat 00:00 to Mon 00:00.
+            return range.interval
         default:
             return range.interval
         }

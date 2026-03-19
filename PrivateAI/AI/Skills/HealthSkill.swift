@@ -232,6 +232,8 @@ struct HealthSkill: ClawSkill {
                 respondFlights(summaries: withData, range: range, completion: completion)
             case "distance":
                 respondDistance(summaries: withData, range: range, completion: completion)
+            case "calories":
+                respondCalories(summaries: withData, range: range, completion: completion)
             default:
                 respondOverview(summaries: withData, range: range, completion: completion)
             }
@@ -710,6 +712,138 @@ struct HealthSkill: ClawSkill {
                     lines.append("📉 步行距离有所下降（\(Int(pct))%），试试换条新路线散步？")
                 }
             }
+        }
+
+        completion(lines.joined(separator: "\n"))
+    }
+
+    // MARK: - Calories (Active Energy)
+
+    private func respondCalories(summaries: [HealthSummary], range: QueryTimeRange, completion: @escaping (String) -> Void) {
+        let calDays = summaries.filter { $0.activeCalories > 0 }
+        guard !calDays.isEmpty else {
+            completion("🔥 \(range.label)暂无热量消耗数据。\n开启健康权限后可以自动追踪每日活动消耗。")
+            return
+        }
+
+        let cal = Calendar.current
+        var lines: [String] = ["🔥 \(range.label)的热量消耗分析\n"]
+
+        let total = calDays.reduce(0) { $0 + $1.activeCalories }
+        let avg = total / Double(calDays.count)
+        let best = calDays.max(by: { $0.activeCalories < $1.activeCalories })!
+        let worst = calDays.min(by: { $0.activeCalories < $1.activeCalories })!
+
+        // Core metrics
+        lines.append("🔥 总活动消耗：\(Int(total).formatted()) 千卡")
+        lines.append("📊 日均消耗：\(Int(avg).formatted()) 千卡")
+
+        if calDays.count > 1 {
+            let fmt = DateFormatter()
+            fmt.dateFormat = "M月d日(E)"
+            fmt.locale = Locale(identifier: "zh_CN")
+            lines.append("🏆 最多的一天：\(fmt.string(from: best.date))  \(Int(best.activeCalories).formatted()) 千卡")
+            lines.append("📉 最少的一天：\(fmt.string(from: worst.date))  \(Int(worst.activeCalories).formatted()) 千卡")
+        }
+
+        // Goal analysis (Apple Watch default ring: 500 kcal active, adjustable)
+        let goalKcal = 500.0
+        let goalDays = calDays.filter { $0.activeCalories >= goalKcal }.count
+        let goalRate = Double(goalDays) / Double(calDays.count) * 100
+        lines.append("\n🎯 达标天数（≥\(Int(goalKcal))千卡）：\(goalDays)/\(calDays.count) 天（\(Int(goalRate))%）")
+
+        if goalRate >= 80 {
+            lines.append("   太棒了！大部分时间都合环了 🏅")
+        } else if goalRate >= 50 {
+            lines.append("   过半天数达标，保持这个节奏 💪")
+        } else if avg >= 300 {
+            lines.append("   每天再多活动一点就能合环了，加油！")
+        } else {
+            lines.append("   活动消耗偏少，从每天多走 15 分钟开始？")
+        }
+
+        // Calorie source breakdown: correlate with exercise and steps
+        let exerciseDays = calDays.filter { $0.exerciseMinutes > 0 }
+        if !exerciseDays.isEmpty {
+            let totalExMin = exerciseDays.reduce(0) { $0 + $1.exerciseMinutes }
+            let totalExCal = exerciseDays.reduce(0) { $0 + $1.activeCalories }
+            if totalExMin > 0 {
+                let calPerMin = totalExCal / totalExMin
+                lines.append("\n⏱ 运动效率：日均 \(Int(totalExMin / Double(calDays.count))) 分钟运动")
+                lines.append("   每分钟运动约消耗 \(String(format: "%.1f", calPerMin)) 千卡")
+            }
+        }
+
+        // Weekday vs weekend pattern
+        if calDays.count >= 5 {
+            let weekdays = calDays.filter { !cal.isDateInWeekend($0.date) }
+            let weekends = calDays.filter { cal.isDateInWeekend($0.date) }
+            if !weekdays.isEmpty && !weekends.isEmpty {
+                let wdAvg = weekdays.reduce(0) { $0 + $1.activeCalories } / Double(weekdays.count)
+                let weAvg = weekends.reduce(0) { $0 + $1.activeCalories } / Double(weekends.count)
+                let diff = abs(weAvg - wdAvg) / max(wdAvg, 1) * 100
+                if diff > 15 {
+                    let more = weAvg > wdAvg ? "周末" : "工作日"
+                    lines.append("\n🗓 工作日均 \(Int(wdAvg).formatted()) · 周末均 \(Int(weAvg).formatted()) 千卡（\(more)更活跃）")
+                }
+            }
+        }
+
+        // Trend (first half vs second half)
+        if calDays.count >= 4 {
+            let sorted = calDays.sorted { $0.date < $1.date }
+            let mid = sorted.count / 2
+            let olderAvg = sorted.prefix(mid).reduce(0) { $0 + $1.activeCalories } / Double(mid)
+            let recentAvg = sorted.suffix(from: mid).reduce(0) { $0 + $1.activeCalories } / Double(sorted.count - mid)
+            if olderAvg > 0 {
+                let pct = ((recentAvg - olderAvg) / olderAvg) * 100
+                if abs(pct) >= 10 {
+                    let trend = pct > 0
+                        ? "📈 消耗呈上升趋势（+\(Int(pct))%），活动量在增加！"
+                        : "📉 消耗有所下降（\(Int(pct))%），试试增加每天的活动量。"
+                    lines.append("\n\(trend)")
+                } else {
+                    lines.append("\n📊 消耗量保持稳定，节奏不错。")
+                }
+            }
+        }
+
+        // Fun equivalencies
+        lines.append("")
+        if total >= 7700 {
+            // ~7700 kcal ≈ 1 kg body fat
+            let kgFat = total / 7700
+            lines.append("💡 累计消耗约等于 \(String(format: "%.1f", kgFat)) kg 脂肪的热量")
+        }
+        // Food equivalence
+        let mealEquiv = Int(total / 600) // ~600 kcal per average meal
+        if mealEquiv >= 1 {
+            lines.append("🍱 约等于 \(mealEquiv) 顿正餐的热量")
+        }
+
+        // Sparkline
+        if calDays.count >= 3 {
+            let sorted = calDays.sorted { $0.date < $1.date }
+            let maxCal = sorted.map(\.activeCalories).max() ?? 1
+            if maxCal > 0 {
+                let sparkChars: [Character] = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"]
+                let spark = sorted.map { day -> Character in
+                    let idx = min(Int(day.activeCalories / maxCal * 7), 7)
+                    return sparkChars[idx]
+                }
+                lines.append("📈 消耗趋势：\(String(spark))")
+            }
+        }
+
+        // Overall insight
+        lines.append("")
+        if avg >= goalKcal {
+            lines.append("✅ 活动消耗健康，保持现在的运动习惯！")
+        } else if avg >= goalKcal * 0.7 {
+            let gap = Int(goalKcal - avg)
+            lines.append("💡 每天再多消耗 \(gap) 千卡就达标了——大约快走 \(gap / 5) 分钟。")
+        } else {
+            lines.append("🌱 增加日常活动是提升消耗最简单的方式，从走路开始吧。")
         }
 
         completion(lines.joined(separator: "\n"))

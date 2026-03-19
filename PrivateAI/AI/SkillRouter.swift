@@ -17,7 +17,7 @@ enum QueryIntent {
     case addEvent(title: String, content: String, mood: MoodType)
     case streak
     case weeklyInsight
-    case comparison
+    case comparison(range: QueryTimeRange)
     case photoSearch(query: String)
     case countdown(topic: String)
     case todo(action: TodoAction, content: String)
@@ -443,7 +443,11 @@ struct SkillRouter {
         // --- Comparison ---
         // Covers explicit comparison words AND natural progress/change/regression patterns.
         // Users naturally ask "有没有进步", "身体在变好吗", "最近有什么变化" — these are
-        // core introspective queries that should show week-over-week health trends.
+        // core introspective queries that should show period-over-period health trends.
+        // The time range determines the comparison scope:
+        //   "比上个月" → thisMonth vs lastMonth
+        //   "这周有进步吗" → thisWeek vs lastWeek
+        //   No explicit time → defaults to thisWeek (most common use case)
         if containsAny(lower, ["比上周", "比上个月", "比上月", "比之前", "比以前", "比过去",
                                 "对比", "比较", "vs",
                                 "趋势", "走势", "变化趋势",
@@ -460,7 +464,21 @@ struct SkillRouter {
                                 // English
                                 "compared to", "progress", "improving", "getting better",
                                 "getting worse", "decline", "improvement", "changed"]) {
-            return .comparison
+            // Infer comparison scope from explicit time references:
+            // "比上个月" / "这个月" → month-level comparison
+            // "比上周" / "这周" → week-level comparison
+            // No explicit time → default to thisWeek (most natural comparison unit)
+            let compRange: QueryTimeRange
+            if containsAny(lower, ["上个月", "上月", "这个月", "本月", "last month", "this month"]) {
+                compRange = .thisMonth
+            } else if containsAny(lower, ["上周", "这周", "本周", "last week", "this week"]) {
+                compRange = .thisWeek
+            } else if hasExplicitTimeReference(lower) {
+                compRange = range
+            } else {
+                compRange = .thisWeek
+            }
+            return .comparison(range: compRange)
         }
 
         // --- Random Decision ---

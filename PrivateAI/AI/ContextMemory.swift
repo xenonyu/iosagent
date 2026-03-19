@@ -229,7 +229,7 @@ final class ContextMemory {
         case .photos:           return .photos(range: range)
         case .streak:           return .streak
         case .weeklyInsight:    return .weeklyInsight
-        case .comparison:       return .comparison
+        case .comparison:       return .comparison(range: range)
         default:                return intent
         }
     }

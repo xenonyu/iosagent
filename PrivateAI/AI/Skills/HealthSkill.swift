@@ -29,8 +29,8 @@ struct HealthSkill: ClawSkill {
             respondHealth(metric: metric, range: range, context: context, completion: completion)
         case .streak:
             respondStreak(context: context, completion: completion)
-        case .comparison:
-            respondComparison(context: context, completion: completion)
+        case .comparison(let range):
+            respondComparison(range: range, context: context, completion: completion)
         default:
             break
         }
@@ -2921,181 +2921,418 @@ struct HealthSkill: ClawSkill {
 
     // MARK: - Comparison
 
-    private func respondComparison(context: SkillContext, completion: @escaping (String) -> Void) {
-        context.healthService.fetchSummaries(days: 14) { summaries in
-            let cal = Calendar.current
-            let now = Date()
-            let thisWeekStart = cal.dateInterval(of: .weekOfYear, for: now)?.start ?? now
-            let lastWeekStart = cal.date(byAdding: .weekOfYear, value: -1, to: thisWeekStart) ?? now
-            let lastWeekEnd = thisWeekStart
+    private func respondComparison(range: QueryTimeRange, context: SkillContext, completion: @escaping (String) -> Void) {
+        // Dynamic period calculation: compare the requested period against
+        // the preceding period of equal length.
+        // e.g. thisWeek vs lastWeek, thisMonth vs lastMonth, last 7 days vs prior 7 days
+        let cal = Calendar.current
+        let now = Date()
+        let currentInterval = range.interval
+        let spanDays = max(1, cal.dateComponents([.day], from: currentInterval.start, to: currentInterval.end).day ?? 7)
+        let prevEnd = currentInterval.start
+        let prevStart = cal.date(byAdding: .day, value: -spanDays, to: prevEnd) ?? prevEnd
 
-            let thisWeek = summaries.filter { $0.date >= thisWeekStart && $0.date <= now }
-            let lastWeek = summaries.filter { $0.date >= lastWeekStart && $0.date < lastWeekEnd }
+        // Fetch enough health data to cover both periods
+        let totalDaysBack = max(cal.dateComponents([.day], from: prevStart, to: now).day ?? 14, 1) + 1
+        context.healthService.fetchSummaries(days: totalDaysBack) { summaries in
+            let thisWeek = summaries.filter { currentInterval.contains($0.date) }
+            let lastWeek = summaries.filter { $0.date >= prevStart && $0.date < prevEnd }
 
-            guard !thisWeek.isEmpty || !lastWeek.isEmpty else {
-                completion("📊 暂无足够的健康数据进行对比。\n请开启健康权限以追踪每日数据。")
+            // Fetch multi-dimensional life data for holistic comparison
+            let thisLocations = CDLocationRecord.fetch(from: currentInterval.start, to: currentInterval.end, in: context.coreDataContext)
+            let lastLocations = CDLocationRecord.fetch(from: prevStart, to: prevEnd, in: context.coreDataContext)
+            let thisEvents = CDLifeEvent.fetch(from: currentInterval.start, to: currentInterval.end, in: context.coreDataContext)
+            let lastEvents = CDLifeEvent.fetch(from: prevStart, to: prevEnd, in: context.coreDataContext)
+            let thisCalEvents = context.calendarService.fetchEvents(from: currentInterval.start, to: currentInterval.end)
+            let lastCalEvents = context.calendarService.fetchEvents(from: prevStart, to: prevEnd)
+
+            let hasHealthData = !thisWeek.isEmpty || !lastWeek.isEmpty
+            let hasCalData = !thisCalEvents.isEmpty || !lastCalEvents.isEmpty
+            let hasLocData = !thisLocations.isEmpty || !lastLocations.isEmpty
+            let hasPhotoData = context.photoService.isAuthorized
+
+            guard hasHealthData || hasCalData || hasLocData || hasPhotoData else {
+                completion("📊 暂无足够的数据进行对比。\n请开启健康、日历、位置等权限以追踪每周数据。")
                 return
             }
 
-            var lines: [String] = ["📈 本周 vs 上周\n"]
-
-            // Steps comparison
-            let thisSteps = thisWeek.reduce(0) { $0 + $1.steps }
-            let lastSteps = lastWeek.reduce(0) { $0 + $1.steps }
-            lines.append(buildComparisonLine(
-                icon: "👟", label: "步数",
-                thisVal: thisSteps, lastVal: lastSteps,
-                unit: "步", formatter: { Int($0).formatted() }
-            ))
-
-            // Exercise comparison
-            let thisExercise = thisWeek.reduce(0) { $0 + $1.exerciseMinutes }
-            let lastExercise = lastWeek.reduce(0) { $0 + $1.exerciseMinutes }
-            if thisExercise > 0 || lastExercise > 0 {
-                lines.append(buildComparisonLine(
-                    icon: "⏱", label: "运动",
-                    thisVal: thisExercise, lastVal: lastExercise,
-                    unit: "分钟", formatter: { "\(Int($0))" }
-                ))
-            }
-
-            // Sleep comparison
-            let thisSleepDays = thisWeek.filter { $0.sleepHours > 0 }
-            let lastSleepDays = lastWeek.filter { $0.sleepHours > 0 }
-            let thisSleep = thisSleepDays.isEmpty ? 0 : thisSleepDays.reduce(0) { $0 + $1.sleepHours } / Double(thisSleepDays.count)
-            let lastSleep = lastSleepDays.isEmpty ? 0 : lastSleepDays.reduce(0) { $0 + $1.sleepHours } / Double(lastSleepDays.count)
-            if thisSleep > 0 || lastSleep > 0 {
-                lines.append(buildComparisonLine(
-                    icon: "😴", label: "日均睡眠",
-                    thisVal: thisSleep, lastVal: lastSleep,
-                    unit: "h", formatter: { String(format: "%.1f", $0) }
-                ))
-            }
-
-            // Calories comparison
-            let thisCal = thisWeek.reduce(0) { $0 + $1.activeCalories }
-            let lastCal = lastWeek.reduce(0) { $0 + $1.activeCalories }
-            if thisCal > 0 || lastCal > 0 {
-                lines.append(buildComparisonLine(
-                    icon: "🔥", label: "热量",
-                    thisVal: thisCal, lastVal: lastCal,
-                    unit: "千卡", formatter: { Int($0).formatted() }
-                ))
-            }
-
-            // Distance comparison
-            let thisDist = thisWeek.reduce(0) { $0 + $1.distanceKm }
-            let lastDist = lastWeek.reduce(0) { $0 + $1.distanceKm }
-            if thisDist > 0.1 || lastDist > 0.1 {
-                lines.append(buildComparisonLine(
-                    icon: "📏", label: "距离",
-                    thisVal: thisDist, lastVal: lastDist,
-                    unit: "km", formatter: { String(format: "%.1f", $0) }
-                ))
-            }
-
-            // Flights climbed comparison
-            let thisFlights = thisWeek.reduce(0) { $0 + $1.flightsClimbed }
-            let lastFlights = lastWeek.reduce(0) { $0 + $1.flightsClimbed }
-            if thisFlights > 0 || lastFlights > 0 {
-                lines.append(buildComparisonLine(
-                    icon: "🏢", label: "爬楼",
-                    thisVal: thisFlights, lastVal: lastFlights,
-                    unit: "层", formatter: { "\(Int($0))" }
-                ))
-            }
-
-            // --- Recovery indicators (HRV + Resting HR) ---
-            // These are the most meaningful "am I getting healthier?" metrics.
-            // Higher HRV = better recovery; lower resting HR = better cardiovascular fitness.
-            let thisHRVDays = thisWeek.filter { $0.hrv > 0 }
-            let lastHRVDays = lastWeek.filter { $0.hrv > 0 }
-            let thisHRV = thisHRVDays.isEmpty ? 0.0 : thisHRVDays.reduce(0) { $0 + $1.hrv } / Double(thisHRVDays.count)
-            let lastHRV = lastHRVDays.isEmpty ? 0.0 : lastHRVDays.reduce(0) { $0 + $1.hrv } / Double(lastHRVDays.count)
-            if thisHRV > 0 || lastHRV > 0 {
-                // HRV: higher is better, so use inverted arrow logic for context
-                var hrvLine = buildComparisonLine(
-                    icon: "📳", label: "HRV",
-                    thisVal: thisHRV, lastVal: lastHRV,
-                    unit: "ms", formatter: { "\(Int($0))" }
-                )
-                // Add quick interpretation
-                if thisHRV > 0 && lastHRV > 0 {
-                    let diff = thisHRV - lastHRV
-                    if diff >= 5 {
-                        hrvLine += "  ✅ 恢复力提升"
-                    } else if diff <= -5 {
-                        hrvLine += "  ⚠️ 恢复力下降"
-                    }
-                }
-                lines.append(hrvLine)
-            }
-
-            let thisRHRDays = thisWeek.filter { $0.restingHeartRate > 0 }
-            let lastRHRDays = lastWeek.filter { $0.restingHeartRate > 0 }
-            let thisRHR = thisRHRDays.isEmpty ? 0.0 : thisRHRDays.reduce(0) { $0 + $1.restingHeartRate } / Double(thisRHRDays.count)
-            let lastRHR = lastRHRDays.isEmpty ? 0.0 : lastRHRDays.reduce(0) { $0 + $1.restingHeartRate } / Double(lastRHRDays.count)
-            if thisRHR > 0 || lastRHR > 0 {
-                var rhrLine = buildComparisonLine(
-                    icon: "💓", label: "静息心率",
-                    thisVal: thisRHR, lastVal: lastRHR,
-                    unit: "bpm", formatter: { "\(Int($0))" }
-                )
-                // Lower resting HR = better fitness (inverted from typical comparison)
-                if thisRHR > 0 && lastRHR > 0 {
-                    let diff = thisRHR - lastRHR
-                    if diff <= -3 {
-                        rhrLine += "  ✅ 心肺适能提升"
-                    } else if diff >= 3 {
-                        rhrLine += "  ⚠️ 可能需要更多休息"
-                    }
-                }
-                lines.append(rhrLine)
-            }
-
-            // Overall verdict
-            lines.append("")
+            // Build period labels for the header
+            let periodLabel = self.comparisonPeriodLabel(range: range, spanDays: spanDays)
+            var lines: [String] = ["📈 \(periodLabel) · 生活全景对比\n"]
             var better = 0
             var worse = 0
-            if thisSteps > lastSteps * 1.05 { better += 1 } else if thisSteps < lastSteps * 0.95 { worse += 1 }
-            if thisExercise > lastExercise * 1.05 { better += 1 } else if thisExercise < lastExercise * 0.95 { worse += 1 }
-            if thisSleep > lastSleep * 1.05 && thisSleep <= 9 { better += 1 } else if thisSleep < lastSleep * 0.95 { worse += 1 }
-            // HRV up = better; resting HR down = better
-            if thisHRV > lastHRV * 1.05 { better += 1 } else if thisHRV < lastHRV * 0.95 { worse += 1 }
-            if lastRHR > 0 && thisRHR < lastRHR * 0.95 { better += 1 } else if thisRHR > lastRHR * 1.05 { worse += 1 }
 
+            // ── Health Section ──
+            if hasHealthData && (!thisWeek.isEmpty || !lastWeek.isEmpty) {
+                lines.append("🏃 **健康**")
+
+                // Steps comparison
+                let thisSteps = thisWeek.reduce(0) { $0 + $1.steps }
+                let lastSteps = lastWeek.reduce(0) { $0 + $1.steps }
+                lines.append(self.buildComparisonLine(
+                    icon: "  👟", label: "步数",
+                    thisVal: thisSteps, lastVal: lastSteps,
+                    unit: "步", formatter: { Int($0).formatted() }
+                ))
+                if thisSteps > lastSteps * 1.05 { better += 1 } else if thisSteps < lastSteps * 0.95 { worse += 1 }
+
+                // Exercise comparison
+                let thisExercise = thisWeek.reduce(0) { $0 + $1.exerciseMinutes }
+                let lastExercise = lastWeek.reduce(0) { $0 + $1.exerciseMinutes }
+                if thisExercise > 0 || lastExercise > 0 {
+                    lines.append(self.buildComparisonLine(
+                        icon: "  ⏱", label: "运动",
+                        thisVal: thisExercise, lastVal: lastExercise,
+                        unit: "分钟", formatter: { "\(Int($0))" }
+                    ))
+                    if thisExercise > lastExercise * 1.05 { better += 1 } else if thisExercise < lastExercise * 0.95 { worse += 1 }
+                }
+
+                // Sleep comparison
+                let thisSleepDays = thisWeek.filter { $0.sleepHours > 0 }
+                let lastSleepDays = lastWeek.filter { $0.sleepHours > 0 }
+                let thisSleep = thisSleepDays.isEmpty ? 0 : thisSleepDays.reduce(0) { $0 + $1.sleepHours } / Double(thisSleepDays.count)
+                let lastSleep = lastSleepDays.isEmpty ? 0 : lastSleepDays.reduce(0) { $0 + $1.sleepHours } / Double(lastSleepDays.count)
+                if thisSleep > 0 || lastSleep > 0 {
+                    lines.append(self.buildComparisonLine(
+                        icon: "  😴", label: "日均睡眠",
+                        thisVal: thisSleep, lastVal: lastSleep,
+                        unit: "h", formatter: { String(format: "%.1f", $0) }
+                    ))
+                    if thisSleep > lastSleep * 1.05 && thisSleep <= 9 { better += 1 } else if thisSleep < lastSleep * 0.95 { worse += 1 }
+                }
+
+                // Calories comparison
+                let thisCal = thisWeek.reduce(0) { $0 + $1.activeCalories }
+                let lastCal = lastWeek.reduce(0) { $0 + $1.activeCalories }
+                if thisCal > 0 || lastCal > 0 {
+                    lines.append(self.buildComparisonLine(
+                        icon: "  🔥", label: "热量",
+                        thisVal: thisCal, lastVal: lastCal,
+                        unit: "千卡", formatter: { Int($0).formatted() }
+                    ))
+                }
+
+                // Distance comparison
+                let thisDist = thisWeek.reduce(0) { $0 + $1.distanceKm }
+                let lastDist = lastWeek.reduce(0) { $0 + $1.distanceKm }
+                if thisDist > 0.1 || lastDist > 0.1 {
+                    lines.append(self.buildComparisonLine(
+                        icon: "  📏", label: "距离",
+                        thisVal: thisDist, lastVal: lastDist,
+                        unit: "km", formatter: { String(format: "%.1f", $0) }
+                    ))
+                }
+
+                // Flights climbed comparison
+                let thisFlights = thisWeek.reduce(0) { $0 + $1.flightsClimbed }
+                let lastFlights = lastWeek.reduce(0) { $0 + $1.flightsClimbed }
+                if thisFlights > 0 || lastFlights > 0 {
+                    lines.append(self.buildComparisonLine(
+                        icon: "  🏢", label: "爬楼",
+                        thisVal: thisFlights, lastVal: lastFlights,
+                        unit: "层", formatter: { "\(Int($0))" }
+                    ))
+                }
+
+                // Recovery indicators (HRV + Resting HR)
+                let thisHRVDays = thisWeek.filter { $0.hrv > 0 }
+                let lastHRVDays = lastWeek.filter { $0.hrv > 0 }
+                let thisHRV = thisHRVDays.isEmpty ? 0.0 : thisHRVDays.reduce(0) { $0 + $1.hrv } / Double(thisHRVDays.count)
+                let lastHRV = lastHRVDays.isEmpty ? 0.0 : lastHRVDays.reduce(0) { $0 + $1.hrv } / Double(lastHRVDays.count)
+                if thisHRV > 0 || lastHRV > 0 {
+                    var hrvLine = self.buildComparisonLine(
+                        icon: "  📳", label: "HRV",
+                        thisVal: thisHRV, lastVal: lastHRV,
+                        unit: "ms", formatter: { "\(Int($0))" }
+                    )
+                    if thisHRV > 0 && lastHRV > 0 {
+                        let diff = thisHRV - lastHRV
+                        if diff >= 5 { hrvLine += "  ✅ 恢复力提升" }
+                        else if diff <= -5 { hrvLine += "  ⚠️ 恢复力下降" }
+                    }
+                    lines.append(hrvLine)
+                    if thisHRV > lastHRV * 1.05 { better += 1 } else if thisHRV < lastHRV * 0.95 { worse += 1 }
+                }
+
+                let thisRHRDays = thisWeek.filter { $0.restingHeartRate > 0 }
+                let lastRHRDays = lastWeek.filter { $0.restingHeartRate > 0 }
+                let thisRHR = thisRHRDays.isEmpty ? 0.0 : thisRHRDays.reduce(0) { $0 + $1.restingHeartRate } / Double(thisRHRDays.count)
+                let lastRHR = lastRHRDays.isEmpty ? 0.0 : lastRHRDays.reduce(0) { $0 + $1.restingHeartRate } / Double(lastRHRDays.count)
+                if thisRHR > 0 || lastRHR > 0 {
+                    var rhrLine = self.buildComparisonLine(
+                        icon: "  💓", label: "静息心率",
+                        thisVal: thisRHR, lastVal: lastRHR,
+                        unit: "bpm", formatter: { "\(Int($0))" }
+                    )
+                    if thisRHR > 0 && lastRHR > 0 {
+                        let diff = thisRHR - lastRHR
+                        if diff <= -3 { rhrLine += "  ✅ 心肺适能提升" }
+                        else if diff >= 3 { rhrLine += "  ⚠️ 可能需要更多休息" }
+                    }
+                    lines.append(rhrLine)
+                    if lastRHR > 0 && thisRHR < lastRHR * 0.95 { better += 1 } else if thisRHR > lastRHR * 1.05 { worse += 1 }
+                }
+
+                // Personalized recovery insight
+                if thisHRV > 0 && thisSleep > 0 && lastHRV > 0 && lastSleep > 0 {
+                    let hrvImproved = thisHRV > lastHRV * 1.05
+                    let sleepImproved = thisSleep > lastSleep && thisSleep >= 7
+                    let exerciseUp = thisExercise > lastExercise * 1.1
+
+                    if hrvImproved && sleepImproved {
+                        lines.append("  🧬 睡眠改善 + HRV 提升 → 恢复状态很好，可以适当增加训练强度")
+                    } else if exerciseUp && !hrvImproved && thisHRV > 0 {
+                        lines.append("  🧬 运动量增加但 HRV 没跟上 → 注意不要过度训练")
+                    } else if !sleepImproved && thisRHR > lastRHR + 2 {
+                        lines.append("  🧬 睡眠不足 + 心率偏高 → 身体需要更多休息")
+                    }
+                }
+            }
+
+            // ── Calendar Section ──
+            if hasCalData {
+                lines.append("")
+                lines.append("📅 **日程**")
+                let thisTimedCount = thisCalEvents.filter { !$0.isAllDay }.count
+                let lastTimedCount = lastCalEvents.filter { !$0.isAllDay }.count
+                let thisTimedMins = thisCalEvents.filter { !$0.isAllDay }.reduce(0.0) { $0 + $1.duration } / 60.0
+                let lastTimedMins = lastCalEvents.filter { !$0.isAllDay }.reduce(0.0) { $0 + $1.duration } / 60.0
+
+                lines.append(self.buildComparisonLine(
+                    icon: "  📋", label: "事件数",
+                    thisVal: Double(thisTimedCount), lastVal: Double(lastTimedCount),
+                    unit: "个", formatter: { "\(Int($0))" }
+                ))
+
+                if thisTimedMins > 0 || lastTimedMins > 0 {
+                    lines.append(self.buildComparisonLine(
+                        icon: "  ⏳", label: "会议时长",
+                        thisVal: thisTimedMins, lastVal: lastTimedMins,
+                        unit: "", formatter: { Self.formatDurationShort($0) }
+                    ))
+                }
+
+                // Busy days comparison
+                let thisBusyDays = Set(thisCalEvents.filter { !$0.isAllDay }.map { cal.startOfDay(for: $0.startDate) }).count
+                let lastBusyDays = Set(lastCalEvents.filter { !$0.isAllDay }.map { cal.startOfDay(for: $0.startDate) }).count
+                if thisBusyDays != lastBusyDays {
+                    let delta = thisBusyDays - lastBusyDays
+                    if delta > 0 {
+                        lines.append("  📊 忙碌天数多了 \(delta) 天")
+                    } else {
+                        lines.append("  💚 忙碌天数少了 \(-delta) 天，节奏放缓")
+                    }
+                }
+
+                // Track if schedule is lighter or heavier
+                if thisTimedCount > 0 && lastTimedCount > 0 {
+                    if Double(thisTimedCount) > Double(lastTimedCount) * 1.2 {
+                        worse += 1 // busier = more stress
+                    } else if Double(thisTimedCount) < Double(lastTimedCount) * 0.8 {
+                        better += 1 // less busy = more recovery time
+                    }
+                }
+            }
+
+            // ── Location Section ──
+            if hasLocData {
+                lines.append("")
+                lines.append("📍 **足迹**")
+                let thisPlaces = Set(thisLocations.map { $0.displayName })
+                let lastPlaces = Set(lastLocations.map { $0.displayName })
+                lines.append(self.buildComparisonLine(
+                    icon: "  🗺️", label: "去过",
+                    thisVal: Double(thisPlaces.count), lastVal: Double(lastPlaces.count),
+                    unit: "个地点", formatter: { "\(Int($0))" }
+                ))
+
+                // New places discovered (in this week but not last week)
+                let newPlaces = thisPlaces.subtracting(lastPlaces)
+                if !newPlaces.isEmpty {
+                    let names = newPlaces.prefix(3).joined(separator: "、")
+                    let extra = newPlaces.count > 3 ? " 等" : ""
+                    lines.append("  🆕 新探索：\(names)\(extra)")
+                    better += 1 // exploring new places is positive
+                }
+
+                // Outing frequency
+                let thisOutDays = Set(thisLocations.map { cal.startOfDay(for: $0.timestamp) }).count
+                let lastOutDays = Set(lastLocations.map { cal.startOfDay(for: $0.timestamp) }).count
+                if thisOutDays > 0 && lastOutDays > 0 && thisOutDays != lastOutDays {
+                    lines.append(self.buildComparisonLine(
+                        icon: "  🚶", label: "外出天数",
+                        thisVal: Double(thisOutDays), lastVal: Double(lastOutDays),
+                        unit: "天", formatter: { "\(Int($0))" }
+                    ))
+                }
+            }
+
+            // ── Photo Section ──
+            let thisPhotoList = hasPhotoData ? context.photoService.fetchMetadata(from: currentInterval.start, to: currentInterval.end) : []
+            let lastPhotoList = hasPhotoData ? context.photoService.fetchMetadata(from: prevStart, to: prevEnd) : []
+            if !thisPhotoList.isEmpty || !lastPhotoList.isEmpty {
+                    lines.append("")
+                    lines.append("📷 **记录**")
+                    lines.append(self.buildComparisonLine(
+                        icon: "  🖼️", label: "照片",
+                        thisVal: Double(thisPhotoList.count), lastVal: Double(lastPhotoList.count),
+                        unit: "张", formatter: { "\(Int($0))" }
+                    ))
+
+                    let thisActiveDays = Set(thisPhotoList.map { cal.startOfDay(for: $0.date) }).count
+                    let lastActiveDays = Set(lastPhotoList.map { cal.startOfDay(for: $0.date) }).count
+                    if thisActiveDays > 0 || lastActiveDays > 0 {
+                        lines.append(self.buildComparisonLine(
+                            icon: "  📆", label: "拍照天数",
+                            thisVal: Double(thisActiveDays), lastVal: Double(lastActiveDays),
+                            unit: "天", formatter: { "\(Int($0))" }
+                        ))
+                    }
+
+                    let thisFav = thisPhotoList.filter { $0.isFavorite }.count
+                    let lastFav = lastPhotoList.filter { $0.isFavorite }.count
+                    if thisFav > 0 || lastFav > 0 {
+                        lines.append(self.buildComparisonLine(
+                            icon: "  ⭐", label: "收藏",
+                            thisVal: Double(thisFav), lastVal: Double(lastFav),
+                            unit: "张", formatter: { "\(Int($0))" }
+                        ))
+                    }
+            }
+
+            // ── Life Events Section ──
+            if !thisEvents.isEmpty || !lastEvents.isEmpty {
+                lines.append("")
+                lines.append("📝 **生活记录**")
+                lines.append(self.buildComparisonLine(
+                    icon: "  📖", label: "事件",
+                    thisVal: Double(thisEvents.count), lastVal: Double(lastEvents.count),
+                    unit: "条", formatter: { "\(Int($0))" }
+                ))
+
+                // Mood comparison
+                let thisMoods = thisEvents.map { $0.mood }
+                let lastMoods = lastEvents.map { $0.mood }
+                if !thisMoods.isEmpty && !lastMoods.isEmpty {
+                    let thisMoodAvg = thisMoods.reduce(0.0) { $0 + self.moodScoreForComparison($1) } / Double(thisMoods.count)
+                    let lastMoodAvg = lastMoods.reduce(0.0) { $0 + self.moodScoreForComparison($1) } / Double(lastMoods.count)
+                    let diff = thisMoodAvg - lastMoodAvg
+                    if abs(diff) >= 0.3 {
+                        if diff > 0 {
+                            lines.append("  😊 心情比上周好转（\(String(format: "%.1f", thisMoodAvg)) vs \(String(format: "%.1f", lastMoodAvg))）")
+                            better += 1
+                        } else {
+                            lines.append("  😔 心情比上周略低（\(String(format: "%.1f", thisMoodAvg)) vs \(String(format: "%.1f", lastMoodAvg))）")
+                            worse += 1
+                        }
+                    }
+                }
+            }
+
+            // ── Overall Verdict ──
+            lines.append("")
             if better > worse + 1 {
-                lines.append("💪 整体趋势向好，你的身体在进步！")
+                lines.append("💪 整体趋势向好，多项指标都在进步！")
             } else if better > worse {
                 lines.append("💪 略有进步，保持这个势头！")
             } else if worse > better + 1 {
-                lines.append("💡 多项指标下降，注意休息和恢复。")
+                lines.append("💡 多项指标下降，注意休息和调整节奏。")
             } else if worse > better {
                 lines.append("💡 这周稍有松懈，下周找回节奏吧！")
             } else {
                 lines.append("📊 和上周基本持平，保持稳定也是一种力量。")
             }
 
-            // Personalized recovery insight when both HRV and sleep data available
-            if thisHRV > 0 && thisSleep > 0 && lastHRV > 0 && lastSleep > 0 {
-                let hrvImproved = thisHRV > lastHRV * 1.05
-                let sleepImproved = thisSleep > lastSleep && thisSleep >= 7
-                let exerciseUp = thisExercise > lastExercise * 1.1
+            // ── Cross-Data Narrative ──
+            // Correlate changes across dimensions to produce insights no single metric can
+            var narratives: [String] = []
+            let thisTimedCount = thisCalEvents.filter { !$0.isAllDay }.count
+            let lastTimedCount = lastCalEvents.filter { !$0.isAllDay }.count
+            let thisStepsN = thisWeek.reduce(0) { $0 + $1.steps }
+            let lastStepsN = lastWeek.reduce(0) { $0 + $1.steps }
+            let thisSleepN = thisWeek.filter { $0.sleepHours > 0 }
+            let avgThisSleep = thisSleepN.isEmpty ? 0.0 : thisSleepN.reduce(0) { $0 + $1.sleepHours } / Double(thisSleepN.count)
+            let lastSleepN = lastWeek.filter { $0.sleepHours > 0 }
+            let avgLastSleep = lastSleepN.isEmpty ? 0.0 : lastSleepN.reduce(0) { $0 + $1.sleepHours } / Double(lastSleepN.count)
 
-                if hrvImproved && sleepImproved {
-                    lines.append("\n🧬 睡眠改善 + HRV 提升 → 你的身体恢复状态很好，可以适当增加训练强度。")
-                } else if exerciseUp && !hrvImproved && thisHRV > 0 {
-                    lines.append("\n🧬 运动量增加但 HRV 没有跟上 → 身体还在适应，注意不要过度训练。")
-                } else if !sleepImproved && thisRHR > lastRHR + 2 {
-                    lines.append("\n🧬 睡眠不足 + 静息心率偏高 → 身体发出了需要休息的信号。")
-                }
+            // Busier schedule + less sleep = burnout risk
+            if Double(thisTimedCount) > Double(max(lastTimedCount, 1)) * 1.3 && avgThisSleep < avgLastSleep - 0.3 && avgThisSleep > 0 {
+                narratives.append("⚠️ 日程增多 + 睡眠减少 → 注意节奏，避免累积疲劳")
+            }
+            // Busier schedule + fewer places = stuck at desk
+            if Double(thisTimedCount) > Double(max(lastTimedCount, 1)) * 1.2 && thisLocations.count < lastLocations.count {
+                narratives.append("🪑 会议变多但外出减少 → 忙碌之余记得活动一下")
+            }
+            // More photos + more places = enriching week
+            if thisPhotoList.count > lastPhotoList.count && thisLocations.count > lastLocations.count {
+                narratives.append("🌈 照片更多、足迹更广 → 这周的生活体验很丰富！")
+            }
+            // Less activity + fewer outings
+            if thisStepsN < lastStepsN * 0.7 && lastLocations.count > 0 && thisLocations.count < lastLocations.count / 2 {
+                narratives.append("🏠 活动量和外出都明显减少 → 是身体不适还是在享受宅家？")
+            }
+
+            if !narratives.isEmpty {
+                lines.append("")
+                lines.append("💡 **跨维度洞察**")
+                narratives.forEach { lines.append("  \($0)") }
             }
 
             completion(lines.joined(separator: "\n"))
         }
     }
 
+    /// Mood score for comparison (same scale as MoodSkill).
+    private func moodScoreForComparison(_ mood: MoodType) -> Double {
+        switch mood {
+        case .great: return 5.0
+        case .good: return 4.0
+        case .neutral: return 3.0
+        case .tired: return 2.0
+        case .stressed: return 1.5
+        case .sad: return 1.0
+        }
+    }
+
+    /// Format minutes into short duration string.
+    private static func formatDurationShort(_ minutes: Double) -> String {
+        if minutes >= 60 {
+            let h = Int(minutes) / 60
+            let m = Int(minutes) % 60
+            return m > 0 ? "\(h)h\(m)m" : "\(h)h"
+        }
+        return "\(Int(minutes))m"
+    }
+
     // MARK: - Helpers
+
+    /// Builds a human-readable header label for the comparison period.
+    /// e.g. "本周 vs 上周", "本月 vs 上月", "最近 14 天 vs 之前 14 天"
+    private func comparisonPeriodLabel(range: QueryTimeRange, spanDays: Int) -> String {
+        switch range {
+        case .thisWeek:
+            return "本周 vs 上周"
+        case .lastWeek:
+            return "上周 vs 上上周"
+        case .thisMonth:
+            return "本月 vs 上月"
+        case .lastMonth:
+            return "上月 vs 前月"
+        case .today:
+            return "今天 vs 昨天"
+        case .yesterday:
+            return "昨天 vs 前天"
+        default:
+            if spanDays <= 7 {
+                return "最近 \(spanDays) 天 vs 之前 \(spanDays) 天"
+            } else if spanDays <= 31 {
+                return "近 \(spanDays) 天 vs 之前同期"
+            } else {
+                return "\(range.label) vs 上期"
+            }
+        }
+    }
 
     private func buildComparisonLine(
         icon: String, label: String,

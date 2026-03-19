@@ -78,9 +78,15 @@ struct CalendarSkill: ClawSkill {
                     let timeStr = minutesUntil < 60
                         ? "\(Int(minutesUntil)) 分钟后"
                         : "\(Int(minutesUntil / 60)) 小时\(Int(minutesUntil.truncatingRemainder(dividingBy: 60))) 分钟后"
-                    lines.append("⏰ 接下来：\(timeStr)有「\(next.title)」（\(next.timeDisplay)）\n")
+                    var nextLine = "⏰ 接下来：\(timeStr)有「\(next.title)」（\(next.timeDisplay)）"
+                    if !next.location.isEmpty { nextLine += "  📍\(next.location)" }
+                    lines.append(nextLine + "\n")
                 } else if minutesUntil <= 0 && next.startDate <= now && next.endDate > now {
-                    lines.append("🔴 正在进行：「\(next.title)」（\(next.timeDisplay)）\n")
+                    let remainMin = Int(next.endDate.timeIntervalSince(now) / 60)
+                    var ongoingLine = "🔴 正在进行：「\(next.title)」（\(next.timeDisplay)）"
+                    if remainMin > 0 { ongoingLine += "，还剩 \(formatDuration(Double(remainMin)))" }
+                    if !next.location.isEmpty { ongoingLine += "  📍\(next.location)" }
+                    lines.append(ongoingLine + "\n")
                 }
             } else if !timedEvents.isEmpty {
                 lines.append("✅ 今天的日程已全部结束。\n")
@@ -109,7 +115,18 @@ struct CalendarSkill: ClawSkill {
                 var line = "  • \(event.timeDisplay) \(event.title)"
                 if !event.location.isEmpty { line += "  📍\(event.location)" }
                 lines.append(line)
+                if let preview = notesPreview(event.notes) {
+                    lines.append("    💬 \(preview)")
+                }
             }
+            lines.append("")
+        }
+
+        // --- Back-to-back & location change warnings ---
+        let scheduleWarnings = detectScheduleWarnings(events: timedEvents)
+        if !scheduleWarnings.isEmpty {
+            lines.append("🏃 日程提醒：")
+            scheduleWarnings.forEach { lines.append("  • \($0)") }
             lines.append("")
         }
 
@@ -171,6 +188,9 @@ struct CalendarSkill: ClawSkill {
                 var line = "  • \(event.isAllDay ? "全天" : event.timeDisplay) \(event.title)"
                 if !event.location.isEmpty { line += "  📍\(event.location)" }
                 lines.append(line)
+                if let preview = notesPreview(event.notes) {
+                    lines.append("    💬 \(preview)")
+                }
             }
         }
 
@@ -294,5 +314,53 @@ struct CalendarSkill: ClawSkill {
 
     private func calendarTag(_ calendar: String) -> String {
         calendar.isEmpty ? "" : "  [\(calendar)]"
+    }
+
+    // MARK: - Back-to-Back & Location Change Detection
+
+    /// Detects back-to-back meetings (gap < 15 min) and location changes between consecutive events.
+    private func detectScheduleWarnings(events: [CalendarEventItem]) -> [String] {
+        let sorted = events.sorted { $0.startDate < $1.startDate }
+        guard sorted.count >= 2 else { return [] }
+
+        var warnings: [String] = []
+        var backToBackCount = 0
+
+        for i in 0..<(sorted.count - 1) {
+            let current = sorted[i]
+            let next = sorted[i + 1]
+            let gapMinutes = Int(next.startDate.timeIntervalSince(current.endDate) / 60)
+
+            // Back-to-back: gap < 15 minutes (but not overlapping, which is a conflict)
+            if gapMinutes >= 0 && gapMinutes < 15 {
+                backToBackCount += 1
+                let gapDesc = gapMinutes <= 0 ? "无间隔" : "仅隔 \(gapMinutes) 分钟"
+                warnings.append("「\(current.title)」→「\(next.title)」\(gapDesc)，注意安排休息")
+
+                // Location change with tight schedule
+                if !current.location.isEmpty && !next.location.isEmpty
+                    && current.location != next.location {
+                    warnings.append("  ↳ 地点变化：\(current.location) → \(next.location)，请预留路程时间")
+                }
+            }
+        }
+
+        if backToBackCount >= 3 {
+            warnings.insert("⚡ 有 \(backToBackCount) 组连续日程，注意节奏", at: 0)
+        }
+
+        return warnings
+    }
+
+    // MARK: - Notes Preview
+
+    /// Returns a truncated preview of event notes, or nil if empty.
+    private func notesPreview(_ notes: String) -> String? {
+        let trimmed = notes.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        // Collapse newlines to spaces, take first 50 characters
+        let singleLine = trimmed.components(separatedBy: .newlines).joined(separator: " ")
+        if singleLine.count <= 50 { return singleLine }
+        return String(singleLine.prefix(47)) + "..."
     }
 }

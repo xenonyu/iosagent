@@ -28,6 +28,7 @@ enum QueryIntent {
     case unitConversion(value: Double, fromUnit: String, toUnit: String)
     case waterTrack(action: WaterAction, amount: Int)
     case breathing(type: BreathingType)
+    case bmi(heightCM: Double, weightKG: Double)
     case unknown
 }
 
@@ -108,6 +109,11 @@ struct SkillRouter {
         // --- Math / Calculator ---
         if let expr = parseMathExpression(lower, original: text) {
             return .math(expression: expr)
+        }
+
+        // --- BMI Calculator ---
+        if let bmiResult = parseBMI(lower, original: text) {
+            return .bmi(heightCM: bmiResult.0, weightKG: bmiResult.1)
         }
 
         // --- Breathing / Relaxation ---
@@ -902,6 +908,128 @@ struct SkillRouter {
         }
 
         return .overview
+    }
+
+    // MARK: - BMI Parsing
+
+    /// Detects BMI calculation queries and extracts height (cm) and weight (kg).
+    /// Supports patterns like:
+    /// - "我身高175体重70", "身高165cm 体重55kg"
+    /// - "BMI 180 75", "calculate bmi height 170 weight 65"
+    /// - "175cm 70kg bmi"
+    private static func parseBMI(_ lower: String, original: String) -> (Double, Double)? {
+        // Must contain BMI-related keywords
+        guard containsAny(lower, ["bmi", "体质指数", "体重指数", "身体质量",
+                                    "身高.*体重", "体重.*身高"]) ||
+              (containsAny(lower, ["身高"]) && containsAny(lower, ["体重"])) else {
+            return nil
+        }
+
+        var height: Double = 0
+        var weight: Double = 0
+        let nsText = original as NSString
+
+        // Pattern 1: "身高175体重70" or "身高175cm体重70kg"
+        if let regex = try? NSRegularExpression(
+            pattern: "身高\\s*([\\d.]+)\\s*(cm|厘米|公分)?\\s*[，,]?\\s*体重\\s*([\\d.]+)\\s*(kg|公斤|千克|斤)?",
+            options: .caseInsensitive
+        ), let match = regex.firstMatch(in: original, options: [], range: NSRange(location: 0, length: nsText.length)),
+           match.numberOfRanges >= 4 {
+            let hStr = nsText.substring(with: match.range(at: 1))
+            let wStr = nsText.substring(with: match.range(at: 3))
+            if let h = Double(hStr), let w = Double(wStr) {
+                height = h
+                weight = w
+                // Check if weight unit is 斤 (jin, half-kg)
+                if match.numberOfRanges >= 5 {
+                    let wUnit = nsText.substring(with: match.range(at: 4))
+                    if wUnit == "斤" { weight = w / 2.0 }
+                }
+            }
+        }
+
+        // Pattern 2: "体重70身高175" (reversed order)
+        if height == 0 || weight == 0 {
+            if let regex = try? NSRegularExpression(
+                pattern: "体重\\s*([\\d.]+)\\s*(kg|公斤|千克|斤)?\\s*[，,]?\\s*身高\\s*([\\d.]+)\\s*(cm|厘米|公分)?",
+                options: .caseInsensitive
+            ), let match = regex.firstMatch(in: original, options: [], range: NSRange(location: 0, length: nsText.length)),
+               match.numberOfRanges >= 4 {
+                let wStr = nsText.substring(with: match.range(at: 1))
+                let hStr = nsText.substring(with: match.range(at: 3))
+                if let h = Double(hStr), let w = Double(wStr) {
+                    height = h
+                    weight = w
+                    if match.numberOfRanges >= 3 {
+                        let wUnit = nsText.substring(with: match.range(at: 2))
+                        if wUnit == "斤" { weight = w / 2.0 }
+                    }
+                }
+            }
+        }
+
+        // Pattern 3: "bmi 175 70" or "BMI 180 75" (two numbers after BMI keyword)
+        if height == 0 || weight == 0 {
+            if let regex = try? NSRegularExpression(
+                pattern: "bmi\\s+([\\d.]+)\\s+([\\d.]+)",
+                options: .caseInsensitive
+            ), let match = regex.firstMatch(in: original, options: [], range: NSRange(location: 0, length: nsText.length)),
+               match.numberOfRanges >= 3 {
+                let num1Str = nsText.substring(with: match.range(at: 1))
+                let num2Str = nsText.substring(with: match.range(at: 2))
+                if let n1 = Double(num1Str), let n2 = Double(num2Str) {
+                    // Heuristic: larger number is height (cm), smaller is weight (kg)
+                    if n1 > n2 {
+                        height = n1; weight = n2
+                    } else {
+                        height = n2; weight = n1
+                    }
+                }
+            }
+        }
+
+        // Pattern 4: "height 170 weight 65" or "170cm 65kg"
+        if height == 0 || weight == 0 {
+            if let regex = try? NSRegularExpression(
+                pattern: "([\\d.]+)\\s*cm\\s+([\\d.]+)\\s*kg",
+                options: .caseInsensitive
+            ), let match = regex.firstMatch(in: original, options: [], range: NSRange(location: 0, length: nsText.length)),
+               match.numberOfRanges >= 3 {
+                let hStr = nsText.substring(with: match.range(at: 1))
+                let wStr = nsText.substring(with: match.range(at: 2))
+                if let h = Double(hStr), let w = Double(wStr) {
+                    height = h; weight = w
+                }
+            }
+        }
+
+        // Pattern 5: English "height X weight Y"
+        if height == 0 || weight == 0 {
+            if let regex = try? NSRegularExpression(
+                pattern: "height\\s*([\\d.]+)\\s*(?:cm)?\\s*weight\\s*([\\d.]+)\\s*(?:kg)?",
+                options: .caseInsensitive
+            ), let match = regex.firstMatch(in: original, options: [], range: NSRange(location: 0, length: nsText.length)),
+               match.numberOfRanges >= 3 {
+                let hStr = nsText.substring(with: match.range(at: 1))
+                let wStr = nsText.substring(with: match.range(at: 2))
+                if let h = Double(hStr), let w = Double(wStr) {
+                    height = h; weight = w
+                }
+            }
+        }
+
+        // If height looks like meters (e.g. 1.75), convert to cm
+        if height > 0 && height < 3.0 {
+            height = height * 100
+        }
+
+        // Return 0,0 if we couldn't parse (skill will show usage hint)
+        if height == 0 && weight == 0 {
+            // Keyword matched but no numbers — show usage hint
+            return (0, 0)
+        }
+
+        return (height, weight)
     }
 
     static func containsAny(_ text: String, _ keywords: [String]) -> Bool {

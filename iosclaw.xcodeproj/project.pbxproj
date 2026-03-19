@@ -64,6 +64,7 @@
 		D582284312622B63296DC0C5 /* MoodSkill.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7DC0818F57D4D75FB86E927F /* MoodSkill.swift */; };
 		D601BAB1830280F4AFC85CC9 /* SkillRouter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9DF89216CF2DAC810B099484 /* SkillRouter.swift */; };
 		DA591A730D53CF3079AF1F88 /* MessageBubble.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3747E521DB40F5EFA09B963A /* MessageBubble.swift */; };
+		E15E6C6170045ECAC2BC0027 /* BMISkill.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3BCCC53D1979CDC6E6FCBFEA /* BMISkill.swift */; };
 		E524593459B21701FF78EA50 /* PrivateAI.xcdatamodeld in Sources */ = {isa = PBXBuildFile; fileRef = FC5529EDACF7B5C44B475D15 /* PrivateAI.xcdatamodeld */; };
 		E7BF1F1600B6EF0EC17DA36C /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 50F1BEF61AFC051E2B51866E /* ContentView.swift */; };
 		E81CDB4DE8DFE9297B1AE31B /* ProfileViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 12D2D7E53A79547B6F578CE6 /* ProfileViewModel.swift */; };
@@ -92,6 +93,7 @@
 		33F073B1A5167046D56AB53B /* SharedDefaults.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedDefaults.swift; sourceTree = "<group>"; };
 		341C694DEFD6C8643C51D40A /* UserNotifications.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UserNotifications.framework; path = System/Library/Frameworks/UserNotifications.framework; sourceTree = SDKROOT; };
 		3747E521DB40F5EFA09B963A /* MessageBubble.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageBubble.swift; sourceTree = "<group>"; };
+		3BCCC53D1979CDC6E6FCBFEA /* BMISkill.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BMISkill.swift; sourceTree = "<group>"; };
 		3BD92C14F914FE6FA9523FAD /* AppShortcuts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppShortcuts.swift; sourceTree = "<group>"; };
 		3DD1CBB61BD5F757E659DA7B /* CalendarService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CalendarService.swift; sourceTree = "<group>"; };
 		42167BD1FB1325E7A4A9B494 /* CalendarSkill.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CalendarSkill.swift; sourceTree = "<group>"; };
@@ -208,6 +210,7 @@
 		295A1509A4AD9B1F9B9BF924 /* Skills */ = {
 			isa = PBXGroup;
 			children = (
+				3BCCC53D1979CDC6E6FCBFEA /* BMISkill.swift */,
 				185318DE001F2471C0C32502 /* BreathingSkill.swift */,
 				42167BD1FB1325E7A4A9B494 /* CalendarSkill.swift */,
 				A70FF8187392AC19ACF2C265 /* CountdownSkill.swift */,
@@ -531,6 +534,7 @@
 				7270F3188B86BD0BFF71BE12 /* AppModels.swift in Sources */,
 				ECA0E8397A24F75986C80858 /* AppShortcuts.swift in Sources */,
 				55165A62308D1533D99EE38F /* AppState.swift in Sources */,
+				E15E6C6170045ECAC2BC0027 /* BMISkill.swift in Sources */,
 				4CF7C65794A081ACC3D39695 /* BreathingSkill.swift in Sources */,
 				A3443515AA88879B78B6EF78 /* CalendarService.swift in Sources */,
 				59E9D92FFAA8322E750ECBC5 /* CalendarSkill.swift in Sources */,

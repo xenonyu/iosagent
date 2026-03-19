@@ -28,6 +28,8 @@ final class HealthService: ObservableObject {
         if let sleep = HKObjectType.categoryType(forIdentifier: .sleepAnalysis) {
             types.insert(sleep)
         }
+        // Workout sessions (running, cycling, yoga, etc.)
+        types.insert(HKObjectType.workoutType())
         return types
     }
 
@@ -125,6 +127,13 @@ final class HealthService: ObservableObject {
             group.leave()
         }
 
+        // Workouts (individual sessions)
+        group.enter()
+        fetchWorkouts(start: start, end: end) { workouts in
+            summary.workouts = workouts
+            group.leave()
+        }
+
         group.notify(queue: .main) {
             completion(summary)
         }
@@ -188,6 +197,32 @@ final class HealthService: ObservableObject {
             options: .discreteAverage
         ) { _, result, _ in
             completion(result?.averageQuantity()?.doubleValue(for: unit) ?? 0)
+        }
+        store.execute(query)
+    }
+
+    /// Fetches individual workout sessions (HKWorkout) for the given date range.
+    private func fetchWorkouts(start: Date, end: Date,
+                               completion: @escaping ([WorkoutRecord]) -> Void) {
+        let predicate = HKQuery.predicateForSamples(withStart: start, end: end)
+        let sortDesc = NSSortDescriptor(key: HKSampleSortIdentifierStartDate, ascending: true)
+        let query = HKSampleQuery(
+            sampleType: HKObjectType.workoutType(),
+            predicate: predicate,
+            limit: HKObjectQueryNoLimit,
+            sortDescriptors: [sortDesc]
+        ) { _, samples, _ in
+            let records = (samples as? [HKWorkout])?.map { w -> WorkoutRecord in
+                WorkoutRecord(
+                    activityType: w.workoutActivityType.rawValue,
+                    duration: w.duration,
+                    totalCalories: w.totalEnergyBurned?.doubleValue(for: .kilocalorie()) ?? 0,
+                    totalDistance: w.totalDistance?.doubleValue(for: .meter()) ?? 0,
+                    startDate: w.startDate,
+                    endDate: w.endDate
+                )
+            } ?? []
+            completion(records)
         }
         store.execute(query)
     }

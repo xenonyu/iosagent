@@ -181,6 +181,87 @@ struct FamilyMember: Identifiable, Codable, Equatable {
     var notes: String = ""
 }
 
+// MARK: - Workout Record
+
+/// A single workout session from HealthKit (HKWorkout).
+struct WorkoutRecord {
+    var activityType: UInt       // HKWorkoutActivityType rawValue
+    var duration: TimeInterval   // seconds
+    var totalCalories: Double    // kcal
+    var totalDistance: Double     // meters
+    var startDate: Date
+    var endDate: Date
+
+    /// Human-readable workout type name (Chinese).
+    var typeName: String {
+        switch activityType {
+        case 37:  return "跑步"          // running
+        case 52:  return "步行"          // walking
+        case 13:  return "骑行"          // cycling
+        case 46:  return "游泳"          // swimming
+        case 50:  return "瑜伽"          // yoga
+        case 20:  return "功能性训练"     // functionalStrengthTraining
+        case 35:  return "拳击"          // boxing/martialArts (kickboxing=47)
+        case 47:  return "搏击操"        // kickboxing
+        case 25:  return "高强度间歇"     // HIIT
+        case 24:  return "力量训练"       // traditionalStrengthTraining (was 50? no, 50=yoga)
+        case 58:  return "力量训练"       // traditionalStrengthTraining
+        case 15:  return "椭圆机"        // elliptical
+        case 43:  return "划船机"        // rowing
+        case 16:  return "击剑"          // fencing
+        case 62:  return "核心训练"       // coreTraining
+        case 63:  return "舞蹈"          // dance (socialDance=77, cardioDance=78 on newer)
+        case 10:  return "攀岩"          // climbing
+        case 32:  return "滑雪"          // downhillSkiing
+        case 60:  return "冥想"          // mindAndBody
+        case 73:  return "太极"          // taiChi
+        case 74:  return "普拉提"        // pilates
+        case 17:  return "足球"          // soccer
+        case 2:   return "羽毛球"        // badminton
+        case 45:  return "网球"          // tennis
+        case 3:   return "篮球"          // basketball
+        case 56:  return "乒乓球"        // tableTennis
+        case 26:  return "徒步"          // hiking
+        case 76:  return "跳绳"          // jumpRope
+        default:  return "其他运动"
+        }
+    }
+
+    /// Emoji icon for the workout type.
+    var typeEmoji: String {
+        switch activityType {
+        case 37:  return "🏃"   // running
+        case 52:  return "🚶"   // walking
+        case 13:  return "🚴"   // cycling
+        case 46:  return "🏊"   // swimming
+        case 50:  return "🧘"   // yoga
+        case 20, 58: return "🏋️" // strength
+        case 25:  return "💥"   // HIIT
+        case 15:  return "🏃"   // elliptical
+        case 43:  return "🚣"   // rowing
+        case 10:  return "🧗"   // climbing
+        case 26:  return "🥾"   // hiking
+        case 60, 73: return "🧘" // mindAndBody/taiChi
+        case 74:  return "🤸"   // pilates
+        case 17:  return "⚽"   // soccer
+        case 3:   return "🏀"   // basketball
+        case 45:  return "🎾"   // tennis
+        case 76:  return "🤾"   // jumpRope
+        case 32:  return "⛷"   // skiing
+        default:  return "🏅"
+        }
+    }
+
+    /// Duration formatted as "Xh Ym" or "Ym".
+    var durationFormatted: String {
+        let mins = Int(duration / 60)
+        if mins >= 60 {
+            return "\(mins / 60)h\(mins % 60)m"
+        }
+        return "\(mins)分钟"
+    }
+}
+
 // MARK: - Health Summary
 
 struct HealthSummary {
@@ -201,6 +282,8 @@ struct HealthSummary {
     var hrv: Double = 0
     var distanceKm: Double = 0
     var flightsClimbed: Double = 0
+    /// Individual workout sessions from HKWorkout
+    var workouts: [WorkoutRecord] = []
     var date: Date = Date()
 
     /// True if sleep phase data is available (requires Apple Watch)

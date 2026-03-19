@@ -78,6 +78,12 @@ struct HealthSkill: ClawSkill {
                 lines.append("🏢 爬楼：\(Int(totalFlights)) 层")
             }
 
+            // Workout type breakdown (from HKWorkout sessions)
+            let allWorkouts = filtered.flatMap { $0.workouts }
+            if !allWorkouts.isEmpty {
+                lines.append(contentsOf: workoutBreakdown(allWorkouts))
+            }
+
             // Best day highlight
             if daysWithData.count > 1 {
                 if let bestDay = daysWithData.max(by: { $0.steps < $1.steps }), bestDay.steps > 0 {
@@ -118,6 +124,88 @@ struct HealthSkill: ClawSkill {
 
             completion(lines.joined(separator: "\n"))
         }
+    }
+
+    // MARK: - Workout Breakdown
+
+    /// Builds a workout type breakdown section from HKWorkout sessions.
+    /// Groups by activity type, shows duration/calories/distance per type, and highlights patterns.
+    private func workoutBreakdown(_ workouts: [WorkoutRecord]) -> [String] {
+        var lines: [String] = ["\n🏋️ 运动类型明细"]
+
+        // Group workouts by type
+        var byType: [UInt: [WorkoutRecord]] = [:]
+        for w in workouts {
+            byType[w.activityType, default: []].append(w)
+        }
+
+        // Sort by total duration (most time spent first)
+        let sorted = byType.sorted { a, b in
+            let durA = a.value.reduce(0) { $0 + $1.duration }
+            let durB = b.value.reduce(0) { $0 + $1.duration }
+            return durA > durB
+        }
+
+        let totalDuration = workouts.reduce(0) { $0 + $1.duration }
+
+        for (typeID, records) in sorted {
+            let sample = records[0]
+            let count = records.count
+            let dur = records.reduce(0) { $0 + $1.duration }
+            let cal = records.reduce(0) { $0 + $1.totalCalories }
+            let dist = records.reduce(0) { $0 + $1.totalDistance }
+            let pct = totalDuration > 0 ? Int(dur / totalDuration * 100) : 0
+
+            var detail = "\(sample.typeEmoji) \(sample.typeName)：\(count)次"
+            // Duration
+            let mins = Int(dur / 60)
+            if mins >= 60 {
+                detail += " · \(mins / 60)h\(mins % 60)m"
+            } else {
+                detail += " · \(mins)分钟"
+            }
+            // Calories (only if significant)
+            if cal >= 10 {
+                detail += " · \(Int(cal))千卡"
+            }
+            // Distance (only for distance-based activities)
+            let distanceTypes: [UInt] = [37, 52, 13, 46, 26] // run, walk, cycle, swim, hike
+            if distanceTypes.contains(typeID) && dist > 100 {
+                let km = dist / 1000
+                detail += " · \(String(format: "%.1f", km))km"
+                // Average pace for running/walking
+                if (typeID == 37 || typeID == 52) && km > 0.1 && dur > 0 {
+                    let paceMinPerKm = (dur / 60) / km
+                    if paceMinPerKm > 0 && paceMinPerKm < 30 {
+                        let paceMin = Int(paceMinPerKm)
+                        let paceSec = Int((paceMinPerKm - Double(paceMin)) * 60)
+                        detail += "（配速 \(paceMin)'\(String(format: "%02d", paceSec))\"）"
+                    }
+                }
+            }
+            // Proportion if multiple types
+            if sorted.count > 1 {
+                detail += "（\(pct)%）"
+            }
+            lines.append(detail)
+        }
+
+        // Workout frequency insight
+        if workouts.count >= 3 {
+            let uniqueDays = Set(workouts.map { Calendar.current.startOfDay(for: $0.startDate) }).count
+            let typeCount = byType.count
+            if typeCount >= 3 {
+                lines.append("🌈 运动种类丰富（\(typeCount)种），交叉训练有助于全面提升！")
+            } else if typeCount == 1 {
+                let name = workouts[0].typeName
+                lines.append("💡 这段时间只做了\(name)，可以尝试搭配其他类型运动来均衡发展。")
+            }
+            if uniqueDays >= 5 {
+                lines.append("🔥 \(uniqueDays)天有运动记录，运动习惯非常棒！")
+            }
+        }
+
+        return lines
     }
 
     // MARK: - Health Metric

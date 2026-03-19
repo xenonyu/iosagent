@@ -18,7 +18,7 @@ struct MoodSkill: ClawSkill {
         let events = CDLifeEvent.fetch(from: interval.start, to: interval.end, in: context.coreDataContext)
 
         if events.isEmpty {
-            completion("😊 \(range.label)暂无心情记录。\n通过对话告诉我你今天的心情，我会帮你记录下来！\n\n💡 试试说："今天心情不错"、"有点累" 或 "今天很开心"，我会帮你记录并分析趋势。")
+            completion("😊 \(range.label)暂无心情记录。\n通过对话告诉我你今天的心情，我会帮你记录下来！\n\n💡 试试说：「今天心情不错」、「有点累」或「今天很开心」，我会帮你记录并分析趋势。")
             return
         }
 

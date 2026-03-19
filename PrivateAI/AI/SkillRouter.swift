@@ -20,6 +20,7 @@ enum QueryIntent {
     case photoSearch(query: String)
     case countdown(topic: String)
     case todo(action: TodoAction, content: String)
+    case habit(action: HabitAction, content: String)
     case unknown
 }
 
@@ -105,6 +106,20 @@ struct SkillRouter {
         if containsAny(lower, ["生日"]) && containsAny(lower, ["还有", "多久", "几天", "什么时候", "哪天", "倒计时"]) {
             let topic = extractCountdownTopic(from: lower)
             return .countdown(topic: topic)
+        }
+
+        // --- Habit Tracking ---
+        if containsAny(lower, ["习惯", "打卡", "habit", "check in", "checkin"]) {
+            let (action, content) = extractHabitAction(from: lower, original: text)
+            return .habit(action: action, content: content)
+        }
+        if containsAny(lower, ["创建习惯", "新习惯", "添加习惯", "追踪习惯", "new habit", "create habit", "track habit"]) {
+            let content = extractHabitContent(from: text)
+            return .habit(action: .create, content: content)
+        }
+        if containsAny(lower, ["删除习惯", "去掉习惯", "不追踪", "remove habit", "delete habit"]) {
+            let content = extractHabitContent(from: text)
+            return .habit(action: .delete, content: content)
         }
 
         // --- Todo / Memo ---
@@ -274,6 +289,63 @@ struct SkillRouter {
         let prefixes = ["帮我记个待办", "记个待办", "添加待办", "新增待办", "提醒我",
                         "帮我记个", "add todo", "add task", "remind me to",
                         "完成待办", "完成"]
+        let lower = text.lowercased()
+        for prefix in prefixes {
+            if let range = lower.range(of: prefix) {
+                let content = String(text[range.upperBound...]).trimmingCharacters(in: .whitespaces)
+                if !content.isEmpty { return content }
+            }
+        }
+        return ""
+    }
+
+    // MARK: - Habit Action Extraction
+
+    private static func extractHabitAction(from lower: String, original: String) -> (HabitAction, String) {
+        // Stats
+        if containsAny(lower, ["统计", "数据", "报告", "分析", "stats", "report", "分析习惯"]) {
+            let content = extractHabitContent(from: original)
+            return (.stats, content)
+        }
+        // Create
+        if containsAny(lower, ["创建", "新增", "添加", "追踪", "开始", "create", "new", "add", "track"]) {
+            let content = extractHabitContent(from: original)
+            return (.create, content)
+        }
+        // Delete
+        if containsAny(lower, ["删除", "去掉", "移除", "不要", "remove", "delete"]) {
+            let content = extractHabitContent(from: original)
+            return (.delete, content)
+        }
+        // Check in all
+        if containsAny(lower, ["全部打卡", "全部签到", "都打卡", "check in all", "checkin all"]) {
+            return (.checkin, "_all")
+        }
+        // Check in specific
+        if containsAny(lower, ["打卡", "签到", "check in", "checkin", "done"]) {
+            let content = extractHabitContent(from: original)
+            return (.checkin, content)
+        }
+        // List
+        if containsAny(lower, ["我的习惯", "习惯列表", "哪些习惯", "list", "habits", "查看习惯"]) {
+            return (.list, "")
+        }
+        // Default: list
+        return (.list, "")
+    }
+
+    private static func extractHabitContent(from text: String) -> String {
+        let delimiters = ["：", ":", "——", "—", "- "]
+        for delim in delimiters {
+            if let range = text.range(of: delim) {
+                let content = String(text[range.upperBound...]).trimmingCharacters(in: .whitespaces)
+                if !content.isEmpty { return content }
+            }
+        }
+        let prefixes = ["创建习惯", "新习惯", "添加习惯", "追踪习惯", "删除习惯", "去掉习惯",
+                        "打卡", "签到", "习惯统计", "习惯数据",
+                        "create habit", "new habit", "track habit",
+                        "delete habit", "remove habit", "check in"]
         let lower = text.lowercased()
         for prefix in prefixes {
             if let range = lower.range(of: prefix) {

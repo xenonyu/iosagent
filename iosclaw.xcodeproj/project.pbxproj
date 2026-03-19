@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		000C45E062EE846A6DC3E6E1 /* TodoSkill.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85998145F0B8168C2FE2522 /* TodoSkill.swift */; };
 		0570EE17ED17F727A06A3B0D /* RecommendationSkill.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0E0CB3253163E40232B6BB4 /* RecommendationSkill.swift */; };
 		0D30AD56F5E48A735FD34A96 /* PrivateAIApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9400C7ACA018FA9DB3A65F7A /* PrivateAIApp.swift */; };
 		157BA3783D1DA0417CE308C3 /* WidgetKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = BCC752E6251770B3ED0266FE /* WidgetKit.framework */; };
@@ -18,6 +19,8 @@
 		31B4B740BF0E0D8FE7904BE4 /* PhotoMetadataService.swift in Sources */ = {isa = PBXBuildFile; fileRef = FD7475206AF12DD9FDE4E568 /* PhotoMetadataService.swift */; };
 		37CEB8CFA6B43087E51D14BA /* StatsViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA3B8D219A80B9369AC4349C /* StatsViewModel.swift */; };
 		3A0DDB0DF46DB35B0CB08084 /* SpeechService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 31757FD0C5225CD41F60B836 /* SpeechService.swift */; };
+		3C56D125E9C220F924B1E0B4 /* HabitSkill.swift in Sources */ = {isa = PBXBuildFile; fileRef = 521E0A5E81B31CB156CA8448 /* HabitSkill.swift */; };
+		3E2E018A27AFE72A51667884 /* CountdownSkill.swift in Sources */ = {isa = PBXBuildFile; fileRef = A70FF8187392AC19ACF2C265 /* CountdownSkill.swift */; };
 		3F7172537283DC3F88EC22D3 /* TimelineView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0624FDC274E59C094C592A70 /* TimelineView.swift */; };
 		418AC465E1B3DBED2C1B5BC4 /* HealthSkill.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C1BB503360544C933017A41 /* HealthSkill.swift */; };
 		53F1B2B9286DB0DF74C9ED13 /* ClawEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 21F123D2B27E6BFA0F919E5F /* ClawEngine.swift */; };
@@ -87,6 +90,7 @@
 		492C101596804A43682EF680 /* MainTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainTabView.swift; sourceTree = "<group>"; };
 		50D32FEE73A5CF23CD2DE9BA /* iosclaw.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = iosclaw.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		50F1BEF61AFC051E2B51866E /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		521E0A5E81B31CB156CA8448 /* HabitSkill.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HabitSkill.swift; sourceTree = "<group>"; };
 		56B2FE7E27D4FAA1D6E8940E /* PhotoSearchService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotoSearchService.swift; sourceTree = "<group>"; };
 		56EFC4A5014C197FD4D053A8 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		5D806134713EBA25781AD08B /* SettingsViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsViewModel.swift; sourceTree = "<group>"; };
@@ -109,8 +113,10 @@
 		9DF89216CF2DAC810B099484 /* SkillRouter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkillRouter.swift; sourceTree = "<group>"; };
 		A0E0CB3253163E40232B6BB4 /* RecommendationSkill.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecommendationSkill.swift; sourceTree = "<group>"; };
 		A28B68FF7E20E12114174A8E /* SwiftUI.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = SwiftUI.framework; path = System/Library/Frameworks/SwiftUI.framework; sourceTree = SDKROOT; };
+		A70FF8187392AC19ACF2C265 /* CountdownSkill.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CountdownSkill.swift; sourceTree = "<group>"; };
 		B21481B5C58FF290408F4020 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		B6E64B7C2D9060B5BAF2E2DF /* PrivateAI.xcdatamodel */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcdatamodel; path = PrivateAI.xcdatamodel; sourceTree = "<group>"; };
+		B85998145F0B8168C2FE2522 /* TodoSkill.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TodoSkill.swift; sourceTree = "<group>"; };
 		BAD2B355FE0CA41E0A14F3C4 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		BCC752E6251770B3ED0266FE /* WidgetKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WidgetKit.framework; path = System/Library/Frameworks/WidgetKit.framework; sourceTree = SDKROOT; };
 		BE8A09E7AA4990FD0BA33713 /* SkillRegistry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkillRegistry.swift; sourceTree = "<group>"; };
@@ -189,6 +195,8 @@
 			isa = PBXGroup;
 			children = (
 				42167BD1FB1325E7A4A9B494 /* CalendarSkill.swift */,
+				A70FF8187392AC19ACF2C265 /* CountdownSkill.swift */,
+				521E0A5E81B31CB156CA8448 /* HabitSkill.swift */,
 				1C1BB503360544C933017A41 /* HealthSkill.swift */,
 				0ACE818BAD02C2D8CBA59243 /* LocationSkill.swift */,
 				7DC0818F57D4D75FB86E927F /* MoodSkill.swift */,
@@ -197,6 +205,7 @@
 				A0E0CB3253163E40232B6BB4 /* RecommendationSkill.swift */,
 				749BA5F94BA2252D4E0744BB /* RecordSkill.swift */,
 				85E0695CE3DE415DB52E76A0 /* SummarySkill.swift */,
+				B85998145F0B8168C2FE2522 /* TodoSkill.swift */,
 				EE946ED94A94BD4EC76A955D /* UnknownSkill.swift */,
 			);
 			path = Skills;
@@ -510,6 +519,8 @@
 				E7BF1F1600B6EF0EC17DA36C /* ContentView.swift in Sources */,
 				9E3ED1AFB416BF0BFDDEAA93 /* ContextMemory.swift in Sources */,
 				FB9010CD507564F884C9E8C5 /* CoreDataExtensions.swift in Sources */,
+				3E2E018A27AFE72A51667884 /* CountdownSkill.swift in Sources */,
+				3C56D125E9C220F924B1E0B4 /* HabitSkill.swift in Sources */,
 				71F709C5BB09A038E435AE40 /* HealthService.swift in Sources */,
 				418AC465E1B3DBED2C1B5BC4 /* HealthSkill.swift in Sources */,
 				1629AC2683D0413511958C4D /* LocationMapView.swift in Sources */,
@@ -545,6 +556,7 @@
 				6AEDC1267F87115071627444 /* SummarySkill.swift in Sources */,
 				3F7172537283DC3F88EC22D3 /* TimelineView.swift in Sources */,
 				7C2D5D42ED35AE82C6289768 /* TimelineViewModel.swift in Sources */,
+				000C45E062EE846A6DC3E6E1 /* TodoSkill.swift in Sources */,
 				C2E4B7A8A8C318438910C623 /* UnknownSkill.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

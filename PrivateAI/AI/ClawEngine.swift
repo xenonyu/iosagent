@@ -53,6 +53,7 @@ final class ClawEngine {
         registry.register(SummarySkill())
         registry.register(CountdownSkill())
         registry.register(TodoSkill())
+        registry.register(HabitSkill())
         registry.register(RecommendationSkill())
         registry.register(UnknownSkill())
     }

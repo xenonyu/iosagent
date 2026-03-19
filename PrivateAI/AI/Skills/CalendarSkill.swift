@@ -14,24 +14,31 @@ struct CalendarSkill: ClawSkill {
     func execute(intent: QueryIntent, context: SkillContext, completion: @escaping (String) -> Void) {
         guard case .calendar(let range) = intent else { return }
 
-        // For today's schedule, enrich with health context (sleep + activity readiness)
+        // For today's schedule, enrich with health context (sleep + activity + HRV readiness)
         let cal = Calendar.current
         let isTodayQuery = (range == .today)
         if isTodayQuery && context.healthService.isHealthDataAvailable {
-            let yesterday = cal.date(byAdding: .day, value: -1, to: Date()) ?? Date()
-            context.healthService.fetchDailySummary(for: yesterday) { sleepSummary in
-                context.healthService.fetchDailySummary(for: Date()) { todaySummary in
-                    var response = self.buildResponse(range: range, context: context)
-                    let healthContext = self.buildHealthReadiness(
-                        lastNightSleep: sleepSummary,
-                        todayActivity: todaySummary,
-                        events: context.calendarService.todayEvents()
-                    )
-                    if !healthContext.isEmpty {
-                        response += "\n\n" + healthContext
-                    }
-                    completion(response)
+            // Fetch 7 days in one call — provides today, yesterday, AND personal baseline
+            context.healthService.fetchSummaries(days: 7) { summaries in
+                let todaySummary = summaries.first { cal.isDateInToday($0.date) }
+                    ?? HealthSummary(date: Date())
+                let yesterday = cal.date(byAdding: .day, value: -1, to: Date()) ?? Date()
+                let sleepSummary = summaries.first { cal.isDate($0.date, inSameDayAs: yesterday) }
+                    ?? HealthSummary(date: yesterday)
+                // Baseline: past days excluding today, with actual data
+                let baseline = summaries.filter { !cal.isDateInToday($0.date) && $0.hasData }
+
+                var response = self.buildResponse(range: range, context: context)
+                let healthContext = self.buildHealthReadiness(
+                    lastNightSleep: sleepSummary,
+                    todayActivity: todaySummary,
+                    baseline: baseline,
+                    events: context.calendarService.todayEvents()
+                )
+                if !healthContext.isEmpty {
+                    response += "\n\n" + healthContext
                 }
+                completion(response)
             }
         } else {
             completion(buildResponse(range: range, context: context))
@@ -940,19 +947,22 @@ struct CalendarSkill: ClawSkill {
     // MARK: - Health Readiness (Cross-Data Insight)
 
     /// Builds a brief health readiness note for today's calendar view.
-    /// Connects last night's sleep and today's activity with schedule density
-    /// to provide a holistic "how ready am I" insight.
+    /// Connects last night's sleep, today's activity, and HRV/RHR vs personal baseline
+    /// with schedule density to provide a holistic "how ready am I" insight.
     private func buildHealthReadiness(
         lastNightSleep: HealthSummary,
         todayActivity: HealthSummary,
+        baseline: [HealthSummary],
         events: [CalendarEventItem]
     ) -> String {
         let sleepHours = lastNightSleep.sleepHours
         let steps = todayActivity.steps
         let exerciseMin = todayActivity.exerciseMinutes
+        let todayHRV = todayActivity.hrv
+        let todayRHR = todayActivity.restingHeartRate
 
         // Need at least some health data to show this section
-        guard sleepHours > 0 || steps > 100 || exerciseMin > 0 else { return "" }
+        guard sleepHours > 0 || steps > 100 || exerciseMin > 0 || todayHRV > 0 || todayRHR > 0 else { return "" }
 
         var lines: [String] = []
         lines.append("💪 今日状态速览：")
@@ -985,6 +995,37 @@ struct CalendarSkill: ClawSkill {
             lines.append(sleepLine)
         }
 
+        // --- HRV cognitive readiness (the best single indicator of recovery) ---
+        // Compare today's HRV against personal 7-day baseline — not population averages.
+        // Higher HRV = parasympathetic dominance = better focus, creativity, stress tolerance.
+        let baselineHRVDays = baseline.filter { $0.hrv > 0 }
+        if todayHRV > 0 && baselineHRVDays.count >= 2 {
+            let avgHRV = baselineHRVDays.reduce(0) { $0 + $1.hrv } / Double(baselineHRVDays.count)
+            let ratio = todayHRV / avgHRV
+            let pctDiff = Int((ratio - 1) * 100)
+
+            let hrvEmoji: String
+            let hrvVerdict: String
+            if ratio >= 1.1 {
+                hrvEmoji = "🟢"
+                hrvVerdict = "高于基线（+\(pctDiff)%），专注力和压力耐受力很好"
+            } else if ratio >= 0.9 {
+                hrvEmoji = "🟢"
+                hrvVerdict = "接近基线，状态正常"
+            } else if ratio >= 0.75 {
+                hrvEmoji = "🟡"
+                hrvVerdict = "低于基线（\(pctDiff)%），认知负荷能力可能下降"
+            } else {
+                hrvEmoji = "🔴"
+                hrvVerdict = "明显偏低（\(pctDiff)%），身体可能在应对压力或疲劳"
+            }
+            lines.append("  \(hrvEmoji) HRV \(Int(todayHRV)) ms — \(hrvVerdict)")
+        } else if todayHRV > 0 {
+            // HRV available but not enough baseline — show raw value with general guidance
+            let hrvEmoji = todayHRV >= 50 ? "🟢" : (todayHRV >= 30 ? "🟡" : "🔴")
+            lines.append("  \(hrvEmoji) HRV \(Int(todayHRV)) ms（基线建立中，持续佩戴 Apple Watch 即可）")
+        }
+
         // --- Today's activity progress ---
         if steps > 100 || exerciseMin > 0 {
             var actParts: [String] = []
@@ -997,30 +1038,62 @@ struct CalendarSkill: ClawSkill {
             lines.append("  " + actParts.joined(separator: "  "))
         }
 
-        // --- Cross-data insight: health × schedule density ---
+        // --- Resting heart rate with baseline comparison ---
+        let baselineRHRDays = baseline.filter { $0.restingHeartRate > 0 }
+        if todayRHR > 0 && baselineRHRDays.count >= 2 {
+            let avgRHR = baselineRHRDays.reduce(0) { $0 + $1.restingHeartRate } / Double(baselineRHRDays.count)
+            let diff = todayRHR - avgRHR
+            if diff >= 5 {
+                lines.append("  🔴 静息心率 \(Int(todayRHR)) bpm（比基线高 \(Int(diff))），恢复可能不充分")
+            } else if diff <= -3 {
+                lines.append("  🟢 静息心率 \(Int(todayRHR)) bpm（比基线低 \(Int(-diff))），恢复很好")
+            } else if todayRHR <= 55 {
+                lines.append("  🟢 静息心率 \(Int(todayRHR)) bpm，心肺状态很好")
+            }
+            // Normal range near baseline — don't clutter with neutral info
+        } else if todayRHR > 0 {
+            if todayRHR > 80 {
+                lines.append("  ❤️ 静息心率偏高（\(Int(todayRHR)) bpm），身体可能需要更多休息")
+            } else if todayRHR <= 55 {
+                lines.append("  ❤️ 静息心率 \(Int(todayRHR)) bpm，心肺状态很好")
+            }
+        }
+
+        // --- Cross-data insight: health × HRV × schedule density ---
         let timedEvents = events.filter { !$0.isAllDay }
         let meetingCount = timedEvents.count
         let totalMeetingMin = timedEvents.reduce(0.0) { $0 + $1.duration } / 60.0
         let isBusyDay = meetingCount >= 4 || totalMeetingMin >= 300
 
-        if isBusyDay && sleepHours > 0 && sleepHours < 6.0 {
-            lines.append("  ⚡ 今天有 \(meetingCount) 个安排但昨晚睡眠偏少，记得安排小憩和补充水分")
-        } else if isBusyDay && sleepHours >= 7.5 {
-            lines.append("  ✅ 睡眠充足，精力应该够应对今天的 \(meetingCount) 个安排")
-        } else if !isBusyDay && sleepHours > 0 && sleepHours < 6.0 {
-            lines.append("  💡 昨晚睡得少，好在今天不太忙，可以找时间补个午休")
-        } else if meetingCount == 0 && sleepHours >= 7.0 {
-            lines.append("  🌟 精力充沛又没有会议，适合做需要专注的事")
-        }
+        // Compute a quick readiness signal combining sleep + HRV
+        let hasLowHRV: Bool = {
+            guard todayHRV > 0, baselineHRVDays.count >= 2 else { return false }
+            let avgHRV = baselineHRVDays.reduce(0) { $0 + $1.hrv } / Double(baselineHRVDays.count)
+            return todayHRV / avgHRV < 0.8
+        }()
+        let hasPoorSleep = sleepHours > 0 && sleepHours < 6.0
+        let hasGoodSleep = sleepHours >= 7.5
 
-        // --- Resting heart rate insight (if abnormally high, may indicate fatigue) ---
-        let rhr = todayActivity.restingHeartRate
-        if rhr > 0 {
-            if rhr > 80 {
-                lines.append("  ❤️ 静息心率偏高（\(Int(rhr)) bpm），身体可能需要更多休息")
-            } else if rhr > 0 && rhr <= 55 {
-                lines.append("  ❤️ 静息心率 \(Int(rhr)) bpm，心肺状态很好")
+        if isBusyDay && (hasPoorSleep || hasLowHRV) {
+            if hasPoorSleep && hasLowHRV {
+                lines.append("  ⚡ 睡眠不足 + HRV 偏低，今天 \(meetingCount) 个安排会比较吃力 — 优先处理重要事项，简化低优先级")
+            } else if hasLowHRV {
+                lines.append("  ⚡ HRV 低于基线遇上密集日程 — 长会议前深呼吸 1 分钟，保持节奏")
+            } else {
+                lines.append("  ⚡ 今天有 \(meetingCount) 个安排但昨晚睡眠偏少，记得安排小憩和补充水分")
             }
+        } else if isBusyDay && hasGoodSleep && !hasLowHRV {
+            lines.append("  ✅ 睡眠充足、身体恢复好，精力够应对今天的 \(meetingCount) 个安排")
+        } else if !isBusyDay && (hasPoorSleep || hasLowHRV) {
+            if hasLowHRV && hasPoorSleep {
+                lines.append("  💡 身体在恢复中，好在今天不忙 — 适合轻度活动和早点休息")
+            } else if hasLowHRV {
+                lines.append("  💡 HRV 偏低但日程轻松，让身体自然恢复")
+            } else {
+                lines.append("  💡 昨晚睡得少，好在今天不太忙，可以找时间补个午休")
+            }
+        } else if meetingCount == 0 && hasGoodSleep && !hasLowHRV {
+            lines.append("  🌟 精力充沛又没有会议，适合做需要深度专注的事")
         }
 
         return lines.joined(separator: "\n")

@@ -459,9 +459,39 @@ struct SummarySkill: ClawSkill {
 
                 // Heart rate — prefer resting HR (more meaningful) over average
                 if health.restingHeartRate > 0 {
-                    lines.append("  🫀 静息心率 \(Int(health.restingHeartRate)) BPM")
+                    // Compare RHR to 7-day baseline for trend insight
+                    let baselineRHR = pastDays.filter { $0.restingHeartRate > 0 }
+                    if baselineRHR.count >= 2 {
+                        let avgRHR = baselineRHR.reduce(0) { $0 + $1.restingHeartRate } / Double(baselineRHR.count)
+                        let diff = health.restingHeartRate - avgRHR
+                        if diff >= 5 {
+                            lines.append("  🫀 静息心率 \(Int(health.restingHeartRate)) BPM ⬆ 比近期高 \(Int(diff))，恢复可能不充分")
+                        } else if diff <= -3 {
+                            lines.append("  🫀 静息心率 \(Int(health.restingHeartRate)) BPM ⬇ 比近期低 \(Int(-diff))，恢复良好")
+                        } else {
+                            lines.append("  🫀 静息心率 \(Int(health.restingHeartRate)) BPM")
+                        }
+                    } else {
+                        lines.append("  🫀 静息心率 \(Int(health.restingHeartRate)) BPM")
+                    }
+
+                    // HRV with personal baseline context — the best recovery signal
                     if health.hrv > 0 {
-                        lines.append("  📳 HRV \(Int(health.hrv)) ms")
+                        let baselineHRV = pastDays.filter { $0.hrv > 0 }
+                        if baselineHRV.count >= 2 {
+                            let avgHRV = baselineHRV.reduce(0) { $0 + $1.hrv } / Double(baselineHRV.count)
+                            let ratio = health.hrv / avgHRV
+                            let pctDiff = Int((ratio - 1) * 100)
+                            if ratio >= 1.1 {
+                                lines.append("  📳 HRV \(Int(health.hrv)) ms ↑ 高于基线 +\(pctDiff)%，状态很好")
+                            } else if ratio < 0.8 {
+                                lines.append("  📳 HRV \(Int(health.hrv)) ms ↓ 低于基线 \(pctDiff)%，身体在恢复中")
+                            } else {
+                                lines.append("  📳 HRV \(Int(health.hrv)) ms")
+                            }
+                        } else {
+                            lines.append("  📳 HRV \(Int(health.hrv)) ms")
+                        }
                     }
                 } else if health.heartRate > 0 {
                     lines.append("  ❤️ 平均心率 \(Int(health.heartRate)) BPM")
@@ -1117,7 +1147,26 @@ struct SummarySkill: ClawSkill {
             }
         }
 
-        // --- Insight 6: Exercise + sleep correlation from recent data ---
+        // --- Insight 6: HRV anomaly detection (stress/recovery signal) ---
+        if health.hrv > 0 {
+            let baselineHRVDays = pastDays.filter { $0.hrv > 0 }
+            if baselineHRVDays.count >= 3 {
+                let avgHRV = baselineHRVDays.reduce(0) { $0 + $1.hrv } / Double(baselineHRVDays.count)
+                let ratio = health.hrv / avgHRV
+                if ratio < 0.75 {
+                    let pctDrop = Int((1 - ratio) * 100)
+                    if isBusyDay {
+                        insights.append("📳↔️📅 HRV 比基线低 \(pctDrop)%，密集日程下注意能量管理 —— 长任务拆成小块，中间留白")
+                    } else {
+                        insights.append("📳 HRV 比基线低 \(pctDrop)%，身体在应对某种压力 —— 今天适合放松恢复")
+                    }
+                } else if ratio >= 1.15 && health.exerciseMinutes < 15 {
+                    insights.append("📳↔️🏃 HRV 高于基线 \(Int((ratio - 1) * 100))%，恢复很好 —— 今天身体状态适合挑战高强度运动")
+                }
+            }
+        }
+
+        // --- Insight 7: Exercise + sleep correlation from recent data ---
         if pastDays.count >= 5 {
             let exerciseDays = pastDays.filter { $0.exerciseMinutes >= 30 && $0.sleepHours > 0 }
             let restDays = pastDays.filter { $0.exerciseMinutes < 15 && $0.sleepHours > 0 }

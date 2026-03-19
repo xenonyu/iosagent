@@ -372,7 +372,12 @@ struct SummarySkill: ClawSkill {
             let timeGreet = hour < 12 ? "早安" : (hour < 18 ? "下午好" : "晚上好")
 
             var lines: [String] = []
-            lines.append("🌅 \(timeGreet)！今天的生活全景：\n")
+            let isMorningBriefing = hour < 10 && (health.steps < 1000 && health.exerciseMinutes < 5)
+            if isMorningBriefing {
+                lines.append("🌅 \(timeGreet)！这是你的晨间简报：\n")
+            } else {
+                lines.append("🌅 \(timeGreet)！今天的生活全景：\n")
+            }
 
             var hasData = false
 
@@ -432,6 +437,52 @@ struct SummarySkill: ClawSkill {
             let hasHealthData = health.steps > 0 || health.exerciseMinutes > 0 || health.sleepHours > 0
                 || health.activeCalories > 0 || health.distanceKm > 0.01 || health.flightsClimbed > 0
                 || health.heartRate > 0
+
+            // --- Morning Briefing: Yesterday's Activity Recap ---
+            // Before 10am, today's activity data (steps/exercise) is usually near-zero.
+            // Instead of showing "0 steps", show yesterday's recap so the morning greeting
+            // is actually useful: sleep + yesterday's activity + today's calendar.
+            if isMorningBriefing {
+                let yesterday = cal.date(byAdding: .day, value: -1, to: cal.startOfDay(for: now))!
+                let yesterdaySummary = recentSummaries.first { cal.isDate($0.date, inSameDayAs: yesterday) }
+                if let yd = yesterdaySummary, yd.hasData,
+                   (yd.steps > 0 || yd.exerciseMinutes > 0) {
+                    hasData = true
+                    lines.append("\n📋 **昨日活动**")
+                    if yd.steps > 0 {
+                        let stepGoal = 8000.0
+                        let goalTag = yd.steps >= stepGoal ? " ✅" : ""
+                        lines.append("  👟 \(Int(yd.steps).formatted()) 步\(goalTag)")
+                    }
+                    if yd.exerciseMinutes > 0 {
+                        let goalTag = yd.exerciseMinutes >= 30 ? " ✅" : ""
+                        lines.append("  ⏱ 运动 \(Int(yd.exerciseMinutes)) 分钟\(goalTag)")
+                    }
+                    if !yd.workouts.isEmpty {
+                        let workoutDesc = yd.workouts.sorted { $0.duration > $1.duration }
+                            .prefix(3)
+                            .map { "\($0.typeEmoji)\($0.typeName) \($0.durationFormatted)" }
+                            .joined(separator: "  ")
+                        lines.append("     \(workoutDesc)")
+                    }
+                    if yd.activeCalories > 0 {
+                        lines.append("  🔥 消耗 \(Int(yd.activeCalories).formatted()) 千卡")
+                    }
+                    if yd.distanceKm > 0.1 {
+                        lines.append("  📏 步行 \(String(format: "%.1f", yd.distanceKm)) 公里")
+                    }
+                    // Quick verdict for yesterday
+                    var ydScore = 0
+                    if yd.steps >= 8000 { ydScore += 1 }
+                    if yd.exerciseMinutes >= 30 { ydScore += 1 }
+                    if ydScore == 2 {
+                        lines.append("  🏅 昨天步数和运动都达标了！")
+                    } else if ydScore == 0 && yd.steps > 0 {
+                        lines.append("  💡 昨天活动量偏低，今天动起来吧")
+                    }
+                }
+            }
+
             if hasHealthData {
                 hasData = true
                 // Compute 7-day averages for comparison (exclude today)
@@ -439,7 +490,9 @@ struct SummarySkill: ClawSkill {
                 let avgSteps = pastDays.isEmpty ? 0 : pastDays.reduce(0) { $0 + $1.steps } / Double(pastDays.count)
                 let avgExercise = pastDays.isEmpty ? 0 : pastDays.reduce(0) { $0 + $1.exerciseMinutes } / Double(pastDays.count)
 
-                lines.append("\n🏃 **健康**")
+                // In morning briefing mode, label this section differently since it's mostly sleep/recovery
+                let healthHeader = isMorningBriefing ? "\n😴 **今晨状态**" : "\n🏃 **健康**"
+                lines.append(healthHeader)
 
                 // Steps with goal progress
                 if health.steps > 0 {

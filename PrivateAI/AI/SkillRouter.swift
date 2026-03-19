@@ -24,6 +24,8 @@ enum QueryIntent {
     case greeting(type: GreetingType)
     case randomDecision(action: RandomDecisionAction)
     case dateTime(query: DateTimeQuery)
+    case math(expression: String)
+    case unitConversion(value: Double, fromUnit: String, toUnit: String)
     case unknown
 }
 
@@ -74,6 +76,16 @@ struct SkillRouter {
         // --- Date / Time ---
         if let dtQuery = parseDateTimeQuery(lower) {
             return .dateTime(query: dtQuery)
+        }
+
+        // --- Unit Conversion ---
+        if let conversion = parseUnitConversion(lower) {
+            return .unitConversion(value: conversion.0, fromUnit: conversion.1, toUnit: conversion.2)
+        }
+
+        // --- Math / Calculator ---
+        if let expr = parseMathExpression(lower, original: text) {
+            return .math(expression: expr)
         }
 
         // --- Greeting / Conversational ---
@@ -576,7 +588,174 @@ struct SkillRouter {
         return nil
     }
 
+    // MARK: - Math Expression Parsing
+
+    /// Detects math/calculator requests and extracts the arithmetic expression.
+    private static func parseMathExpression(_ lower: String, original: String) -> String? {
+        // Explicit "calculate" keywords
+        if containsAny(lower, ["计算", "算一下", "算下", "等于多少", "等于几", "是多少",
+                                "calculate", "compute", "多少钱", "总共多少",
+                                "加上", "减去", "乘以", "除以"]) {
+            let expr = extractMathExpr(from: original)
+            if !expr.isEmpty { return expr }
+        }
+
+        // Pure math expression detection: starts with digit or paren, contains operators
+        let stripped = lower.trimmingCharacters(in: .whitespacesAndNewlines)
+        if looksLikeMathExpression(stripped) {
+            return stripped
+        }
+
+        // "X + Y = ?" or "X * Y" patterns embedded in text
+        if let regex = try? NSRegularExpression(
+            pattern: "\\d+[\\s]*([\\.\\d]*[\\s]*[+\\-×÷*/xX%^])+[\\s]*[\\.\\d]+",
+            options: []
+        ) {
+            let ns = original as NSString
+            if let match = regex.firstMatch(in: original, options: [],
+                                             range: NSRange(location: 0, length: ns.length)) {
+                return ns.substring(with: match.range)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        }
+
+        return nil
+    }
+
+    /// Check if a string looks like a standalone math expression (e.g. "3+5", "(2+3)*4").
+    private static func looksLikeMathExpression(_ text: String) -> Bool {
+        guard !text.isEmpty else { return false }
+        // Must start with digit, paren, or minus sign
+        guard let first = text.unicodeScalars.first,
+              CharacterSet.decimalDigits.contains(first) || first == "(" || first == "-" else {
+            return false
+        }
+        // Must contain at least one operator
+        let operators: [Character] = ["+", "-", "*", "/", "×", "÷", "^", "%"]
+        let hasOperator = text.contains { operators.contains($0) }
+        guard hasOperator else { return false }
+        // Should be relatively short and mostly math characters
+        let mathChars = CharacterSet.decimalDigits
+            .union(CharacterSet(charactersIn: "+-*/×÷^%().= ?xX"))
+            .union(.whitespaces)
+        let allMath = text.unicodeScalars.allSatisfy { mathChars.contains($0) }
+        return allMath && text.count <= 80
+    }
+
+    /// Extract math expression from a natural language query.
+    private static func extractMathExpr(from text: String) -> String {
+        var cleaned = text
+        let prefixes = ["计算", "算一下", "算下", "帮我算", "请计算", "calculate", "compute",
+                        "帮我计算", "你帮我算", "请帮我算"]
+        for prefix in prefixes {
+            if let range = cleaned.lowercased().range(of: prefix) {
+                cleaned = String(cleaned[range.upperBound...])
+                break
+            }
+        }
+        // Remove trailing question markers
+        cleaned = cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
+        cleaned = cleaned.replacingOccurrences(of: "[？?等于多少是几=]+$", with: "", options: .regularExpression)
+        cleaned = cleaned.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines.union(CharacterSet(charactersIn: "：:，,")))
+        return cleaned
+    }
+
     // MARK: - Helpers
+
+    // MARK: - Unit Conversion Parsing
+
+    /// Detects unit conversion queries like "25摄氏度转华氏", "10kg转磅", "5 miles to km"
+    private static func parseUnitConversion(_ text: String) -> (Double, String, String)? {
+        // Check if text contains conversion keywords
+        guard containsAny(text, ["转换", "转", "换算", "等于多少", "是多少", "convert", "to ",
+                                  "摄氏", "华氏", "℃", "℉", "celsius", "fahrenheit",
+                                  "公里", "英里", "千米", "km", "mile",
+                                  "公斤", "千克", "磅", "kg", "lb", "pound",
+                                  "厘米", "英寸", "cm", "inch",
+                                  "米转", "米是", "英尺", "feet", "foot", "ft",
+                                  "升", "加仑", "liter", "gallon",
+                                  "克转", "克是", "盎司", "gram", "ounce", "oz"]) else { return nil }
+
+        // Extract number from text
+        guard let regex = try? NSRegularExpression(pattern: "([\\d]+\\.?[\\d]*)", options: []),
+              let match = regex.firstMatch(in: text, options: [], range: NSRange(location: 0, length: (text as NSString).length)) else {
+            return nil
+        }
+        let numStr = (text as NSString).substring(with: match.range(at: 1))
+        guard let value = Double(numStr) else { return nil }
+
+        // Temperature
+        if containsAny(text, ["摄氏", "℃", "celsius", "°c"]) &&
+           containsAny(text, ["华氏", "℉", "fahrenheit", "°f", "转", "to ", "换", "等于"]) {
+            return (value, "celsius", "fahrenheit")
+        }
+        if containsAny(text, ["华氏", "℉", "fahrenheit", "°f"]) &&
+           containsAny(text, ["摄氏", "℃", "celsius", "°c", "转", "to ", "换", "等于"]) {
+            return (value, "fahrenheit", "celsius")
+        }
+
+        // Length: km ↔ miles
+        if containsAny(text, ["公里", "千米", "km", "kilometer"]) &&
+           containsAny(text, ["英里", "mile", "转", "to ", "换"]) {
+            return (value, "km", "miles")
+        }
+        if containsAny(text, ["英里", "mile"]) &&
+           containsAny(text, ["公里", "千米", "km", "kilometer", "转", "to ", "换"]) {
+            return (value, "miles", "km")
+        }
+
+        // Length: cm ↔ inches
+        if containsAny(text, ["厘米", "cm", "centimeter"]) &&
+           containsAny(text, ["英寸", "inch", "转", "to ", "换"]) {
+            return (value, "cm", "inches")
+        }
+        if containsAny(text, ["英寸", "inch"]) &&
+           containsAny(text, ["厘米", "cm", "centimeter", "转", "to ", "换"]) {
+            return (value, "inches", "cm")
+        }
+
+        // Length: m ↔ feet
+        if containsAny(text, ["米", "m "]) && !containsAny(text, ["公里", "千米", "厘米", "km", "cm"]) &&
+           containsAny(text, ["英尺", "feet", "foot", "ft", "转", "to "]) {
+            return (value, "meters", "feet")
+        }
+        if containsAny(text, ["英尺", "feet", "foot", "ft"]) &&
+           containsAny(text, ["米", "m", "转", "to ", "换"]) && !containsAny(text, ["公里", "千米", "km"]) {
+            return (value, "feet", "meters")
+        }
+
+        // Weight: kg ↔ lbs
+        if containsAny(text, ["公斤", "千克", "kg", "kilogram"]) &&
+           containsAny(text, ["磅", "lb", "pound", "转", "to ", "换"]) {
+            return (value, "kg", "lbs")
+        }
+        if containsAny(text, ["磅", "lb", "pound"]) &&
+           containsAny(text, ["公斤", "千克", "kg", "kilogram", "转", "to ", "换"]) {
+            return (value, "lbs", "kg")
+        }
+
+        // Weight: g ↔ oz
+        if containsAny(text, ["克", "gram", "g "]) && !containsAny(text, ["公斤", "千克", "kg"]) &&
+           containsAny(text, ["盎司", "oz", "ounce", "转", "to "]) {
+            return (value, "grams", "oz")
+        }
+        if containsAny(text, ["盎司", "oz", "ounce"]) &&
+           containsAny(text, ["克", "gram", "g", "转", "to ", "换"]) {
+            return (value, "oz", "grams")
+        }
+
+        // Volume: L ↔ gallons
+        if containsAny(text, ["升", "liter", "litre"]) &&
+           containsAny(text, ["加仑", "gallon", "转", "to ", "换"]) {
+            return (value, "liters", "gallons")
+        }
+        if containsAny(text, ["加仑", "gallon"]) &&
+           containsAny(text, ["升", "liter", "litre", "转", "to ", "换"]) {
+            return (value, "gallons", "liters")
+        }
+
+        return nil
+    }
 
     static func containsAny(_ text: String, _ keywords: [String]) -> Bool {
         keywords.contains { text.contains($0) }

@@ -145,6 +145,14 @@ struct HealthSkill: ClawSkill {
                 }
             }
 
+            // --- Calendar ↔ Exercise correlation ---
+            // Cross-reference calendar events to explain WHY certain days had more/less activity.
+            // This is a core iosclaw insight: connecting different iOS data sources about the user.
+            if daysWithData.count >= 3 {
+                lines.append(contentsOf: self.calendarExerciseCorrelation(
+                    summaries: daysWithData, interval: interval, context: context))
+            }
+
             // Related life events
             if !events.isEmpty {
                 lines.append("\n📝 相关记录：")
@@ -347,6 +355,119 @@ struct HealthSkill: ClawSkill {
             }
             if uniqueDays >= 5 {
                 lines.append("🔥 \(uniqueDays)天有运动记录，运动习惯非常棒！")
+            }
+        }
+
+        return lines
+    }
+
+    // MARK: - Calendar ↔ Exercise Correlation
+
+    /// Cross-references calendar events with exercise data to explain activity patterns.
+    /// e.g., "周三步数最低(2000步)，当天有4个连续会议" — the kind of self-knowledge
+    /// insight that only a personal AI with access to multiple iOS data sources can provide.
+    private func calendarExerciseCorrelation(summaries: [HealthSummary],
+                                             interval: DateInterval,
+                                             context: SkillContext) -> [String] {
+        let calEvents = context.calendarService.fetchEvents(from: interval.start, to: interval.end)
+        guard !calEvents.isEmpty else { return [] }
+
+        let cal = Calendar.current
+
+        // Build per-day event counts (non-all-day events only — all-day events don't block movement)
+        var eventsByDay: [Date: Int] = [:]
+        var meetingMinutesByDay: [Date: Double] = [:]
+        for event in calEvents where !event.isAllDay {
+            let dayStart = cal.startOfDay(for: event.startDate)
+            eventsByDay[dayStart, default: 0] += 1
+            meetingMinutesByDay[dayStart, default: 0] += event.duration / 60
+        }
+
+        // Pair each health summary day with its calendar load
+        struct DayPair {
+            let date: Date
+            let steps: Double
+            let exerciseMinutes: Double
+            let eventCount: Int
+            let meetingMinutes: Double
+        }
+        let paired: [DayPair] = summaries.map { s in
+            let dayStart = cal.startOfDay(for: s.date)
+            return DayPair(
+                date: dayStart,
+                steps: s.steps,
+                exerciseMinutes: s.exerciseMinutes,
+                eventCount: eventsByDay[dayStart] ?? 0,
+                meetingMinutes: meetingMinutesByDay[dayStart] ?? 0
+            )
+        }
+
+        // Need variance in both calendar load and activity to find meaningful correlation
+        let eventCounts = paired.map(\.eventCount)
+        let hasCalendarVariance = Set(eventCounts).count >= 2
+        guard hasCalendarVariance else { return [] }
+
+        var lines: [String] = []
+
+        // Split into busy vs light days using median event count as threshold
+        let sortedCounts = eventCounts.sorted()
+        let medianEvents = sortedCounts[sortedCounts.count / 2]
+        let threshold = max(medianEvents, 2) // at least 2 events to be "busy"
+
+        let busyDays = paired.filter { $0.eventCount >= threshold }
+        let lightDays = paired.filter { $0.eventCount < threshold }
+
+        guard !busyDays.isEmpty && !lightDays.isEmpty else { return [] }
+
+        let busyAvgSteps = busyDays.reduce(0) { $0 + $1.steps } / Double(busyDays.count)
+        let lightAvgSteps = lightDays.reduce(0) { $0 + $1.steps } / Double(lightDays.count)
+        let stepsDiff = lightAvgSteps - busyAvgSteps
+
+        // Only show if the difference is meaningful (>20% or >1500 steps)
+        guard lightAvgSteps > 0 && (abs(stepsDiff) / lightAvgSteps > 0.2 || abs(stepsDiff) > 1500) else {
+            return []
+        }
+
+        lines.append("")
+        lines.append("📅↔️🏃 日程与运动的关联")
+
+        let fmt = DateFormatter()
+        fmt.dateFormat = "E"
+        fmt.locale = Locale(identifier: "zh_CN")
+
+        if stepsDiff > 0 {
+            // Light days have more steps (typical pattern)
+            lines.append("   会议较多的日子（≥\(threshold)个）日均 \(Int(busyAvgSteps).formatted()) 步")
+            lines.append("   空闲日日均 \(Int(lightAvgSteps).formatted()) 步（多 \(Int(stepsDiff).formatted()) 步）")
+
+            // Identify the worst day specifically
+            if let worstDay = busyDays.max(by: { $0.steps > $1.steps || ($0.steps == $1.steps && $0.eventCount < $1.eventCount) }) {
+                if worstDay.eventCount >= 3 {
+                    let meetingHours = worstDay.meetingMinutes / 60
+                    if meetingHours >= 2 {
+                        lines.append("   📌 \(fmt.string(from: worstDay.date))最少活动（\(Int(worstDay.steps).formatted()) 步），当天 \(worstDay.eventCount) 个日程共 \(String(format: "%.1f", meetingHours))h")
+                    } else {
+                        lines.append("   📌 \(fmt.string(from: worstDay.date))最少活动（\(Int(worstDay.steps).formatted()) 步），当天有 \(worstDay.eventCount) 个日程")
+                    }
+                }
+            }
+
+            // Actionable advice
+            if busyAvgSteps < 5000 {
+                lines.append("   💡 会议密集日可以：会间散步 5 分钟、步行去开会、站立办公。")
+            } else {
+                lines.append("   💡 忙碌日也保持了一定活动量，不过空闲日更充分。")
+            }
+        } else {
+            // Busy days have more steps (unusual — commuting to meetings?)
+            lines.append("   有趣：会议多的日子反而多走了 \(Int(-stepsDiff).formatted()) 步")
+            lines.append("   可能与赶场开会、外出见面有关。")
+
+            // Check if busy days also have more exercise
+            let busyAvgExercise = busyDays.reduce(0) { $0 + $1.exerciseMinutes } / Double(busyDays.count)
+            let lightAvgExercise = lightDays.reduce(0) { $0 + $1.exerciseMinutes } / Double(lightDays.count)
+            if busyAvgExercise > lightAvgExercise + 10 {
+                lines.append("   ✅ 忙碌时运动量反而更高，保持这个节奏！")
             }
         }
 
@@ -646,7 +767,7 @@ struct HealthSkill: ClawSkill {
             case "vo2max":
                 self.respondVO2Max(summaries: withData, range: range, completion: completion)
             default:
-                respondOverview(summaries: withData, range: range, completion: completion)
+                respondOverview(summaries: withData, range: range, context: context, completion: completion)
             }
         }
     }
@@ -2826,7 +2947,7 @@ struct HealthSkill: ClawSkill {
         completion(lines.joined(separator: "\n"))
     }
 
-    private func respondOverview(summaries: [HealthSummary], range: QueryTimeRange, completion: @escaping (String) -> Void) {
+    private func respondOverview(summaries: [HealthSummary], range: QueryTimeRange, context: SkillContext, completion: @escaping (String) -> Void) {
         var lines: [String] = []
         let dayCount = Double(max(summaries.count, 1))
         let cal = Calendar.current
@@ -3042,6 +3163,18 @@ struct HealthSkill: ClawSkill {
                     }
                 }
             }
+        }
+
+        // --- Calendar ↔ Exercise correlation (overview context) ---
+        if summaries.count >= 3 {
+            let rangeInterval = range.interval
+            let overviewStart = summaries.map(\.date).min() ?? rangeInterval.start
+            let overviewEnd = summaries.map(\.date).max() ?? rangeInterval.end
+            // Extend end by 1 day to capture events on the last day
+            let extendedEnd = cal.date(byAdding: .day, value: 1, to: overviewEnd) ?? overviewEnd
+            let overviewInterval = DateInterval(start: overviewStart, end: extendedEnd)
+            lines.append(contentsOf: calendarExerciseCorrelation(
+                summaries: summaries, interval: overviewInterval, context: context))
         }
 
         // --- Anomaly detection: flag unusually low days ---

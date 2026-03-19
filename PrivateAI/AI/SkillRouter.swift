@@ -463,6 +463,21 @@ struct SkillRouter {
             return .photoSearch(query: text)
         }
 
+        // --- Photo Search (content keyword + photo context) ---
+        // Queries like "猫的照片", "美食的图片", "海边的自拍", "日落照片"
+        // These contain a Vision-searchable content keyword + photo noun — route to search, not stats.
+        let photoContentKeywords = ["猫", "狗", "cat", "dog", "宠物", "动物",
+                                     "海边", "沙滩", "海滩", "beach", "山", "mountain",
+                                     "雪", "snow", "日落", "sunset", "夕阳",
+                                     "美食", "食物", "food",
+                                     "花", "flower", "植物",
+                                     "户外", "outdoor", "室内", "indoor",
+                                     "合照", "合影", "自拍", "selfie", "单人"]
+        if containsAny(lower, ["照片", "图片", "photo", "pic", "拍的"]) &&
+           containsAny(lower, photoContentKeywords) {
+            return .photoSearch(query: text)
+        }
+
         // --- Photos (stats) ---
         if containsAny(lower, ["照片", "拍了", "拍过", "图片", "相册", "记录了几张",
                                 "拍照", "自拍", "截图", "相机",

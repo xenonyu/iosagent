@@ -202,11 +202,18 @@ struct PhotoSkill: ClawSkill {
         //     that can't be answered by time/location alone.
         let hasContentKeywords = Self.contentKeywords.contains { lower.contains($0) }
         if resultPhotos.isEmpty || hasContentKeywords {
-            let visionResult = searchViaVisionIndex(query: lower, context: context)
+            let visionResult = searchViaVisionIndex(query: lower, context: context, timeRange: timeRange)
             if !visionResult.results.isEmpty {
+                // Build description that includes time context when present
+                let fullDescription: String
+                if let range = timeRange, !visionResult.description.isEmpty {
+                    fullDescription = "\(range.label)\(visionResult.description)"
+                } else {
+                    fullDescription = visionResult.description
+                }
                 return buildVisionSearchResults(
                     results: visionResult.results,
-                    description: visionResult.description,
+                    description: fullDescription,
                     query: query
                 )
             }
@@ -214,11 +221,24 @@ struct PhotoSkill: ClawSkill {
 
         // --- Build response ---
         if resultPhotos.isEmpty && searchDescription.isEmpty {
+            if hasContentKeywords {
+                // Content keyword present but no Vision index results — give a specific hint
+                return "📷 没有找到匹配的照片。\n\n" +
+                    "可能的原因：\n" +
+                    "· 照片索引尚未建立 — 请在「设置」中触发照片索引\n" +
+                    "· 该类型的照片确实不多\n\n" +
+                    "💡 你也可以按时间或地点搜索，比如「上周拍的照片」或「在北京拍的照片」。"
+            }
             return buildSearchHelpText(query: query)
         }
 
         if resultPhotos.isEmpty {
-            return "📷 没有找到\(searchDescription)的照片。\n\n可能是该时间段或地点没有拍过照片，试试其他描述？"
+            var msg = "📷 没有找到\(searchDescription)的照片。\n\n"
+            if hasContentKeywords {
+                msg += "AI 内容搜索也没有找到匹配 — 可能需要先在「设置」中建立照片索引。\n"
+            }
+            msg += "试试调整时间范围或换个描述？"
+            return msg
         }
 
         return buildSearchResults(photos: resultPhotos, description: searchDescription)
@@ -245,9 +265,17 @@ struct PhotoSkill: ClawSkill {
     }
 
     /// Uses PhotoSearchService to query CDPhotoIndex (Vision-classified tags + face counts).
-    private func searchViaVisionIndex(query: String, context: SkillContext) -> VisionSearchResult {
+    /// When a timeRange is provided, the search is constrained to that date interval.
+    private func searchViaVisionIndex(query: String, context: SkillContext, timeRange: QueryTimeRange? = nil) -> VisionSearchResult {
         let searchService = context.photoSearchService
-        let photoQuery = searchService.parseQuery(query)
+        var photoQuery = searchService.parseQuery(query)
+
+        // Apply time range constraint so "上周海边的照片" only searches last week
+        if let range = timeRange {
+            let interval = range.interval
+            photoQuery.dateFrom = interval.start
+            photoQuery.dateTo = interval.end
+        }
 
         // Only proceed if the query parsed into something meaningful
         let hasMeaningfulQuery = !photoQuery.keywords.isEmpty

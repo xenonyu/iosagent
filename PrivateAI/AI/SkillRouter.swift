@@ -318,6 +318,8 @@ struct SkillRouter {
         // --- Health Metrics ---
         if containsAny(lower, ["睡眠", "睡了", "睡得", "睡觉", "入睡", "失眠", "熬夜", "早睡", "晚睡",
                                 "心率", "血压", "卡路里", "健康", "血氧", "脉搏",
+                                "爬楼", "楼层", "爬了多少", "几层楼", "flights", "climbed",
+                                "走了多远", "跑了多远", "距离多少", "多少公里", "多少距离",
                                 "sleep", "heart rate", "calories", "health", "slept"]) {
             let metric = extractHealthMetric(from: lower)
             return .health(metric: metric, range: range)
@@ -518,6 +520,8 @@ struct SkillRouter {
         if containsAny(text, ["心率", "脉搏", "heart rate"]) { return "heartRate" }
         if containsAny(text, ["步数", "走路", "步行", "steps", "walk"]) { return "steps" }
         if containsAny(text, ["卡路里", "热量", "calories"]) { return "calories" }
+        if containsAny(text, ["爬楼", "楼层", "几层", "flights", "climbed", "floor"]) { return "flights" }
+        if containsAny(text, ["多远", "距离", "公里", "distance", "km", "far"]) { return "distance" }
         return "general"
     }
 

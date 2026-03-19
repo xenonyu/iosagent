@@ -73,6 +73,10 @@ struct HealthSkill: ClawSkill {
             if totalCalories > 0 {
                 lines.append("🔥 消耗热量：\(Int(totalCalories).formatted()) 千卡")
             }
+            let totalFlights = filtered.reduce(0) { $0 + $1.flightsClimbed }
+            if totalFlights > 0 {
+                lines.append("🏢 爬楼：\(Int(totalFlights)) 层")
+            }
 
             // Best day highlight
             if daysWithData.count > 1 {
@@ -136,6 +140,10 @@ struct HealthSkill: ClawSkill {
                 respondHeartRate(summaries: withData, range: range, completion: completion)
             case "steps":
                 respondSteps(summaries: withData, range: range, completion: completion)
+            case "flights":
+                respondFlights(summaries: withData, range: range, completion: completion)
+            case "distance":
+                respondDistance(summaries: withData, range: range, completion: completion)
             default:
                 respondOverview(summaries: withData, range: range, completion: completion)
             }
@@ -354,6 +362,114 @@ struct HealthSkill: ClawSkill {
         completion(lines.joined(separator: "\n"))
     }
 
+    // MARK: - Flights Climbed
+
+    private func respondFlights(summaries: [HealthSummary], range: QueryTimeRange, completion: @escaping (String) -> Void) {
+        let flightDays = summaries.filter { $0.flightsClimbed > 0 }
+        guard !flightDays.isEmpty else {
+            completion("🏢 \(range.label)暂无爬楼数据。\niPhone 会自动记录爬楼层数，确保已开启健康权限。")
+            return
+        }
+
+        var lines: [String] = ["🏢 \(range.label)的爬楼数据\n"]
+        let total = flightDays.reduce(0) { $0 + $1.flightsClimbed }
+        let avg = total / Double(flightDays.count)
+        let best = flightDays.max(by: { $0.flightsClimbed < $1.flightsClimbed })!
+
+        lines.append("🪜 总楼层：\(Int(total)) 层（日均 \(Int(avg)) 层）")
+        // 1 flight ≈ 3 meters of elevation gain
+        let totalMeters = total * 3
+        lines.append("📐 约等于爬升 \(Int(totalMeters)) 米")
+
+        if flightDays.count > 1 {
+            let fmt = DateFormatter()
+            fmt.dateFormat = "M月d日(E)"
+            fmt.locale = Locale(identifier: "zh_CN")
+            lines.append("🏆 最多的一天：\(fmt.string(from: best.date))，\(Int(best.flightsClimbed)) 层")
+        }
+
+        // Fun comparisons for motivation
+        lines.append("")
+        if total >= 163 {
+            let percent = Int(total / 163 * 100)
+            lines.append("🏔 相当于爬了 \(percent)% 座广州塔（\(Int(totalMeters))m / 489m）")
+        } else if total >= 50 {
+            lines.append("🏗 相当于爬了一栋 \(Int(total)) 层的大楼，很有毅力！")
+        } else if total >= 10 {
+            lines.append("👍 积少成多，每天多爬几层楼对心肺有益。")
+        }
+
+        // Daily goal insight (WHO recommends regular stair climbing)
+        let activeDays = flightDays.filter { $0.flightsClimbed >= 10 }.count
+        if activeDays > 0 {
+            lines.append("🎯 有 \(activeDays) 天达到了 10 层以上，爬楼是很好的有氧运动！")
+        }
+
+        completion(lines.joined(separator: "\n"))
+    }
+
+    // MARK: - Distance
+
+    private func respondDistance(summaries: [HealthSummary], range: QueryTimeRange, completion: @escaping (String) -> Void) {
+        let distanceDays = summaries.filter { $0.distanceKm > 0.01 }
+        guard !distanceDays.isEmpty else {
+            completion("📏 \(range.label)暂无步行距离数据。\n开启健康权限后可以自动追踪步行和跑步距离。")
+            return
+        }
+
+        var lines: [String] = ["📏 \(range.label)的步行/跑步距离\n"]
+        let total = distanceDays.reduce(0) { $0 + $1.distanceKm }
+        let avg = total / Double(distanceDays.count)
+        let best = distanceDays.max(by: { $0.distanceKm < $1.distanceKm })!
+
+        lines.append("🛣 总距离：\(String(format: "%.1f", total)) 公里（日均 \(String(format: "%.1f", avg)) 公里）")
+
+        if distanceDays.count > 1 {
+            let fmt = DateFormatter()
+            fmt.dateFormat = "M月d日(E)"
+            fmt.locale = Locale(identifier: "zh_CN")
+            lines.append("🏆 最远的一天：\(fmt.string(from: best.date))，\(String(format: "%.1f", best.distanceKm)) 公里")
+        }
+
+        // Correlate with steps if available
+        let totalSteps = distanceDays.reduce(0) { $0 + $1.steps }
+        if totalSteps > 0 && total > 0 {
+            let strideCm = Int(total * 100000 / totalSteps)
+            lines.append("👣 平均步幅约 \(strideCm) cm")
+        }
+
+        // Fun distance comparisons
+        lines.append("")
+        if total >= 42.195 {
+            let marathons = total / 42.195
+            lines.append("🏅 累计距离超过 \(String(format: "%.1f", marathons)) 个马拉松！")
+        } else if total >= 21.1 {
+            lines.append("🏅 累计距离超过一个半马拉松（21.1km），继续加油！")
+        } else if total >= 10 {
+            let remaining = 21.1 - total
+            lines.append("🎯 再走 \(String(format: "%.1f", remaining)) 公里就达到半马距离了。")
+        } else if total >= 5 {
+            lines.append("🚶 保持日常步行，积少成多。")
+        }
+
+        // Trend (compare first half vs second half)
+        if distanceDays.count >= 4 {
+            let mid = distanceDays.count / 2
+            let recentAvg = distanceDays.prefix(mid).reduce(0) { $0 + $1.distanceKm } / Double(mid)
+            let olderAvg = distanceDays.suffix(from: mid).reduce(0) { $0 + $1.distanceKm } / Double(distanceDays.count - mid)
+            if olderAvg > 0 {
+                let pct = ((recentAvg - olderAvg) / olderAvg) * 100
+                if pct >= 10 {
+                    lines.append("📈 步行距离呈上升趋势（+\(Int(pct))%），活动量在增加！")
+                } else if pct <= -10 {
+                    lines.append("📉 步行距离有所下降（\(Int(pct))%），试试换条新路线散步？")
+                }
+            }
+        }
+
+        completion(lines.joined(separator: "\n"))
+    }
+
     private func respondOverview(summaries: [HealthSummary], range: QueryTimeRange, completion: @escaping (String) -> Void) {
         var lines: [String] = ["📊 \(range.label)健康概览\n"]
         let dayCount = Double(max(summaries.count, 1))
@@ -379,6 +495,9 @@ struct HealthSkill: ClawSkill {
             }
         }
         if avgHR > 0 { lines.append("❤️ 均心率 \(Int(avgHR)) BPM") }
+
+        let totalFlights = summaries.reduce(0) { $0 + $1.flightsClimbed }
+        if totalFlights > 0 { lines.append("🏢 爬楼 \(Int(totalFlights)) 层（日均 \(Int(totalFlights / dayCount))）") }
 
         // Quick verdict
         var score = 0
@@ -533,6 +652,28 @@ struct HealthSkill: ClawSkill {
                     icon: "🔥", label: "热量",
                     thisVal: thisCal, lastVal: lastCal,
                     unit: "千卡", formatter: { Int($0).formatted() }
+                ))
+            }
+
+            // Distance comparison
+            let thisDist = thisWeek.reduce(0) { $0 + $1.distanceKm }
+            let lastDist = lastWeek.reduce(0) { $0 + $1.distanceKm }
+            if thisDist > 0.1 || lastDist > 0.1 {
+                lines.append(buildComparisonLine(
+                    icon: "📏", label: "距离",
+                    thisVal: thisDist, lastVal: lastDist,
+                    unit: "km", formatter: { String(format: "%.1f", $0) }
+                ))
+            }
+
+            // Flights climbed comparison
+            let thisFlights = thisWeek.reduce(0) { $0 + $1.flightsClimbed }
+            let lastFlights = lastWeek.reduce(0) { $0 + $1.flightsClimbed }
+            if thisFlights > 0 || lastFlights > 0 {
+                lines.append(buildComparisonLine(
+                    icon: "🏢", label: "爬楼",
+                    thisVal: thisFlights, lastVal: lastFlights,
+                    unit: "层", formatter: { "\(Int($0))" }
                 ))
             }
 

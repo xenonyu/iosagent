@@ -206,7 +206,7 @@ struct HealthSummary {
 
     /// True if this day has any recorded data at all.
     var hasData: Bool {
-        steps > 0 || exerciseMinutes > 0 || sleepHours > 0 || heartRate > 0
+        steps > 0 || exerciseMinutes > 0 || sleepHours > 0 || heartRate > 0 || distanceKm > 0.01 || flightsClimbed > 0
     }
 }
 

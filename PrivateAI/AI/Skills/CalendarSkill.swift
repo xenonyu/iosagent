@@ -39,11 +39,12 @@ struct CalendarSkill: ClawSkill {
     // MARK: - Empty State
 
     private func buildEmptyResponse(range: QueryTimeRange) -> String {
+        if range.isFuture || range == .today {
+            return "📅 \(range.label)没有任何日程安排。\n\n✨ 这段时间完全自由！可以用来做自己想做的事。"
+        }
+        let interval = range.interval
         let cal = Calendar.current
         let now = Date()
-        let interval = range.interval
-
-        // Check if this is today/future — suggest it's free time
         if interval.end >= cal.startOfDay(for: now) {
             return "📅 \(range.label)没有任何日程安排。\n\n✨ 这段时间完全自由！可以用来做自己想做的事。"
         }
@@ -57,6 +58,7 @@ struct CalendarSkill: ClawSkill {
         let now = Date()
         let cal = Calendar.current
         let isToday = cal.isDateInToday(date)
+        let isFutureDay = range.isFuture
 
         // --- Header with busy-ness ---
         let timedEvents = events.filter { !$0.isAllDay }
@@ -82,6 +84,14 @@ struct CalendarSkill: ClawSkill {
                 }
             } else if !timedEvents.isEmpty {
                 lines.append("✅ 今天的日程已全部结束。\n")
+            }
+        }
+
+        // --- First event preview for future days ---
+        if isFutureDay && !timedEvents.isEmpty {
+            let sorted = timedEvents.sorted { $0.startDate < $1.startDate }
+            if let first = sorted.first {
+                lines.append("⏰ 最早的安排：\(first.timeDisplay)「\(first.title)」\n")
             }
         }
 
@@ -111,8 +121,8 @@ struct CalendarSkill: ClawSkill {
             lines.append("")
         }
 
-        // --- Free time slots (for today/tomorrow, only future slots) ---
-        if isToday || cal.isDateInTomorrow(date) {
+        // --- Free time slots (for today and future days) ---
+        if isToday || isFutureDay {
             let freeSlots = findFreeSlots(events: timedEvents, date: date, onlyFuture: isToday)
             if !freeSlots.isEmpty {
                 lines.append("💚 空闲时段：")

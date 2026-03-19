@@ -403,6 +403,14 @@ struct SkillRouter {
             return .calendar(range: range)
         }
 
+        // --- Calendar: future day + generic question → calendar intent ---
+        // e.g. "明天有什么事", "后天干嘛", "后天有什么"
+        if range.isFuture && containsAny(lower, ["有什么", "干嘛", "干什么", "做什么",
+                                                   "什么事", "有事", "有没有",
+                                                   "what's on", "what do i have"]) {
+            return .calendar(range: range)
+        }
+
         // --- Photo Search (AI visual search) ---
         if containsAny(lower, ["找照片", "找一下", "找一张", "找到", "搜照片", "帮我找",
                                 "find photo", "search photo", "look for photo"]) &&
@@ -458,10 +466,15 @@ struct SkillRouter {
     // MARK: - Time Range Extraction
 
     static func extractTimeRange(from text: String) -> QueryTimeRange {
+        // Future ranges (check before past to avoid "明天" matching "天" in "今天")
+        if containsAny(text, ["后天", "day after tomorrow"]) { return .dayAfterTomorrow }
+        if containsAny(text, ["明天", "tomorrow"]) { return .tomorrow }
+        if containsAny(text, ["下周", "下个星期", "下星期", "next week"]) { return .nextWeek }
+        // Present
         if containsAny(text, ["今天", "today"]) { return .today }
+        // Past ranges
+        if containsAny(text, ["前天", "day before yesterday"]) { return .dayBeforeYesterday }
         if containsAny(text, ["昨天", "yesterday"]) { return .yesterday }
-        if containsAny(text, ["前天", "day before yesterday"]) { return .yesterday }
-        if containsAny(text, ["明天", "tomorrow"]) { return .today }
         if containsAny(text, ["今年", "this year"]) { return .all }
         if containsAny(text, ["上周", "上个星期", "last week", "past week"]) { return .lastWeek }
         if containsAny(text, ["这周", "本周", "this week"]) { return .thisWeek }

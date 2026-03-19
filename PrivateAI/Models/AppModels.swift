@@ -212,11 +212,15 @@ struct HealthSummary {
 
 // MARK: - Time Range
 
-enum QueryTimeRange {
+enum QueryTimeRange: Equatable {
     case today
     case yesterday
+    case dayBeforeYesterday
+    case tomorrow
+    case dayAfterTomorrow
     case lastWeek
     case thisWeek
+    case nextWeek
     case lastMonth
     case thisMonth
     case all
@@ -224,12 +228,24 @@ enum QueryTimeRange {
     var interval: DateInterval {
         let cal = Calendar.current
         let now = Date()
+        let todayStart = cal.startOfDay(for: now)
         switch self {
         case .today:
-            return DateInterval(start: cal.startOfDay(for: now), end: now)
+            return DateInterval(start: todayStart, end: now)
         case .yesterday:
-            let start = cal.date(byAdding: .day, value: -1, to: cal.startOfDay(for: now))!
-            let end = cal.startOfDay(for: now)
+            let start = cal.date(byAdding: .day, value: -1, to: todayStart)!
+            return DateInterval(start: start, end: todayStart)
+        case .dayBeforeYesterday:
+            let start = cal.date(byAdding: .day, value: -2, to: todayStart)!
+            let end = cal.date(byAdding: .day, value: -1, to: todayStart)!
+            return DateInterval(start: start, end: end)
+        case .tomorrow:
+            let start = cal.date(byAdding: .day, value: 1, to: todayStart)!
+            let end = cal.date(byAdding: .day, value: 2, to: todayStart)!
+            return DateInterval(start: start, end: end)
+        case .dayAfterTomorrow:
+            let start = cal.date(byAdding: .day, value: 2, to: todayStart)!
+            let end = cal.date(byAdding: .day, value: 3, to: todayStart)!
             return DateInterval(start: start, end: end)
         case .lastWeek:
             let start = cal.date(byAdding: .day, value: -7, to: now)!
@@ -238,6 +254,13 @@ enum QueryTimeRange {
             let comps = cal.dateComponents([.yearForWeekOfYear, .weekOfYear], from: now)
             let start = cal.date(from: comps)!
             return DateInterval(start: start, end: now)
+        case .nextWeek:
+            // Monday of next week through Sunday end
+            let comps = cal.dateComponents([.yearForWeekOfYear, .weekOfYear], from: now)
+            let thisWeekStart = cal.date(from: comps)!
+            let start = cal.date(byAdding: .weekOfYear, value: 1, to: thisWeekStart)!
+            let end = cal.date(byAdding: .day, value: 7, to: start)!
+            return DateInterval(start: start, end: end)
         case .lastMonth:
             let start = cal.date(byAdding: .month, value: -1, to: now)!
             return DateInterval(start: start, end: now)
@@ -250,15 +273,27 @@ enum QueryTimeRange {
         }
     }
 
+    /// Whether this range represents a future time period.
+    var isFuture: Bool {
+        switch self {
+        case .tomorrow, .dayAfterTomorrow, .nextWeek: return true
+        default: return false
+        }
+    }
+
     var label: String {
         switch self {
-        case .today:     return "今天"
-        case .yesterday: return "昨天"
-        case .lastWeek:  return "过去7天"
-        case .thisWeek:  return "本周"
-        case .lastMonth: return "过去30天"
-        case .thisMonth: return "本月"
-        case .all:       return "全部"
+        case .today:              return "今天"
+        case .yesterday:          return "昨天"
+        case .dayBeforeYesterday: return "前天"
+        case .tomorrow:           return "明天"
+        case .dayAfterTomorrow:   return "后天"
+        case .lastWeek:           return "过去7天"
+        case .thisWeek:           return "本周"
+        case .nextWeek:           return "下周"
+        case .lastMonth:          return "过去30天"
+        case .thisMonth:          return "本月"
+        case .all:                return "全部"
         }
     }
 }

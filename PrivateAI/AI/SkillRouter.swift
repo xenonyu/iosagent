@@ -4,6 +4,7 @@ import Foundation
 
 enum QueryIntent {
     case exercise(range: QueryTimeRange, workoutFilter: String?)
+    case exerciseLastOccurrence(workoutFilter: String?)
     case location(range: QueryTimeRange)
     case mood(range: QueryTimeRange)
     case recommendation(topic: String)
@@ -288,6 +289,21 @@ struct SkillRouter {
         // --- Event Recording ---
         if containsAny(lower, ["我今天", "今天我", "刚刚", "记录一下", "帮我记", "记一下", "i did", "i went", "i ate"]) {
             return parseAddEvent(from: text)
+        }
+
+        // --- Last Occurrence / "when was my last workout" ---
+        // Must be checked before general exercise to avoid being swallowed.
+        let lastOccurrenceKeywords = ["上次", "上一次", "最近一次", "最后一次",
+                                      "多久没", "几天没", "多长时间没",
+                                      "last time", "when did i last", "how long since"]
+        let exerciseContextKeywords = ["运动", "锻炼", "健身", "跑步", "跑了", "游泳", "骑车",
+                                       "骑行", "瑜伽", "训练", "走路", "步行", "散步", "徒步",
+                                       "爬山", "打球", "跳绳", "举铁", "撸铁", "exercise",
+                                       "workout", "run", "swim", "cycling", "yoga", "hike"]
+        if containsAny(lower, lastOccurrenceKeywords) &&
+           containsAny(lower, exerciseContextKeywords) {
+            let filter = extractWorkoutFilter(from: lower)
+            return .exerciseLastOccurrence(workoutFilter: filter)
         }
 
         // --- Exercise / Fitness ---

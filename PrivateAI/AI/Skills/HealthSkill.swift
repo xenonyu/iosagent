@@ -8,7 +8,7 @@ struct HealthSkill: ClawSkill {
 
     func canHandle(intent: QueryIntent) -> Bool {
         switch intent {
-        case .exercise, .health, .streak, .comparison:
+        case .exercise, .exerciseLastOccurrence, .health, .streak, .comparison:
             return true
         default:
             return false
@@ -23,6 +23,8 @@ struct HealthSkill: ClawSkill {
             } else {
                 respondExercise(range: range, context: context, completion: completion)
             }
+        case .exerciseLastOccurrence(let workoutFilter):
+            respondLastWorkout(filter: workoutFilter, context: context, completion: completion)
         case .health(let metric, let range):
             respondHealth(metric: metric, range: range, context: context, completion: completion)
         case .streak:
@@ -147,6 +149,122 @@ struct HealthSkill: ClawSkill {
             if !events.isEmpty {
                 lines.append("\n📝 相关记录：")
                 events.prefix(5).forEach { lines.append("• \($0.timestamp.shortDisplay)：\($0.title)") }
+            }
+
+            completion(lines.joined(separator: "\n"))
+        }
+    }
+
+    // MARK: - Last Workout Occurrence
+
+    /// Answers "when was my last workout" queries by scanning the last 90 days of HKWorkout data.
+    /// Optionally filtered to a specific workout type (e.g., "上次跑步是什么时候").
+    private func respondLastWorkout(filter: String?, context: SkillContext, completion: @escaping (String) -> Void) {
+        guard context.healthService.isHealthDataAvailable else {
+            completion("此设备不支持 HealthKit（如 iPad）。\n需要在 iPhone 上使用才能获取运动数据。")
+            return
+        }
+
+        context.healthService.fetchRecentWorkouts(days: 90) { allWorkouts in
+            // Sort newest-first
+            let sorted = allWorkouts.sorted { $0.startDate > $1.startDate }
+
+            // Apply workout type filter if specified
+            let workouts: [WorkoutRecord]
+            let filterName: String
+            if let filter = filter {
+                let typeIDs = SkillRouter.workoutFilterTypeIDs(filter)
+                workouts = sorted.filter { typeIDs.contains($0.activityType) }
+                filterName = workouts.first?.typeName ?? filter
+            } else {
+                workouts = sorted
+                filterName = "运动"
+            }
+
+            guard let latest = workouts.first else {
+                let noDataMsg: String
+                if filter != nil {
+                    noDataMsg = "在最近 90 天内没有找到「\(filterName)」的记录。\n\n可能原因：\n• 这段时间没有做过该类型运动\n• HealthKit 权限未开启\n• 运动时未佩戴 Apple Watch\n\n试试问我「上次运动是什么时候」看看其他类型？"
+                } else {
+                    noDataMsg = "在最近 90 天内没有找到任何运动记录。\n\n请前往「设置 → iosclaw → 健康」确认权限已开启，并确保运动时佩戴 Apple Watch。"
+                }
+                completion(noDataMsg)
+                return
+            }
+
+            let cal = Calendar.current
+            let now = Date()
+            let daysAgo = cal.dateComponents([.day], from: cal.startOfDay(for: latest.startDate),
+                                              to: cal.startOfDay(for: now)).day ?? 0
+
+            var lines: [String] = []
+
+            // Header with days-ago context
+            if daysAgo == 0 {
+                lines.append("🏃 上次\(filterName)就在今天！\n")
+            } else if daysAgo == 1 {
+                lines.append("🏃 上次\(filterName)是昨天\n")
+            } else {
+                lines.append("🏃 上次\(filterName)是 \(daysAgo) 天前\n")
+            }
+
+            // Date and time
+            let df = DateFormatter()
+            df.locale = Locale(identifier: "zh_CN")
+            df.dateFormat = "M月d日 EEEE HH:mm"
+            lines.append("📅 \(df.string(from: latest.startDate))")
+
+            // Workout details
+            lines.append("\(latest.typeEmoji) 类型：\(latest.typeName)")
+            let mins = Int(latest.duration / 60)
+            if mins >= 60 {
+                lines.append("⏱ 时长：\(mins / 60)小时\(mins % 60)分钟")
+            } else {
+                lines.append("⏱ 时长：\(mins)分钟")
+            }
+            if latest.totalCalories >= 10 {
+                lines.append("🔥 消耗：\(Int(latest.totalCalories)) 千卡")
+            }
+            let distanceTypes: [UInt] = [37, 52, 13, 46, 26] // run, walk, cycle, swim, hike
+            if distanceTypes.contains(latest.activityType) && latest.totalDistance > 100 {
+                let km = latest.totalDistance / 1000
+                var distLine = "📏 距离：\(String(format: "%.2f", km)) 公里"
+                // Pace for running/walking
+                if (latest.activityType == 37 || latest.activityType == 52) && km > 0.1 {
+                    let paceMinPerKm = (latest.duration / 60) / km
+                    if paceMinPerKm > 0 && paceMinPerKm < 30 {
+                        let paceMin = Int(paceMinPerKm)
+                        let paceSec = Int((paceMinPerKm - Double(paceMin)) * 60)
+                        distLine += "（配速 \(paceMin)'\(String(format: "%02d", paceSec))\"）"
+                    }
+                }
+                lines.append(distLine)
+            }
+
+            // Days-ago insight
+            if daysAgo >= 7 {
+                lines.append("\n⚠️ 已经 \(daysAgo) 天没有\(filterName)了，建议尽快恢复运动习惯！")
+            } else if daysAgo >= 3 {
+                lines.append("\n💡 距离上次已经 \(daysAgo) 天，今天安排一次\(filterName)吧？")
+            } else if daysAgo <= 1 {
+                lines.append("\n✅ 运动习惯保持得很好！")
+            }
+
+            // Recent frequency context (how many sessions in last 30 days)
+            let thirtyDaysAgo = cal.date(byAdding: .day, value: -30, to: now)!
+            let recentCount = workouts.filter { $0.startDate >= thirtyDaysAgo }.count
+            if recentCount > 1 {
+                let avgInterval = 30.0 / Double(recentCount)
+                lines.append("\n📊 最近 30 天共 \(recentCount) 次\(filterName)，平均每 \(String(format: "%.0f", avgInterval)) 天一次")
+
+                // Show variety if asking about general exercise
+                if filter == nil {
+                    let recentWorkouts = workouts.filter { $0.startDate >= thirtyDaysAgo }
+                    let types = Set(recentWorkouts.map { $0.typeName })
+                    if types.count > 1 {
+                        lines.append("🏋️ 运动类型：\(types.joined(separator: "、"))")
+                    }
+                }
             }
 
             completion(lines.joined(separator: "\n"))

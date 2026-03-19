@@ -254,6 +254,16 @@ final class HealthService: ObservableObject {
         store.execute(query)
     }
 
+    /// Fetches the most recent workout sessions within the last N days.
+    /// Useful for "last time I exercised" queries. Results are sorted newest-first.
+    func fetchRecentWorkouts(days: Int, completion: @escaping ([WorkoutRecord]) -> Void) {
+        guard isAvailable else { completion([]); return }
+        let cal = Calendar.current
+        let end = Date()
+        let start = cal.date(byAdding: .day, value: -days, to: cal.startOfDay(for: end))!
+        fetchWorkouts(start: start, end: end, completion: completion)
+    }
+
     /// Fetches individual workout sessions (HKWorkout) for the given date range.
     private func fetchWorkouts(start: Date, end: Date,
                                completion: @escaping ([WorkoutRecord]) -> Void) {

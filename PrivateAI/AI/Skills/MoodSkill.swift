@@ -26,28 +26,9 @@ struct MoodSkill: ClawSkill {
             let isEmotionalExpression = emotionalWords.contains(where: { query.contains($0) })
 
             if isEmotionalExpression {
-                // Empathize first, then check health data for possible explanations
-                let empathy: String
-                let isNegative: Bool
-                if SkillRouter.containsAny(query, ["累", "疲惫", "压力", "崩溃", "扛不住"]) {
-                    empathy = "听到你说累了/压力大，辛苦了 🫂"
-                    isNegative = true
-                } else if SkillRouter.containsAny(query, ["焦虑", "紧张", "不安", "慌"]) {
-                    empathy = "感受到你的焦虑，深呼吸一下 🫂"
-                    isNegative = true
-                } else if SkillRouter.containsAny(query, ["难过", "伤心", "沮丧", "郁闷", "低落", "丧"]) {
-                    empathy = "抱抱你，不开心的时候说出来就好 🫂"
-                    isNegative = true
-                } else if SkillRouter.containsAny(query, ["烦", "恼火", "生气"]) {
-                    empathy = "听起来今天不太顺利 😮‍💨"
-                    isNegative = true
-                } else if SkillRouter.containsAny(query, ["开心", "兴奋", "满足", "充实", "放松", "舒服"]) {
-                    empathy = "很高兴你心情不错！😊"
-                    isNegative = false
-                } else {
-                    empathy = "我听到你了 😊"
-                    isNegative = false
-                }
+                // Empathize first, then check health + calendar data for possible explanations
+                let empathy = self.buildPersonalizedEmpathy(query: query)
+                let isNegative = empathy.isNegative
 
                 // Fetch recent health data to provide context for the emotion
                 context.healthService.fetchSummaries(days: 3) { summaries in
@@ -57,13 +38,26 @@ struct MoodSkill: ClawSkill {
                         query: query
                     )
 
-                    var response = empathy
+                    // Check today's calendar for meeting overload context
+                    let calendarContext = self.buildCalendarContextForEmotion(
+                        context: context,
+                        isNegative: isNegative
+                    )
 
-                    if let healthContext = healthContext {
-                        response += "\n\n\(healthContext)"
+                    var response = empathy.text
+
+                    // Combine health + calendar context into a unified "possible reasons" block
+                    var clues: [String] = []
+                    if let calCtx = calendarContext { clues.append(calCtx) }
+                    if let healthCtx = healthContext { clues.append(healthCtx) }
+
+                    if !clues.isEmpty {
+                        response += "\n\n" + clues.joined(separator: "\n\n")
                     }
 
-                    response += "\n\n📝 试试说「记录一下，今天\(query)」，我会帮你保存，积累几天后就能发现心情与健康数据的关联。"
+                    // Suggest recording with a natural phrasing
+                    let emotionWord = self.extractDominantEmotion(from: query) ?? "心情"
+                    response += "\n\n📝 说「记录一下，\(emotionWord)」我会帮你保存。积累几天后就能发现你的心情规律。"
                     completion(response)
                 }
             } else {
@@ -323,13 +317,27 @@ struct MoodSkill: ClawSkill {
 
         guard insights.count > 1 else { return nil } // No meaningful correlations found
 
-        // Add actionable summary
-        if posSleep > negSleep + 0.5 && posExercise > negExercise + 5 {
-            insights.append("\n💡 你的数据显示：充足睡眠 + 适量运动 = 更好的心情")
-        } else if posSleep > negSleep + 0.5 {
-            insights.append("\n💡 对你来说，睡眠质量对心情影响最大，优先保证睡眠")
-        } else if posExercise > negExercise + 5 {
-            insights.append("\n💡 运动是你最好的情绪调节器，心情不好时试试动起来")
+        // Add data-driven actionable summary — quantify how much each factor matters for this user
+        let sleepDiff = posSleep - negSleep
+        let exerciseDiff = posExercise - negExercise
+        let sleepSignificant = sleepDiff > 0.5
+        let exerciseSignificant = exerciseDiff > 5
+
+        if sleepSignificant && exerciseSignificant {
+            // Both matter — tell the user which matters MORE based on their data
+            let sleepImpact = posSleep > 0.1 ? sleepDiff / posSleep : 0
+            let exerciseImpact = posExercise > 0.1 ? exerciseDiff / posExercise : 0
+            if sleepImpact > exerciseImpact * 1.5 {
+                insights.append("\n💡 你的数据显示睡眠和运动都有影响，但**睡眠差距更大**（好心情日多睡 \(String(format: "%.1f", sleepDiff))h）。优先保证睡眠。")
+            } else if exerciseImpact > sleepImpact * 1.5 {
+                insights.append("\n💡 睡眠和运动都有影响，但**运动差距更明显**（好心情日多运动 \(Int(exerciseDiff))min）。心情不好时先动起来。")
+            } else {
+                insights.append("\n💡 对你来说，充足睡眠（多 \(String(format: "%.1f", sleepDiff))h）+ 适量运动（多 \(Int(exerciseDiff))min）= 更好的心情。")
+            }
+        } else if sleepSignificant {
+            insights.append("\n💡 对你来说，睡眠对心情影响最大——好心情的日子比低落时多睡 \(String(format: "%.1f", sleepDiff)) 小时。")
+        } else if exerciseSignificant {
+            insights.append("\n💡 运动是你最有效的情绪调节方式——好心情时平均多运动 \(Int(exerciseDiff)) 分钟。心情不好时试试动起来。")
         }
 
         return insights.joined(separator: "\n")
@@ -446,6 +454,149 @@ struct MoodSkill: ClawSkill {
     private func avg(_ values: [Double]) -> Double {
         guard !values.isEmpty else { return 0 }
         return values.reduce(0, +) / Double(values.count)
+    }
+
+    // MARK: - Personalized Empathy
+
+    /// Empathy response container.
+    private struct EmpathyResult {
+        let text: String
+        let isNegative: Bool
+    }
+
+    /// Build empathy that mirrors the user's actual emotion word instead of a generic template.
+    private func buildPersonalizedEmpathy(query: String) -> EmpathyResult {
+        // Fatigue / Exhaustion / Pressure
+        if SkillRouter.containsAny(query, ["累", "疲惫"]) {
+            return EmpathyResult(text: "听起来你很疲惫，辛苦了 🫂", isNegative: true)
+        }
+        if SkillRouter.containsAny(query, ["压力", "崩溃", "扛不住", "受不了"]) {
+            return EmpathyResult(text: "压力大的时候能说出来就好，我在听 🫂", isNegative: true)
+        }
+        // Anxiety
+        if SkillRouter.containsAny(query, ["焦虑", "紧张", "不安", "慌"]) {
+            return EmpathyResult(text: "感受到你现在有些焦虑，先深呼吸一下 🫂", isNegative: true)
+        }
+        // Sadness / Low mood
+        if SkillRouter.containsAny(query, ["难过", "伤心", "沮丧", "郁闷", "低落", "丧"]) {
+            return EmpathyResult(text: "抱抱你，不开心的时候能说出来就好 🫂", isNegative: true)
+        }
+        // Frustration / Anger
+        if SkillRouter.containsAny(query, ["烦", "恼火", "生气", "愤怒"]) {
+            return EmpathyResult(text: "听起来今天遇到了烦心事 😮‍💨", isNegative: true)
+        }
+        // Loneliness
+        if SkillRouter.containsAny(query, ["孤独", "寂寞", "空虚", "无聊"]) {
+            return EmpathyResult(text: "我陪着你呢，有什么想聊的都可以说 🤗", isNegative: true)
+        }
+        // Positive emotions
+        if SkillRouter.containsAny(query, ["开心", "高兴", "快乐", "兴奋", "激动"]) {
+            return EmpathyResult(text: "能感受到你的开心！什么好事？😊", isNegative: false)
+        }
+        if SkillRouter.containsAny(query, ["满足", "充实", "舒服", "放松", "惬意", "愉快"]) {
+            return EmpathyResult(text: "这种状态很好，享受当下 ☀️", isNegative: false)
+        }
+        if SkillRouter.containsAny(query, ["平静", "安心"]) {
+            return EmpathyResult(text: "内心平静是最好的状态 🌿", isNegative: false)
+        }
+        return EmpathyResult(text: "我听到你了 😊", isNegative: false)
+    }
+
+    /// Extract the most prominent emotion word from the query for natural record suggestions.
+    private func extractDominantEmotion(from query: String) -> String? {
+        // Try to extract a natural phrase segment containing the emotion
+        let emotionPhrases: [(keywords: [String], phrase: String)] = [
+            (["好累", "很累", "太累"], "今天好累"),
+            (["累"], "有点累"),
+            (["疲惫"], "感觉疲惫"),
+            (["压力大", "压力好大"], "压力大"),
+            (["压力"], "有压力"),
+            (["崩溃"], "快崩溃了"),
+            (["焦虑"], "有些焦虑"),
+            (["紧张"], "有点紧张"),
+            (["难过"], "有点难过"),
+            (["伤心"], "很伤心"),
+            (["郁闷", "低落", "丧", "沮丧"], "心情低落"),
+            (["烦", "烦躁"], "有点烦"),
+            (["开心", "高兴"], "很开心"),
+            (["兴奋", "激动"], "很兴奋"),
+            (["放松", "舒服", "惬意"], "很放松"),
+            (["满足", "充实"], "很充实"),
+            (["无聊"], "有点无聊"),
+            (["孤独", "寂寞"], "感觉孤独"),
+        ]
+        for ep in emotionPhrases {
+            if ep.keywords.contains(where: { query.contains($0) }) {
+                return ep.phrase
+            }
+        }
+        return nil
+    }
+
+    // MARK: - Calendar-Aware Emotional Context
+
+    /// Check today's calendar for patterns that might explain the user's emotional state.
+    /// "好累" + 6 back-to-back meetings → "你今天有6个会议，难怪会觉得累"
+    private func buildCalendarContextForEmotion(context: SkillContext, isNegative: Bool) -> String? {
+        guard context.calendarService.isAuthorized else { return nil }
+
+        let cal = Calendar.current
+        let now = Date()
+        let dayStart = cal.startOfDay(for: now)
+        let dayEnd = cal.date(byAdding: .day, value: 1, to: dayStart) ?? now
+        let events = context.calendarService.fetchEvents(from: dayStart, to: dayEnd)
+
+        let timedEvents = events.filter { !$0.isAllDay }
+        guard !timedEvents.isEmpty else { return nil }
+
+        let totalMinutes = timedEvents.reduce(0.0) { $0 + $1.duration } / 60.0
+
+        // Detect back-to-back meetings
+        let sorted = timedEvents.sorted { $0.startDate < $1.startDate }
+        var backToBackCount = 0
+        for i in 0..<(sorted.count - 1) {
+            let gap = sorted[i + 1].startDate.timeIntervalSince(sorted[i].endDate) / 60
+            if gap < 15 { backToBackCount += 1 }
+        }
+
+        // Past events (already finished)
+        let pastEvents = timedEvents.filter { $0.endDate <= now }
+        let pastMinutes = pastEvents.reduce(0.0) { $0 + $1.duration } / 60.0
+
+        var clues: [String] = []
+
+        if isNegative {
+            // Heavy meeting day explanation
+            if timedEvents.count >= 5 && totalMinutes >= 300 {
+                clues.append("📅 今天有 \(timedEvents.count) 个会议、约 \(Int(totalMinutes / 60)) 小时日程，节奏确实紧张")
+            } else if timedEvents.count >= 4 {
+                clues.append("📅 今天安排了 \(timedEvents.count) 个会议")
+            }
+
+            // Already spent many hours in meetings
+            if pastMinutes >= 180 && pastEvents.count >= 3 {
+                clues.append("📅 到现在已经开了 \(pastEvents.count) 个会、\(Int(pastMinutes / 60)) 小时，难怪会累")
+            }
+
+            // Back-to-back meetings without breaks
+            if backToBackCount >= 2 {
+                clues.append("⚠️ 有 \(backToBackCount + 1) 个会议几乎连轴转，中间没什么休息")
+            }
+
+            // Still have meetings ahead
+            let upcoming = timedEvents.filter { $0.startDate > now }
+            if !upcoming.isEmpty && pastEvents.count >= 2 {
+                clues.append("📌 后面还有 \(upcoming.count) 个安排，记得抽空休息一下")
+            }
+        } else {
+            // Positive: light day might explain good mood
+            if timedEvents.count <= 2 && totalMinutes < 120 {
+                clues.append("📅 今天日程轻松，只有 \(timedEvents.count) 个安排，难怪心情不错")
+            }
+        }
+
+        guard !clues.isEmpty else { return nil }
+        return "📋 看了下你今天的日程：\n" + clues.map { "  \($0)" }.joined(separator: "\n")
     }
 
     // MARK: - Health-Aware Emotional Context

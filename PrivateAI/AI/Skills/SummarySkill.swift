@@ -86,29 +86,124 @@ struct SummarySkill: ClawSkill {
         let locations = CDLocationRecord.fetch(from: interval.start, to: interval.end, in: context.coreDataContext)
 
         context.healthService.fetchDailySummary(for: Date()) { health in
-            var lines: [String] = []
-            let hour = Calendar.current.component(.hour, from: Date())
+            let cal = Calendar.current
+            let hour = cal.component(.hour, from: Date())
             let timeGreet = hour < 12 ? "早安" : (hour < 18 ? "下午好" : "晚上好")
-            lines.append("🌅 \(timeGreet)！今天的生活快照：\n")
 
-            if health.steps > 0 || health.exerciseMinutes > 0 {
-                lines.append("🏃 健康")
+            var lines: [String] = []
+            lines.append("🌅 \(timeGreet)！今天的生活全景：\n")
+
+            var hasData = false
+
+            // --- Health Data ---
+            if health.steps > 0 || health.exerciseMinutes > 0 || health.sleepHours > 0 {
+                hasData = true
+                lines.append("🏃 **健康**")
                 if health.steps > 0 { lines.append("  步数：\(Int(health.steps).formatted()) 步") }
                 if health.exerciseMinutes > 0 { lines.append("  运动：\(Int(health.exerciseMinutes)) 分钟") }
+                if health.sleepHours > 0 { lines.append("  昨晚睡眠：\(String(format: "%.1f", health.sleepHours)) 小时") }
             }
 
+            // --- Habits ---
+            let habits = HabitStorage.load()
+            if !habits.isEmpty {
+                let today = HabitStorage.todayKey()
+                let checked = habits.filter { $0.checkins.contains(today) }
+                let total = habits.count
+                hasData = true
+                let pct = Int(Double(checked.count) / Double(total) * 100)
+                lines.append("\n🎯 **习惯打卡**  \(checked.count)/\(total)（\(pct)%）")
+                if !checked.isEmpty {
+                    let names = checked.prefix(4).map { "✅\($0.name)" }.joined(separator: "  ")
+                    lines.append("  \(names)")
+                }
+                let unchecked = habits.filter { !$0.checkins.contains(today) }
+                if !unchecked.isEmpty {
+                    let names = unchecked.prefix(3).map { "⬜\($0.name)" }.joined(separator: "  ")
+                    lines.append("  \(names)")
+                }
+            }
+
+            // --- Water Intake ---
+            let waterLog = WaterStorage.loadToday()
+            if waterLog.cups > 0 {
+                hasData = true
+                let goal = WaterStorage.loadGoal()
+                let ml = waterLog.cups * 250
+                let status = waterLog.cups >= goal ? "✅ 达标" : "还差 \(goal - waterLog.cups) 杯"
+                lines.append("\n💧 **饮水**  \(waterLog.cups)/\(goal) 杯（\(ml)ml）\(status)")
+            }
+
+            // --- Pomodoro ---
+            let pomLog = PomodoroStorage.loadToday()
+            if pomLog.sessions > 0 {
+                hasData = true
+                let goal = PomodoroStorage.loadGoal()
+                let hrs = pomLog.totalMinutes / 60
+                let mins = pomLog.totalMinutes % 60
+                let timeStr = hrs > 0 ? "\(hrs)h\(mins)m" : "\(mins)m"
+                let status = pomLog.sessions >= goal ? "✅ 达标" : "还差 \(goal - pomLog.sessions) 个"
+                lines.append("\n🍅 **专注**  \(pomLog.sessions)/\(goal) 个番茄（\(timeStr)）\(status)")
+            }
+
+            // --- Expenses ---
+            let allExpenses = ExpenseStorage.load()
+            let todayExpenses = allExpenses.filter { cal.isDateInToday($0.createdAt) }
+            if !todayExpenses.isEmpty {
+                hasData = true
+                let total = todayExpenses.reduce(0.0) { $0 + $1.amount }
+                let amountStr = total == Double(Int(total)) ? "¥\(Int(total))" : "¥\(String(format: "%.1f", total))"
+                lines.append("\n💰 **消费**  \(amountStr)（\(todayExpenses.count) 笔）")
+                // Top category
+                var catTotals: [String: Double] = [:]
+                todayExpenses.forEach { catTotals[$0.category, default: 0] += $0.amount }
+                if let top = catTotals.max(by: { $0.value < $1.value }) {
+                    let topStr = top.value == Double(Int(top.value)) ? "¥\(Int(top.value))" : "¥\(String(format: "%.1f", top.value))"
+                    lines.append("  最大类目：\(top.key) \(topStr)")
+                }
+            }
+
+            // --- Todos ---
+            let todos = TodoStorage.load()
+            let pendingTodos = todos.filter { !$0.isDone }
+            let todayDone = todos.filter { $0.isDone && cal.isDateInToday($0.createdAt) }
+            if !todos.isEmpty {
+                hasData = true
+                lines.append("\n✅ **待办**  \(pendingTodos.count) 项待完成")
+                if !todayDone.isEmpty {
+                    lines.append("  今日已完成 \(todayDone.count) 项 🎉")
+                }
+                if let next = pendingTodos.first {
+                    lines.append("  下一个：\(next.title)")
+                }
+            }
+
+            // --- Life Events ---
             if !events.isEmpty {
-                lines.append("\n📝 今日记录（\(events.count) 条）")
-                events.prefix(5).forEach { lines.append("  \($0.mood.emoji) \($0.title)") }
+                hasData = true
+                lines.append("\n📝 **今日记录**（\(events.count) 条）")
+                events.prefix(3).forEach { lines.append("  \($0.mood.emoji) \($0.title)") }
+                if events.count > 3 {
+                    lines.append("  …还有 \(events.count - 3) 条")
+                }
             }
 
+            // --- Locations ---
             if !locations.isEmpty {
+                hasData = true
                 let places = Set(locations.map { $0.displayName })
-                lines.append("\n📍 去过：\(places.prefix(3).joined(separator: "、"))")
+                lines.append("\n📍 **去过** \(places.prefix(3).joined(separator: "、"))")
             }
 
-            if events.isEmpty && health.steps == 0 {
-                lines.append("今天还没有记录哦。\n告诉我你做了什么，或者开启健康和位置权限来自动追踪。")
+            // --- Empty State ---
+            if !hasData {
+                lines.append("今天还没有记录哦 📭\n")
+                lines.append("试试这些来充实你的一天：")
+                lines.append("  • 「打卡 早起」追踪习惯")
+                lines.append("  • 「喝了一杯水」记录饮水")
+                lines.append("  • 「专注了25分钟」记录番茄钟")
+                lines.append("  • 「记一笔 午餐 30元」记账")
+                lines.append("  • 「今天跑步了，很开心」记录事件")
             }
 
             completion(lines.joined(separator: "\n"))

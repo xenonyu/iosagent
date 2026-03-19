@@ -224,6 +224,8 @@ enum QueryTimeRange: Equatable {
     case lastMonth
     case thisMonth
     case all
+    /// A specific calendar date (e.g. "下周一", "本周三", "周五")
+    case specificDate(Date)
 
     var interval: DateInterval {
         let cal = Calendar.current
@@ -270,6 +272,10 @@ enum QueryTimeRange: Equatable {
             return DateInterval(start: start, end: now)
         case .all:
             return DateInterval(start: Date.distantPast, end: now)
+        case .specificDate(let date):
+            let start = cal.startOfDay(for: date)
+            let end = cal.date(byAdding: .day, value: 1, to: start)!
+            return DateInterval(start: start, end: end)
         }
     }
 
@@ -277,6 +283,8 @@ enum QueryTimeRange: Equatable {
     var isFuture: Bool {
         switch self {
         case .tomorrow, .dayAfterTomorrow, .nextWeek: return true
+        case .specificDate(let date):
+            return date > Calendar.current.startOfDay(for: Date())
         default: return false
         }
     }
@@ -294,6 +302,11 @@ enum QueryTimeRange: Equatable {
         case .lastMonth:          return "过去30天"
         case .thisMonth:          return "本月"
         case .all:                return "全部"
+        case .specificDate(let date):
+            let fmt = DateFormatter()
+            fmt.dateFormat = "M月d日（EEEE）"
+            fmt.locale = Locale(identifier: "zh_CN")
+            return fmt.string(from: date)
         }
     }
 }

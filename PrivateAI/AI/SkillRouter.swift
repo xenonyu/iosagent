@@ -486,6 +486,12 @@ struct SkillRouter {
     // MARK: - Time Range Extraction
 
     static func extractTimeRange(from text: String) -> QueryTimeRange {
+        // --- Specific weekday parsing (must check before generic week ranges) ---
+        // Matches: "下周一", "本周三", "这周五", "上周二", "周日", "星期四", "下星期一", "下个星期三"
+        // Also English: "next monday", "this friday", "last wednesday"
+        if let specificDate = extractSpecificWeekday(from: text) {
+            return .specificDate(specificDate)
+        }
         // Future ranges (check before past to avoid "明天" matching "天" in "今天")
         if containsAny(text, ["后天", "day after tomorrow"]) { return .dayAfterTomorrow }
         if containsAny(text, ["明天", "tomorrow"]) { return .tomorrow }
@@ -502,6 +508,84 @@ struct SkillRouter {
         if containsAny(text, ["这个月", "本月", "this month"]) { return .thisMonth }
         if containsAny(text, ["最近", "recent", "lately", "recently"]) { return .lastWeek }
         return .lastWeek
+    }
+
+    // MARK: - Specific Weekday Extraction
+
+    /// Parses specific weekday references like "下周一", "本周三", "周五", "星期四",
+    /// "next monday", "this friday", "last wednesday" into a concrete Date.
+    private static func extractSpecificWeekday(from text: String) -> Date? {
+        let cal = Calendar.current
+
+        // Chinese weekday names: 一=Monday(2), 二=Tue(3), ..., 日/天=Sunday(1)
+        let chineseWeekdays: [(String, Int)] = [
+            ("一", 2), ("二", 3), ("三", 4), ("四", 5),
+            ("五", 6), ("六", 7), ("日", 1), ("天", 1)
+        ]
+        // English weekday names
+        let englishWeekdays: [(String, Int)] = [
+            ("monday", 2), ("tuesday", 3), ("wednesday", 4), ("thursday", 5),
+            ("friday", 6), ("saturday", 7), ("sunday", 1),
+            ("mon", 2), ("tue", 3), ("wed", 4), ("thu", 5),
+            ("fri", 6), ("sat", 7), ("sun", 1)
+        ]
+
+        // Determine offset: next week (+1), this week (0), last week (-1), bare "周X" (0)
+        // Chinese patterns: "下周X", "下星期X", "下个星期X", "本周X", "这周X", "上周X", "周X", "星期X"
+        var weekOffset: Int? = nil
+        var targetWeekday: Int? = nil
+
+        for (name, wd) in chineseWeekdays {
+            // Must check longer prefixes first to avoid partial matches
+            if text.contains("下个星期\(name)") || text.contains("下星期\(name)") || text.contains("下周\(name)") {
+                weekOffset = 1; targetWeekday = wd; break
+            }
+            if text.contains("上个星期\(name)") || text.contains("上星期\(name)") || text.contains("上周\(name)") {
+                weekOffset = -1; targetWeekday = wd; break
+            }
+            if text.contains("本周\(name)") || text.contains("这周\(name)") || text.contains("这个星期\(name)") {
+                weekOffset = 0; targetWeekday = wd; break
+            }
+            // Bare "周X" or "星期X" — treat as this week (current or upcoming)
+            if text.contains("周\(name)") || text.contains("星期\(name)") {
+                weekOffset = 0; targetWeekday = wd; break
+            }
+        }
+
+        // English patterns
+        if targetWeekday == nil {
+            let lower = text.lowercased()
+            for (name, wd) in englishWeekdays {
+                if lower.contains("next \(name)") {
+                    weekOffset = 1; targetWeekday = wd; break
+                }
+                if lower.contains("last \(name)") {
+                    weekOffset = -1; targetWeekday = wd; break
+                }
+                if lower.contains("this \(name)") {
+                    weekOffset = 0; targetWeekday = wd; break
+                }
+            }
+        }
+
+        guard let offset = weekOffset, let wd = targetWeekday else { return nil }
+
+        // Calculate target date
+        let now = Date()
+        // Get start of current week (respects locale's first weekday setting)
+        let weekComps = cal.dateComponents([.yearForWeekOfYear, .weekOfYear], from: now)
+        guard let thisWeekStart = cal.date(from: weekComps) else { return nil }
+
+        // Move to the target week
+        guard let targetWeekStart = cal.date(byAdding: .weekOfYear, value: offset, to: thisWeekStart) else { return nil }
+
+        // Find the target weekday within that week
+        // thisWeekStart is the locale's first day of the week; we need to offset to the target weekday
+        let firstWeekday = cal.component(.weekday, from: targetWeekStart)
+        var dayDiff = wd - firstWeekday
+        if dayDiff < 0 { dayDiff += 7 }
+
+        return cal.date(byAdding: .day, value: dayDiff, to: targetWeekStart)
     }
 
     // MARK: - Recommendation Topic

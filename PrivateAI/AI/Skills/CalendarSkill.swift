@@ -32,7 +32,7 @@ struct CalendarSkill: ClawSkill {
         if spanDays <= 1 {
             return buildSingleDayResponse(events: events, range: range, date: interval.start)
         } else {
-            return buildMultiDayResponse(events: events, range: range, interval: interval, spanDays: spanDays)
+            return buildMultiDayResponse(events: events, range: range, interval: interval, spanDays: spanDays, context: context)
         }
     }
 
@@ -159,7 +159,7 @@ struct CalendarSkill: ClawSkill {
 
     // MARK: - Multi-Day Response (This Week / Range)
 
-    private func buildMultiDayResponse(events: [CalendarEventItem], range: QueryTimeRange, interval: DateInterval, spanDays: Int) -> String {
+    private func buildMultiDayResponse(events: [CalendarEventItem], range: QueryTimeRange, interval: DateInterval, spanDays: Int, context: SkillContext) -> String {
         var lines: [String] = []
         let cal = Calendar.current
         let dateFmt = DateFormatter()
@@ -205,6 +205,18 @@ struct CalendarSkill: ClawSkill {
         if sortedDays.count < spanDays {
             let freeDays = spanDays - sortedDays.count
             lines.append("\n💚 其中 \(freeDays) 天没有安排，可以自由支配。")
+        }
+
+        // --- Week-over-week comparison ---
+        let comparison = buildPeriodComparison(
+            currentEvents: events,
+            currentInterval: interval,
+            spanDays: spanDays,
+            context: context
+        )
+        if !comparison.isEmpty {
+            lines.append("")
+            lines.append(contentsOf: comparison)
         }
 
         // --- Weekly focus & rhythm analysis ---
@@ -573,6 +585,95 @@ struct CalendarSkill: ClawSkill {
                 verdict = "会议过密，建议合并或推迟部分会议 ⚠️"
             }
             lines.append("  📊 平均专注率 \(Int(avgFocus * 100))%，\(verdict)")
+        }
+
+        return lines
+    }
+
+    // MARK: - Period-over-Period Comparison
+
+    /// Compares current period's calendar load against the previous period of equal length.
+    /// e.g. "本周" vs last week, "过去7天" vs the 7 days before that.
+    private func buildPeriodComparison(
+        currentEvents: [CalendarEventItem],
+        currentInterval: DateInterval,
+        spanDays: Int,
+        context: SkillContext
+    ) -> [String] {
+        // Only compare for ranges of 3–31 days (skip single-day or very long ranges)
+        guard spanDays >= 3, spanDays <= 31 else { return [] }
+
+        // Compute previous period of same length
+        let cal = Calendar.current
+        guard let prevStart = cal.date(byAdding: .day, value: -spanDays, to: currentInterval.start) else { return [] }
+        let prevEnd = currentInterval.start
+
+        let prevEvents = context.calendarService.fetchEvents(from: prevStart, to: prevEnd)
+
+        // Current period stats
+        let curTimed = currentEvents.filter { !$0.isAllDay }
+        let curMeetingMin = curTimed.reduce(0.0) { $0 + $1.duration } / 60.0
+        let curCount = curTimed.count
+
+        // Previous period stats
+        let prevTimed = prevEvents.filter { !$0.isAllDay }
+        let prevMeetingMin = prevTimed.reduce(0.0) { $0 + $1.duration } / 60.0
+        let prevCount = prevTimed.count
+
+        // Skip comparison if previous period was completely empty
+        guard prevCount > 0 || curCount > 0 else { return [] }
+        // If both periods are identical (unlikely but possible with 0 events), skip
+        guard prevCount > 0 else {
+            // Previous had nothing, current has something — just note it
+            return ["📈 上个同期没有日程记录，本期有 \(curCount) 个安排。"]
+        }
+
+        var lines: [String] = []
+        lines.append("📈 与上期对比：")
+
+        // Event count delta
+        let countDelta = curCount - prevCount
+        let countPct = prevCount > 0 ? abs(countDelta) * 100 / prevCount : 0
+        let countArrow: String
+        if countDelta > 0 {
+            countArrow = "↑ 增加 \(countDelta) 个"
+            if countPct >= 30 { lines.append("  • 日程数：\(curCount) 个（\(countArrow)，+\(countPct)%）⚠️ 明显增多") }
+            else { lines.append("  • 日程数：\(curCount) 个（\(countArrow)）") }
+        } else if countDelta < 0 {
+            countArrow = "↓ 减少 \(abs(countDelta)) 个"
+            if countPct >= 30 { lines.append("  • 日程数：\(curCount) 个（\(countArrow)，-\(countPct)%）👍 更从容") }
+            else { lines.append("  • 日程数：\(curCount) 个（\(countArrow)）") }
+        } else {
+            lines.append("  • 日程数：\(curCount) 个（与上期持平）")
+        }
+
+        // Meeting time delta
+        let timeDelta = curMeetingMin - prevMeetingMin
+        let timePct = prevMeetingMin > 0 ? Int(abs(timeDelta) / prevMeetingMin * 100) : 0
+        if abs(timeDelta) >= 30 { // Only show if difference is >= 30 min
+            let timeDir: String
+            if timeDelta > 0 {
+                timeDir = "多了 \(formatDuration(abs(timeDelta)))"
+            } else {
+                timeDir = "少了 \(formatDuration(abs(timeDelta)))"
+            }
+            lines.append("  • 会议时长：\(formatDuration(curMeetingMin))（比上期\(timeDir)\(timePct >= 20 ? "，\(timeDelta > 0 ? "+" : "-")\(timePct)%" : "")）")
+        }
+
+        // Average meetings per day comparison
+        let curAvg = Double(curCount) / Double(spanDays)
+        let prevAvg = Double(prevCount) / Double(spanDays)
+        if curAvg >= 3 && curAvg > prevAvg * 1.3 {
+            lines.append("  • ⚡ 日均 \(String(format: "%.1f", curAvg)) 个会议，节奏偏紧，注意留出休息时间")
+        } else if curAvg < prevAvg * 0.7 && prevAvg >= 2 {
+            lines.append("  • 💚 日均会议从 \(String(format: "%.1f", prevAvg)) 降到 \(String(format: "%.1f", curAvg))，有更多自由时间")
+        }
+
+        // Overall trend summary
+        if countDelta > 2 && timeDelta > 60 {
+            lines.append("  📊 整体趋势：日程明显加密，建议关注精力管理")
+        } else if countDelta < -2 && timeDelta < -60 {
+            lines.append("  📊 整体趋势：节奏放缓，适合安排深度工作或个人项目")
         }
 
         return lines

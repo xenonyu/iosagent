@@ -22,7 +22,17 @@ enum QueryIntent {
     case todo(action: TodoAction, content: String)
     case habit(action: HabitAction, content: String)
     case greeting(type: GreetingType)
+    case randomDecision(action: RandomDecisionAction)
     case unknown
+}
+
+// MARK: - Random Decision Action
+
+enum RandomDecisionAction {
+    case coinFlip
+    case diceRoll(sides: Int)
+    case pickOne(options: [String])
+    case randomNumber(min: Int, max: Int)
 }
 
 // MARK: - Greeting Type
@@ -112,6 +122,11 @@ struct SkillRouter {
         // --- Comparison ---
         if containsAny(lower, ["比上周", "对比", "compared to", "趋势", "比较", "vs"]) {
             return .comparison
+        }
+
+        // --- Random Decision ---
+        if let decisionAction = parseRandomDecision(trimmed, original: text) {
+            return .randomDecision(action: decisionAction)
         }
 
         // --- Countdown / Days Until ---
@@ -411,6 +426,111 @@ struct SkillRouter {
             return .hello
         }
         return nil
+    }
+
+    // MARK: - Random Decision Parsing
+
+    private static func parseRandomDecision(_ trimmed: String, original: String) -> RandomDecisionAction? {
+        let lower = trimmed
+
+        // Coin flip
+        if containsAny(lower, ["抛硬币", "丢硬币", "翻硬币", "flip coin", "coin flip", "flip a coin", "toss a coin", "toss coin"]) {
+            return .coinFlip
+        }
+
+        // Dice roll
+        if containsAny(lower, ["掷骰子", "丢骰子", "扔骰子", "roll dice", "roll a dice", "throw dice"]) {
+            // Check for custom sides: "掷20面骰子", "roll a d20"
+            let sides = extractDiceSides(from: lower)
+            return .diceRoll(sides: sides)
+        }
+
+        // Pick one from options: "帮我选 A还是B还是C" or "帮我选 A或B或C"
+        if containsAny(lower, ["帮我选", "帮我挑", "帮忙选", "帮忙挑", "随便选", "随机选",
+                                "pick one", "choose one", "choose for me", "pick for me",
+                                "选一个", "挑一个", "帮我决定"]) {
+            let options = extractOptions(from: original)
+            return .pickOne(options: options)
+        }
+
+        // Random number: "随机数字", "随机数 1到100"
+        if containsAny(lower, ["随机数", "random number", "随机一个数", "给我一个数字"]) {
+            let (min, max) = extractNumberRange(from: lower)
+            return .randomNumber(min: min, max: max)
+        }
+
+        return nil
+    }
+
+    private static func extractDiceSides(from text: String) -> Int {
+        // Match patterns like "20面", "d20", "12面骰"
+        let patterns = [
+            try? NSRegularExpression(pattern: "(\\d+)\\s*面", options: []),
+            try? NSRegularExpression(pattern: "d(\\d+)", options: .caseInsensitive)
+        ]
+        let nsText = text as NSString
+        for regex in patterns.compactMap({ $0 }) {
+            if let match = regex.firstMatch(in: text, options: [], range: NSRange(location: 0, length: nsText.length)) {
+                if match.numberOfRanges > 1 {
+                    let numStr = nsText.substring(with: match.range(at: 1))
+                    if let sides = Int(numStr), sides >= 2 { return sides }
+                }
+            }
+        }
+        return 6 // default 6-sided die
+    }
+
+    private static func extractOptions(from text: String) -> [String] {
+        // Remove common prefix phrases
+        var cleaned = text
+        let prefixes = ["帮我选", "帮我挑", "帮忙选", "帮忙挑", "随便选", "随机选",
+                        "选一个", "挑一个", "帮我决定",
+                        "pick one", "choose one", "choose for me", "pick for me"]
+        for prefix in prefixes {
+            if let range = cleaned.lowercased().range(of: prefix) {
+                cleaned = String(cleaned[range.upperBound...])
+                break
+            }
+        }
+        cleaned = cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Remove leading punctuation
+        cleaned = cleaned.replacingOccurrences(of: "^[：:，, ]+", with: "", options: .regularExpression)
+
+        // Split by "还是", "或者", "或", ",", "、", " or "
+        let separators = ["还是", "或者", " or ", "、", "，", ","]
+        var options: [String] = [cleaned]
+        for sep in separators {
+            let split = options.flatMap { $0.components(separatedBy: sep) }
+            if split.count > options.count {
+                options = split
+                break
+            }
+        }
+
+        return options
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+    }
+
+    private static func extractNumberRange(from text: String) -> (Int, Int) {
+        // Match "1到100", "1-100", "1~100", "between 1 and 100"
+        let patterns = [
+            try? NSRegularExpression(pattern: "(\\d+)\\s*[到至~\\-]+\\s*(\\d+)", options: []),
+            try? NSRegularExpression(pattern: "between\\s+(\\d+)\\s+and\\s+(\\d+)", options: .caseInsensitive)
+        ]
+        let nsText = text as NSString
+        for regex in patterns.compactMap({ $0 }) {
+            if let match = regex.firstMatch(in: text, options: [], range: NSRange(location: 0, length: nsText.length)) {
+                if match.numberOfRanges > 2 {
+                    let minStr = nsText.substring(with: match.range(at: 1))
+                    let maxStr = nsText.substring(with: match.range(at: 2))
+                    if let lo = Int(minStr), let hi = Int(maxStr) {
+                        return (lo, hi)
+                    }
+                }
+            }
+        }
+        return (1, 100) // default range
     }
 
     // MARK: - Helpers

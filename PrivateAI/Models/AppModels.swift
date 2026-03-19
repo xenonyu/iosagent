@@ -189,7 +189,14 @@ struct HealthSummary {
     var exerciseMinutes: Double = 0
     var sleepHours: Double = 0
     var heartRate: Double = 0
+    var distanceKm: Double = 0
+    var flightsClimbed: Double = 0
     var date: Date = Date()
+
+    /// True if this day has any recorded data at all.
+    var hasData: Bool {
+        steps > 0 || exerciseMinutes > 0 || sleepHours > 0 || heartRate > 0
+    }
 }
 
 // MARK: - Time Range

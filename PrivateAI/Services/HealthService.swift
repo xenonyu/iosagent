@@ -88,18 +88,38 @@ final class HealthService: ObservableObject {
             group.leave()
         }
 
+        // Distance (walking + running)
+        group.enter()
+        fetchSum(.distanceWalkingRunning, unit: .meterUnit(with: .kilo), predicate: predicate) { val in
+            summary.distanceKm = val
+            group.leave()
+        }
+
+        // Flights climbed
+        group.enter()
+        fetchSum(.flightsClimbed, unit: .count(), predicate: predicate) { val in
+            summary.flightsClimbed = val
+            group.leave()
+        }
+
         group.notify(queue: .main) {
             completion(summary)
         }
     }
 
     func fetchWeeklySummaries(completion: @escaping ([HealthSummary]) -> Void) {
+        fetchSummaries(days: 7, completion: completion)
+    }
+
+    /// Fetch daily summaries for the last N days (including today).
+    func fetchSummaries(days: Int, completion: @escaping ([HealthSummary]) -> Void) {
+        guard isAvailable else { completion([]); return }
         let cal = Calendar.current
         let today = Date()
         var summaries: [HealthSummary] = []
         let group = DispatchGroup()
 
-        for i in 0..<7 {
+        for i in 0..<days {
             let date = cal.date(byAdding: .day, value: -i, to: today)!
             group.enter()
             fetchDailySummary(for: date) { s in

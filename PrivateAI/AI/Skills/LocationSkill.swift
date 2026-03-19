@@ -99,7 +99,7 @@ struct LocationSkill: ClawSkill {
         }
 
         // Step 2: Build a profile for each cluster
-        return clusters.map { cluster in
+        var profiles = clusters.map { cluster -> PlaceProfile in
             let name = cluster.bestName
             var profile = PlaceProfile(name: name, count: cluster.records.count)
             profile.firstVisit = cluster.records.map(\.timestamp).min() ?? Date()
@@ -132,7 +132,81 @@ struct LocationSkill: ClawSkill {
             }
 
             return profile
-        }.sorted { $0.count > $1.count }
+        }
+
+        // Step 3: Estimate dwell time per place using chronological record sequence
+        estimateDwellTimes(profiles: &profiles, clusters: clusters, allRecords: records)
+
+        return profiles.sorted { $0.count > $1.count }
+    }
+
+    // MARK: - Dwell Time Estimation
+
+    /// Estimates how long the user spent at each place by analyzing the chronological
+    /// sequence of location records. When record A is at place X and the next record B
+    /// is at a different place Y, the dwell time at X = B.timestamp - A.timestamp.
+    /// Consecutive records at the same place extend the current stay.
+    /// The last record in the sequence gets a conservative default estimate.
+    private func estimateDwellTimes(profiles: inout [PlaceProfile], clusters: [PlaceCluster], allRecords: [LocationRecord]) {
+        let sorted = allRecords.sorted { $0.timestamp < $1.timestamp }
+        guard sorted.count >= 2 else {
+            // Single record: assign a default 30-minute estimate
+            if !profiles.isEmpty && sorted.count == 1 {
+                profiles[0].estimatedDwellMinutes = 30
+            }
+            return
+        }
+
+        // Map each record to its cluster index
+        let clusterIndices = sorted.map { record -> Int in
+            for (i, cluster) in clusters.enumerated() {
+                if cluster.isNearby(lat: record.latitude, lon: record.longitude) {
+                    return i
+                }
+            }
+            return -1
+        }
+
+        // Accumulate dwell time per cluster
+        var dwellPerCluster: [Int: Double] = [:]
+        let maxReasonableDwell: Double = 12 * 60 // Cap at 12 hours per single stay
+
+        for i in 0..<sorted.count {
+            let clusterIdx = clusterIndices[i]
+            guard clusterIdx >= 0 else { continue }
+
+            if i < sorted.count - 1 {
+                let nextIdx = clusterIndices[i + 1]
+                let gap = sorted[i + 1].timestamp.timeIntervalSince(sorted[i].timestamp) / 60.0
+
+                if nextIdx != clusterIdx {
+                    // Moved to a different place — dwell time = gap (capped)
+                    let dwell = min(gap, maxReasonableDwell)
+                    dwellPerCluster[clusterIdx, default: 0] += dwell
+                } else {
+                    // Still at the same place — this record contributes gap to the ongoing stay
+                    let dwell = min(gap, maxReasonableDwell)
+                    dwellPerCluster[clusterIdx, default: 0] += dwell
+                }
+            } else {
+                // Last record: estimate 30 minutes if today, otherwise skip
+                let cal = Calendar.current
+                if cal.isDateInToday(sorted[i].timestamp) {
+                    // Use time since last record (capped at 2 hours) or 30 min default
+                    let timeSinceRecord = Date().timeIntervalSince(sorted[i].timestamp) / 60.0
+                    let estimate = min(timeSinceRecord, 120)
+                    dwellPerCluster[clusterIdx, default: 0] += max(estimate, 30)
+                } else {
+                    // For past dates, use a conservative 30 min
+                    dwellPerCluster[clusterIdx, default: 0] += 30
+                }
+            }
+        }
+
+        // Assign dwell times back to profiles (profiles are indexed same as clusters)
+        for i in profiles.indices where i < clusters.count {
+            profiles[i].estimatedDwellMinutes = dwellPerCluster[i] ?? 0
+        }
     }
 
     // MARK: - Routine Place Detection
@@ -246,34 +320,37 @@ struct LocationSkill: ClawSkill {
         let total = p.count
         guard total >= 2 else { return nil }
 
+        let dwellSuffix = p.estimatedDwellMinutes >= 30
+            ? "，累计约 \(formatDwellTime(p.estimatedDwellMinutes))" : ""
+
         // Evening regular (gym, restaurant, etc.)
         let eveningRatio = Double(p.eveningCount) / Double(total)
         if eveningRatio >= 0.5 && p.eveningCount >= 2 {
             let dayNote = p.weekendCount > p.weekdayCount ? "周末" : "工作日"
-            return "🌆 \(p.name)  \(dayNote)傍晚常去（\(total)次）"
+            return "🌆 \(p.name)  \(dayNote)傍晚常去（\(total)次\(dwellSuffix)）"
         }
 
         // Weekend spot
         let weekendRatio = total > 0 ? Double(p.weekendCount) / Double(total) : 0
         if weekendRatio >= 0.7 && p.weekendCount >= 2 {
-            return "🎉 \(p.name)  周末常去（\(total)次）"
+            return "🎉 \(p.name)  周末常去（\(total)次\(dwellSuffix)）"
         }
 
         // Lunch spot
         let lunchRatio = Double(p.lunchCount) / Double(total)
         if lunchRatio >= 0.5 && p.lunchCount >= 2 {
-            return "🍜 \(p.name)  午餐时段常去（\(total)次）"
+            return "🍜 \(p.name)  午餐时段常去（\(total)次\(dwellSuffix)）"
         }
 
         // Morning routine (coffee shop, park, etc.)
         let earlyRatio = Double(p.earlyMorningCount + p.morningCount) / Double(total)
         if earlyRatio >= 0.6 && (p.earlyMorningCount + p.morningCount) >= 2 {
-            return "☀️ \(p.name)  早晨常去（\(total)次）"
+            return "☀️ \(p.name)  早晨常去（\(total)次\(dwellSuffix)）"
         }
 
         // General frequent place
         if total >= 3 {
-            return "📍 \(p.name)  经常到访（\(total)次）"
+            return "📍 \(p.name)  经常到访（\(total)次\(dwellSuffix)）"
         }
 
         return nil
@@ -289,18 +366,29 @@ struct LocationSkill: ClawSkill {
         } else {
             parts.append("工作日")
         }
-        return "  \(parts.joined())都在（\(p.count)次记录）"
+        let dwellNote = describeDwellAverage(p)
+        return "  \(parts.joined())都在（\(p.count)次记录\(dwellNote)）"
     }
 
     /// Describes work visit pattern in natural language.
     private func describeWorkPattern(_ p: PlaceProfile) -> String {
         let daysCount = p.weekdaySet.subtracting([1, 7]).count // weekdays only
+        let dwellNote = describeDwellAverage(p)
         if daysCount >= 5 {
-            return "  每个工作日（\(p.count)次记录）"
+            return "  每个工作日（\(p.count)次记录\(dwellNote)）"
         } else if daysCount >= 3 {
-            return "  一周\(daysCount)天（\(p.count)次记录）"
+            return "  一周\(daysCount)天（\(p.count)次记录\(dwellNote)）"
         }
-        return "  工作时段常去（\(p.count)次记录）"
+        return "  工作时段常去（\(p.count)次记录\(dwellNote)）"
+    }
+
+    /// Describes average dwell time per visit for a place.
+    private func describeDwellAverage(_ p: PlaceProfile) -> String {
+        guard p.estimatedDwellMinutes >= 30 && p.count >= 1 else { return "" }
+        let avgMin = p.estimatedDwellMinutes / Double(p.count)
+        guard avgMin >= 15 else { return "" }
+        let formatted = formatDwellTime(avgMin)
+        return "，平均每次约 \(formatted)"
     }
 
     // MARK: - Place Ranking
@@ -310,7 +398,7 @@ struct LocationSkill: ClawSkill {
 
         var lines: [String] = []
 
-        // Show top places with contextual labels
+        // Show top places with contextual labels and dwell time
         for (index, info) in profiles.prefix(6).enumerated() {
             let badge: String
             if index == 0 && info.count >= 3 {
@@ -321,19 +409,46 @@ struct LocationSkill: ClawSkill {
                 badge = "• "
             }
 
-            let frequency = info.count > 1 ? "（\(info.count)次）" : ""
+            let frequency = info.count > 1 ? "（\(info.count)次" : ""
+            let dwellStr = formatDwellTime(info.estimatedDwellMinutes)
+            let details: String
+            if !frequency.isEmpty && !dwellStr.isEmpty {
+                details = "\(frequency)，约 \(dwellStr)）"
+            } else if !frequency.isEmpty {
+                details = "\(frequency)）"
+            } else if !dwellStr.isEmpty {
+                details = "（约 \(dwellStr)）"
+            } else {
+                details = ""
+            }
             let recency = formatRecency(info.lastVisit)
-            lines.append("\(badge)\(info.name)\(frequency)\(recency)")
+            lines.append("\(badge)\(info.name)\(details)\(recency)")
         }
 
         if totalPlaces > 6 {
             lines.append("  …还有 \(totalPlaces - 6) 个其他地点")
         }
 
-        // Add top place insight
+        // Add top place insight with time proportion
         if let top = profiles.first, top.count >= 3 {
             let percentage = Int(Double(top.count) / Double(totalRecords) * 100)
-            lines.insert("你最常去的地方是 **\(top.name)**，占全部记录的 \(percentage)%\n", at: 0)
+            let dwellStr = formatDwellTime(top.estimatedDwellMinutes)
+            let timeNote = !dwellStr.isEmpty ? "，累计约 \(dwellStr)" : ""
+            lines.insert("你最常去的地方是 **\(top.name)**，占全部记录的 \(percentage)%\(timeNote)\n", at: 0)
+        }
+
+        // Time allocation breakdown (if enough data)
+        let totalDwell = profiles.reduce(0.0) { $0 + $1.estimatedDwellMinutes }
+        if totalDwell >= 60 && profiles.count >= 2 {
+            lines.append("")
+            lines.append("⏱️ 时间分配：")
+            for info in profiles.prefix(5) where info.estimatedDwellMinutes >= 15 {
+                let pct = Int(info.estimatedDwellMinutes / totalDwell * 100)
+                let barLen = max(1, pct / 10)
+                let bar = String(repeating: "▓", count: barLen) + String(repeating: "░", count: max(0, 10 - barLen))
+                let dwell = formatDwellTime(info.estimatedDwellMinutes)
+                lines.append("  \(info.name) [\(bar)] \(dwell)（\(pct)%）")
+            }
         }
 
         return lines.joined(separator: "\n")
@@ -601,6 +716,21 @@ struct LocationSkill: ClawSkill {
 
     // MARK: - Helpers
 
+    /// Formats dwell time in minutes into a human-readable Chinese string.
+    /// Returns empty string if the duration is negligible (< 10 min).
+    private func formatDwellTime(_ minutes: Double) -> String {
+        guard minutes >= 10 else { return "" }
+        let hours = Int(minutes) / 60
+        let mins = Int(minutes) % 60
+        if hours >= 1 && mins >= 10 {
+            return "\(hours)小时\(mins)分钟"
+        } else if hours >= 1 {
+            return "\(hours)小时"
+        } else {
+            return "\(Int(minutes))分钟"
+        }
+    }
+
     private func formatRecency(_ date: Date) -> String {
         let cal = Calendar.current
         if cal.isDateInToday(date) {
@@ -644,6 +774,9 @@ private struct PlaceProfile {
     var weekdayCount: Int = 0
     var weekendCount: Int = 0
     var weekdaySet: Set<Int> = []  // which weekdays (1=Sun..7=Sat)
+
+    // Estimated dwell time (in minutes) across all visits
+    var estimatedDwellMinutes: Double = 0
 }
 
 /// Clusters nearby location records into a single logical place.

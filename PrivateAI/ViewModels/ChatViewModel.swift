@@ -109,6 +109,24 @@ final class ChatViewModel: ObservableObject {
         lastIntent = intent
         contextMemory.setLastIntent(intent)
 
+        // Photo search needs special handling: route through the engine for the rich
+        // text response (PhotoSkill), AND populate photoSearchResults so the UI can
+        // display actual photo thumbnails in PhotoSearchResultView.
+        if case .photoSearch(let query) = intent {
+            engine.respond(to: text, preResolvedIntent: intent) { [weak self] response in
+                guard let self else { return }
+                let aiMsg = ChatMessage(content: response, isUser: false)
+                self.append(message: aiMsg)
+                self.persist(message: aiMsg)
+                self.contextMemory.add(message: aiMsg)
+
+                // Also run the search to populate the photo grid UI
+                self.populatePhotoGrid(query: query)
+                self.isThinking = false
+            }
+            return
+        }
+
         // For known intents, handle locally via ClawEngine skills
         if !intent.isUnknown {
             engine.respond(to: text, preResolvedIntent: intent) { [weak self] response in
@@ -255,39 +273,23 @@ final class ChatViewModel: ObservableObject {
         }
     }
 
-    // MARK: - Photo Search
+    // MARK: - Photo Search Grid
 
-    private func handlePhotoSearch(query: String) {
+    /// Runs photo search and populates the visual photo grid in the UI.
+    /// Called after the engine returns the text response, so the user sees
+    /// both a rich text description AND actual photo thumbnails.
+    private func populatePhotoGrid(query: String) {
         let searchService = PhotoSearchService(context: context)
         let parsed = searchService.parseQuery(query)
         let results = searchService.search(query: parsed)
-
         let assetIDs = results.map { $0.assetId }
 
-        if assetIDs.isEmpty {
-            let noResultMsg: String
-            if searchService.parseQuery(query).location != nil {
-                noResultMsg = "📷 没有找到匹配的照片。可能是该地点的照片尚未索引，请先到设置里开启「相册索引」。"
-            } else {
-                noResultMsg = "📷 没有找到匹配的照片。\n试试其他描述，比如「海边的自拍」「和猫的合照」等。\n\n如果还未开始索引，请到设置里开启「相册索引」。"
-            }
-            let aiMsg = ChatMessage(content: noResultMsg, isUser: false)
-            append(message: aiMsg)
-            persist(message: aiMsg)
-            contextMemory.add(message: aiMsg)
-        } else {
-            let locationHint = parsed.locationName.isEmpty ? "" : "在\(parsed.locationName)附近"
-            let countText = "找到 \(assetIDs.count) 张\(locationHint)匹配的照片"
-            let aiMsg = ChatMessage(content: "📷 \(countText)，向你展示搜索结果：", isUser: false)
-            append(message: aiMsg)
-            persist(message: aiMsg)
-            contextMemory.add(message: aiMsg)
+        guard !assetIDs.isEmpty else { return }
 
-            photoSearchResults = assetIDs
-            showPhotoResults = true
+        DispatchQueue.main.async {
+            self.photoSearchResults = assetIDs
+            self.showPhotoResults = true
         }
-
-        isThinking = false
     }
 
     // MARK: - Helpers

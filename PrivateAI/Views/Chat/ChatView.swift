@@ -4,12 +4,14 @@ struct ChatView: View {
     @ObservedObject var viewModel: ChatViewModel
     @Namespace private var bottomID
     @FocusState private var inputFocused: Bool
+    @State private var isAtBottom: Bool = true
 
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
                 // Message list
                 ScrollViewReader { proxy in
+                    ZStack(alignment: .bottomTrailing) {
                     ScrollView {
                         LazyVStack(spacing: 12) {
                             ForEach(viewModel.messages) { message in
@@ -52,10 +54,12 @@ struct ChatView: View {
                                 ThinkingBubble()
                             }
 
-                            // Scroll anchor
+                            // Scroll anchor — also tracks visibility to toggle scroll-to-bottom button
                             Color.clear
                                 .frame(height: 1)
                                 .id(bottomID)
+                                .onAppear { isAtBottom = true }
+                                .onDisappear { isAtBottom = false }
                         }
                         .padding(.horizontal, 16)
                         .padding(.vertical, 12)
@@ -72,6 +76,19 @@ struct ChatView: View {
                             proxy.scrollTo(bottomID, anchor: .bottom)
                         }
                     }
+
+                    // Floating scroll-to-bottom button
+                    if !isAtBottom {
+                        ScrollToBottomButton {
+                            withAnimation(.easeOut(duration: 0.3)) {
+                                proxy.scrollTo(bottomID, anchor: .bottom)
+                            }
+                        }
+                        .padding(.trailing, 12)
+                        .padding(.bottom, 8)
+                        .transition(.scale.combined(with: .opacity))
+                    }
+                    } // ZStack
                 }
 
                 Divider()
@@ -222,6 +239,25 @@ struct FollowUpChipsView: View {
             .padding(.leading, 44)
             .padding(.trailing, 16)
         }
+    }
+}
+
+// MARK: - Scroll To Bottom Button
+
+struct ScrollToBottomButton: View {
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "chevron.down")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundColor(Color("AccentPrimary"))
+                .frame(width: 36, height: 36)
+                .background(.ultraThinMaterial)
+                .clipShape(Circle())
+                .shadow(color: .black.opacity(0.12), radius: 4, x: 0, y: 2)
+        }
+        .buttonStyle(.plain)
     }
 }
 

@@ -26,6 +26,7 @@ enum QueryIntent {
     case dateTime(query: DateTimeQuery)
     case math(expression: String)
     case unitConversion(value: Double, fromUnit: String, toUnit: String)
+    case waterTrack(action: WaterAction, amount: Int)
     case unknown
 }
 
@@ -57,6 +58,15 @@ enum GreetingType {
     case presence       // 在吗, are you there
     case selfIntro      // 你是谁, who are you
     case howAreYou      // 你好吗, how are you
+}
+
+// MARK: - Water Track Action
+
+enum WaterAction {
+    case drink       // 喝了水, drank water
+    case today       // 今天喝了多少, today's intake
+    case goal        // 设置目标, set goal
+    case history     // 本周喝水, weekly history
 }
 
 // MARK: - Skill Router
@@ -192,6 +202,11 @@ struct SkillRouter {
         if containsAny(lower, ["提醒我", "帮我记个", "记个待办", "添加待办", "新增待办", "add task", "add todo", "remind me"]) {
             let content = extractTodoContent(from: text)
             return .todo(action: .add, content: content)
+        }
+
+        // --- Water Tracking ---
+        if let waterIntent = parseWaterTrack(lower, original: text) {
+            return waterIntent
         }
 
         // --- Weather感受 ---
@@ -658,6 +673,79 @@ struct SkillRouter {
         cleaned = cleaned.replacingOccurrences(of: "[？?等于多少是几=]+$", with: "", options: .regularExpression)
         cleaned = cleaned.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines.union(CharacterSet(charactersIn: "：:，,")))
         return cleaned
+    }
+
+    // MARK: - Water Tracking Parsing
+
+    private static func parseWaterTrack(_ lower: String, original: String) -> QueryIntent? {
+        // Must contain water-related keywords
+        guard containsAny(lower, ["喝水", "喝了水", "杯水", "水量", "饮水", "补水",
+                                    "drink water", "water intake", "drank water",
+                                    "hydrat", "glasses of water"]) else {
+            return nil
+        }
+
+        // Set goal
+        if containsAny(lower, ["目标", "设置", "设定", "goal", "set"]) {
+            let amount = extractWaterAmount(from: lower)
+            return .waterTrack(action: .goal, amount: amount)
+        }
+
+        // History / weekly
+        if containsAny(lower, ["本周", "这周", "一周", "历史", "记录", "统计",
+                                "week", "history", "stats", "report"]) {
+            return .waterTrack(action: .history, amount: 0)
+        }
+
+        // Today's summary
+        if containsAny(lower, ["今天", "today", "多少", "几杯", "how much", "how many"]) {
+            return .waterTrack(action: .today, amount: 0)
+        }
+
+        // Record drinking — default action
+        if containsAny(lower, ["喝了", "喝水", "drank", "drink", "补水", "一杯", "两杯", "三杯"]) {
+            let amount = extractWaterAmount(from: lower)
+            return .waterTrack(action: .drink, amount: max(1, amount))
+        }
+
+        // Fallback: show today's summary
+        return .waterTrack(action: .today, amount: 0)
+    }
+
+    private static func extractWaterAmount(from text: String) -> Int {
+        // Chinese number words
+        let chineseNumbers: [(String, Int)] = [
+            ("十", 10), ("九", 9), ("八", 8), ("七", 7), ("六", 6),
+            ("五", 5), ("四", 4), ("三", 3), ("两", 2), ("二", 2), ("一", 1), ("半", 0)
+        ]
+        for (word, num) in chineseNumbers {
+            if text.contains(word) && containsAny(text, ["杯", "cup", "glass"]) {
+                return num
+            }
+        }
+
+        // Digit extraction: "3杯", "500ml"
+        if let regex = try? NSRegularExpression(pattern: "(\\d+)\\s*(杯|cup|glass|ml|毫升)", options: []),
+           let match = regex.firstMatch(in: text, options: [], range: NSRange(location: 0, length: (text as NSString).length)) {
+            let numStr = (text as NSString).substring(with: match.range(at: 1))
+            let unit = (text as NSString).substring(with: match.range(at: 2))
+            if let num = Int(numStr) {
+                // Convert ml to cups (1 cup ≈ 250ml)
+                if unit == "ml" || unit == "毫升" {
+                    return max(1, num / 250)
+                }
+                return num
+            }
+        }
+
+        // Plain number in text
+        if let regex = try? NSRegularExpression(pattern: "(\\d+)", options: []),
+           let match = regex.firstMatch(in: text, options: [], range: NSRange(location: 0, length: (text as NSString).length)) {
+            let numStr = (text as NSString).substring(with: match.range(at: 1))
+            if let num = Int(numStr), num >= 1, num <= 20 { return num }
+        }
+
+        return 1
     }
 
     // MARK: - Helpers

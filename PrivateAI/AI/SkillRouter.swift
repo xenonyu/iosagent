@@ -38,6 +38,7 @@ enum QueryIntent {
     case note(action: NoteAction, content: String)
     case textTool(action: TextToolAction, content: String)
     case dailyQuote(category: QuoteCategory)
+    case personalStats
     case unknown
 
     /// Whether this intent could not be matched to any known skill.
@@ -232,6 +233,13 @@ struct SkillRouter {
         // --- Daily Quote / Motivation ---
         if let quoteCategory = parseQuote(lower) {
             return .dailyQuote(category: quoteCategory)
+        }
+
+        // --- Personal Stats / Usage Report ---
+        if containsAny(lower, ["使用统计", "数据统计", "数据报告", "使用报告", "我的数据",
+                                "用了多久", "使用情况", "用了多长时间", "用了几天",
+                                "my stats", "usage stats", "my data", "data report"]) {
+            return .personalStats
         }
 
         // --- Greeting / Conversational ---
@@ -1767,7 +1775,7 @@ struct SkillRouter {
     private static func extractTextToolContent(from original: String, lower: String) -> String {
         // Try quoted content first: "...", '...', 「...」, 『...』
         let quotePatterns: [(String, String)] = [
-            ("\"", "\""), ("'", "'"), (""", """), ("'", "'"),
+            ("\"", "\""), ("'", "'"), ("\u{201C}", "\u{201D}"), ("\u{2018}", "\u{2019}"),
             ("「", "」"), ("『", "』"), ("《", "》")
         ]
         for (open, close) in quotePatterns {

@@ -70,6 +70,7 @@ final class ClawEngine {
         registry.register(ReminderSkill())
         registry.register(TextToolSkill())
         registry.register(DailyQuoteSkill())
+        registry.register(PersonalStatsSkill())
         registry.register(SearchSkill())
         registry.register(GreetingSkill())
         registry.register(UnknownSkill())

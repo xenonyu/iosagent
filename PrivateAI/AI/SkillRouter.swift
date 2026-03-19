@@ -326,7 +326,10 @@ struct SkillRouter {
                                 "exercise", "workout", "steps", "run", "walk", "fitness",
                                 "calories", "hiking", "swim", "cycling", "yoga"]) {
             let filter = extractWorkoutFilter(from: lower)
-            return .exercise(range: range, workoutFilter: filter)
+            // Exercise queries without explicit time words (e.g. "走了多少步", "运动了吗")
+            // intuitively mean today, not last week. Same pattern as calendar (line 578).
+            let exRange = hasExplicitTimeReference(lower) ? range : .today
+            return .exercise(range: exRange, workoutFilter: filter)
         }
 
         // --- Location / Places ---
@@ -444,7 +447,10 @@ struct SkillRouter {
                                 "vo2", "vo2max", "摄氧量", "最大摄氧", "有氧耐力", "心肺适能",
                                 "cardio fitness", "aerobic capacity"]) {
             let metric = extractHealthMetric(from: lower)
-            return .health(metric: metric, range: range)
+            // Health queries without explicit time words (e.g. "心率多少", "睡得好吗")
+            // intuitively mean today/recent, not last week. Matches calendar default pattern.
+            let healthRange = hasExplicitTimeReference(lower) ? range : .today
+            return .health(metric: metric, range: healthRange)
         }
 
         // --- Streak ---

@@ -34,6 +34,7 @@ enum QueryIntent {
     case pomodoro(action: PomodoroAction)
     case expense(action: ExpenseAction, amount: Double, category: String, note: String)
     case reminder(action: ReminderAction)
+    case search(keyword: String)
     case unknown
 }
 
@@ -344,6 +345,15 @@ struct SkillRouter {
             return .profile
         }
 
+        // --- Search Life Events ---
+        if containsAny(lower, ["搜索", "查找", "搜一下", "查一下", "找一下记录", "找记录",
+                                "search for", "search", "look up", "find record"]) {
+            let keyword = extractSearchKeyword(from: text, lower: lower)
+            if !keyword.isEmpty {
+                return .search(keyword: keyword)
+            }
+        }
+
         // --- General Events ---
         if containsAny(lower, ["事件", "事情", "最近", "记录", "日志",
                                 "events", "diary", "log", "recent"]) {
@@ -405,6 +415,27 @@ struct SkillRouter {
         }
         let title = String(text.prefix(20))
         return .addEvent(title: title, content: text, mood: mood)
+    }
+
+    // MARK: - Search Keyword Extraction
+
+    private static func extractSearchKeyword(from original: String, lower: String) -> String {
+        // Remove trigger words and extract the actual search keyword
+        let triggers = ["搜索", "查找", "搜一下", "查一下", "找一下记录", "找记录",
+                        "search for", "search", "look up", "find record",
+                        "的记录", "记录", "相关", "有关", "关于"]
+        var keyword = original
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        for trigger in triggers {
+            keyword = keyword.replacingOccurrences(of: trigger, with: "")
+        }
+        keyword = keyword.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Remove surrounding quotes if present
+        if (keyword.hasPrefix("\"") && keyword.hasSuffix("\"")) ||
+           (keyword.hasPrefix("「") && keyword.hasSuffix("」")) {
+            keyword = String(keyword.dropFirst().dropLast())
+        }
+        return keyword
     }
 
     // MARK: - Countdown Topic

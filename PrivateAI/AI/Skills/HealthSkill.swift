@@ -626,7 +626,7 @@ struct HealthSkill: ClawSkill {
 
             switch metric {
             case "sleep":
-                respondSleep(summaries: withData, range: range, completion: completion)
+                respondSleep(summaries: withData, range: range, context: context, completion: completion)
             case "heartRate":
                 respondHeartRate(summaries: withData, range: range, completion: completion)
             case "steps":
@@ -649,7 +649,7 @@ struct HealthSkill: ClawSkill {
         }
     }
 
-    private func respondSleep(summaries: [HealthSummary], range: QueryTimeRange, completion: @escaping (String) -> Void) {
+    private func respondSleep(summaries: [HealthSummary], range: QueryTimeRange, context: SkillContext, completion: @escaping (String) -> Void) {
         let sleepDays = summaries.filter { $0.sleepHours > 0 }
         guard !sleepDays.isEmpty else {
             completion("😴 \(range.label)暂无睡眠记录。\n请确保 iPhone 或 Apple Watch 的睡眠追踪已开启。")
@@ -897,6 +897,122 @@ struct HealthSkill: ClawSkill {
                 if hasPositiveCorrelation {
                     lines.append("")
                     lines.append("💡 你的身体数据证实：睡眠质量直接影响恢复状态。优先保障睡眠比多练一次效果更大。")
+                }
+            }
+        }
+
+        // --- Exercise ↔ Sleep Correlation ---
+        // Show whether exercise days lead to better/worse sleep.
+        let pairedExercise = summaries.filter { $0.sleepHours > 0 && $0.exerciseMinutes >= 0 }
+        if pairedExercise.count >= 4 {
+            let medianExercise = pairedExercise.map(\.exerciseMinutes).sorted()[pairedExercise.count / 2]
+            let activeDays = pairedExercise.filter { $0.exerciseMinutes >= max(medianExercise, 15) }
+            let restDays = pairedExercise.filter { $0.exerciseMinutes < max(medianExercise, 15) }
+
+            if activeDays.count >= 2 && restDays.count >= 2 {
+                let sleepOnActive = activeDays.reduce(0) { $0 + $1.sleepHours } / Double(activeDays.count)
+                let sleepOnRest = restDays.reduce(0) { $0 + $1.sleepHours } / Double(restDays.count)
+                let diff = sleepOnActive - sleepOnRest
+
+                if abs(diff) >= 0.3 {
+                    lines.append("")
+                    lines.append("🏃↔️😴 运动与睡眠的关联")
+                    if diff > 0 {
+                        lines.append("   运动日平均睡 \(String(format: "%.1f", sleepOnActive))h，休息日 \(String(format: "%.1f", sleepOnRest))h")
+                        lines.append("   ✅ 运动让你多睡了 \(String(format: "%.1f", diff)) 小时 — 坚持运动就是最好的助眠。")
+                    } else {
+                        lines.append("   运动日平均睡 \(String(format: "%.1f", sleepOnActive))h，休息日 \(String(format: "%.1f", sleepOnRest))h")
+                        lines.append("   💡 运动日反而少睡 \(String(format: "%.1f", -diff))h — 试试把运动时间提前，避免睡前 2 小时剧烈运动。")
+                    }
+                }
+
+                // Deep sleep on exercise vs rest days
+                let activePhase = activeDays.filter { $0.hasSleepPhases }
+                let restPhase = restDays.filter { $0.hasSleepPhases }
+                if activePhase.count >= 2 && restPhase.count >= 2 {
+                    let deepOnActive = activePhase.reduce(0) { $0 + $1.sleepDeepHours } / Double(activePhase.count)
+                    let deepOnRest = restPhase.reduce(0) { $0 + $1.sleepDeepHours } / Double(restPhase.count)
+                    let deepDiff = deepOnActive - deepOnRest
+                    if deepDiff >= 0.2 {
+                        lines.append("   🟣 运动日深睡眠多 \(String(format: "%.1f", deepDiff))h — 运动促进了身体的深度修复。")
+                    }
+                }
+            }
+        }
+
+        // --- Weekday vs Weekend Sleep Pattern ---
+        let cal = Calendar.current
+        if sleepDays.count >= 5 {
+            let weekdaySleep = sleepDays.filter { !cal.isDateInWeekend($0.date) }
+            let weekendSleep = sleepDays.filter { cal.isDateInWeekend($0.date) }
+
+            if weekdaySleep.count >= 2 && weekendSleep.count >= 1 {
+                let wdAvg = weekdaySleep.reduce(0) { $0 + $1.sleepHours } / Double(weekdaySleep.count)
+                let weAvg = weekendSleep.reduce(0) { $0 + $1.sleepHours } / Double(weekendSleep.count)
+                let diff = weAvg - wdAvg
+
+                if abs(diff) >= 0.4 {
+                    lines.append("")
+                    lines.append("🗓 工作日 vs 周末睡眠")
+                    lines.append("   工作日均 \(String(format: "%.1f", wdAvg))h · 周末均 \(String(format: "%.1f", weAvg))h")
+                    if diff > 0 {
+                        let weeklyDebt = diff * Double(weekdaySleep.count)
+                        lines.append("   📌 周末多睡 \(String(format: "%.1f", diff))h — 说明工作日累积了约 \(String(format: "%.0f", weeklyDebt))h 的睡眠债。")
+                        if diff >= 1.5 {
+                            lines.append("   ⚠️ 差异超过 1.5h，社交时差（social jet lag）会打乱生物钟。")
+                            lines.append("   建议工作日至少保证 \(String(format: "%.0f", wdAvg + 0.5))h 睡眠。")
+                        }
+                    } else {
+                        lines.append("   💡 周末反而少睡 \(String(format: "%.1f", -diff))h — 周末活动较多，注意不要透支。")
+                    }
+                }
+            }
+        }
+
+        // --- Calendar ↔ Sleep Correlation ---
+        // Show whether busy days with many meetings lead to worse sleep.
+        let interval = range.interval
+        let calEvents = context.calendarService.fetchEvents(from: interval.start, to: interval.end)
+        let timedEvents = calEvents.filter { !$0.isAllDay }
+        if sleepDays.count >= 3 && !timedEvents.isEmpty {
+            // Group events by day
+            var eventsByDay: [Date: Int] = [:]
+            for event in timedEvents {
+                let dayStart = cal.startOfDay(for: event.startDate)
+                eventsByDay[dayStart, default: 0] += 1
+            }
+
+            // Pair sleep data with event counts
+            var busySleep: [Double] = []
+            var lightSleep: [Double] = []
+            let medianEvents = eventsByDay.values.sorted()[eventsByDay.count / 2]
+            let threshold = max(medianEvents, 2)
+
+            for day in sleepDays {
+                let dayStart = cal.startOfDay(for: day.date)
+                let count = eventsByDay[dayStart] ?? 0
+                if count >= threshold {
+                    busySleep.append(day.sleepHours)
+                } else {
+                    lightSleep.append(day.sleepHours)
+                }
+            }
+
+            if busySleep.count >= 2 && lightSleep.count >= 2 {
+                let busyAvg = busySleep.reduce(0, +) / Double(busySleep.count)
+                let lightAvg = lightSleep.reduce(0, +) / Double(lightSleep.count)
+                let diff = lightAvg - busyAvg
+
+                if diff >= 0.3 {
+                    lines.append("")
+                    lines.append("📅↔️😴 日程与睡眠的关联")
+                    lines.append("   会议多的日子（≥\(threshold)个）平均睡 \(String(format: "%.1f", busyAvg))h")
+                    lines.append("   轻松的日子平均睡 \(String(format: "%.1f", lightAvg))h")
+                    lines.append("   💡 忙碌日少睡 \(String(format: "%.1f", diff))h — 会议密集时更需要保护睡眠时间。")
+                } else if diff <= -0.3 {
+                    lines.append("")
+                    lines.append("📅↔️😴 日程与睡眠的关联")
+                    lines.append("   ✅ 即使忙碌日（≥\(threshold)个会议）也能保持 \(String(format: "%.1f", busyAvg))h 睡眠，时间管理很好！")
                 }
             }
         }

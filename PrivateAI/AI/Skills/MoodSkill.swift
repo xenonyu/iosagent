@@ -26,22 +26,46 @@ struct MoodSkill: ClawSkill {
             let isEmotionalExpression = emotionalWords.contains(where: { query.contains($0) })
 
             if isEmotionalExpression {
-                // Empathize first, then guide to recording
+                // Empathize first, then check health data for possible explanations
                 let empathy: String
+                let isNegative: Bool
                 if SkillRouter.containsAny(query, ["累", "疲惫", "压力", "崩溃", "扛不住"]) {
                     empathy = "听到你说累了/压力大，辛苦了 🫂"
+                    isNegative = true
                 } else if SkillRouter.containsAny(query, ["焦虑", "紧张", "不安", "慌"]) {
                     empathy = "感受到你的焦虑，深呼吸一下 🫂"
+                    isNegative = true
                 } else if SkillRouter.containsAny(query, ["难过", "伤心", "沮丧", "郁闷", "低落", "丧"]) {
                     empathy = "抱抱你，不开心的时候说出来就好 🫂"
+                    isNegative = true
                 } else if SkillRouter.containsAny(query, ["烦", "恼火", "生气"]) {
                     empathy = "听起来今天不太顺利 😮‍💨"
+                    isNegative = true
                 } else if SkillRouter.containsAny(query, ["开心", "兴奋", "满足", "充实", "放松", "舒服"]) {
                     empathy = "很高兴你心情不错！😊"
+                    isNegative = false
                 } else {
                     empathy = "我听到你了 😊"
+                    isNegative = false
                 }
-                completion("\(empathy)\n\n目前还没有足够的心情记录来做趋势分析。\n试试说「记录一下，今天\(query)」，我会帮你保存，积累几天后就能发现心情与健康数据的关联。\n\n💡 例如：\n• 「记录一下，今天有点累」\n• 「帮我记一下，压力有点大」\n• 「今天心情不错，去散步了」")
+
+                // Fetch recent health data to provide context for the emotion
+                context.healthService.fetchSummaries(days: 3) { summaries in
+                    let healthContext = self.buildHealthContextForEmotion(
+                        summaries: summaries,
+                        isNegative: isNegative,
+                        query: query
+                    )
+
+                    var response = empathy
+
+                    if let healthContext = healthContext {
+                        response += "\n\n\(healthContext)"
+                    }
+
+                    response += "\n\n📝 试试说「记录一下，今天\(query)」，我会帮你保存，积累几天后就能发现心情与健康数据的关联。"
+                    completion(response)
+                }
             } else {
                 completion("😊 \(range.label)暂无心情记录。\n通过对话告诉我你今天的心情，我会帮你记录下来！\n\n💡 试试说：「今天心情不错」、「有点累」或「今天很开心」，我会帮你记录并分析趋势。")
             }
@@ -422,5 +446,99 @@ struct MoodSkill: ClawSkill {
     private func avg(_ values: [Double]) -> Double {
         guard !values.isEmpty else { return 0 }
         return values.reduce(0, +) / Double(values.count)
+    }
+
+    // MARK: - Health-Aware Emotional Context
+
+    /// When a user expresses an emotion (e.g. "好累"), check their recent health data
+    /// to provide possible explanations — connecting feelings to real body signals.
+    private func buildHealthContextForEmotion(summaries: [HealthSummary], isNegative: Bool, query: String) -> String? {
+        guard !summaries.isEmpty else { return nil }
+
+        let today = summaries.first(where: { Calendar.current.isDateInToday($0.date) })
+        let yesterday = summaries.first(where: { Calendar.current.isDateInYesterday($0.date) })
+        // Use today's data first; fall back to yesterday if today hasn't accumulated yet
+        let recent = today?.hasData == true ? today : yesterday
+
+        var clues: [String] = []
+
+        let isTiredQuery = SkillRouter.containsAny(query, ["累", "疲惫", "压力", "崩溃", "扛不住", "没精神", "困"])
+
+        // 1. Sleep deficit — most common cause of fatigue
+        if let sleep = recent, sleep.sleepHours > 0 {
+            if sleep.sleepHours < 6 {
+                clues.append("😴 你昨晚只睡了 \(String(format: "%.1f", sleep.sleepHours)) 小时，睡眠严重不足可能是主要原因")
+            } else if sleep.sleepHours < 7 && isTiredQuery {
+                clues.append("😴 昨晚睡了 \(String(format: "%.1f", sleep.sleepHours)) 小时，略低于建议的 7 小时")
+            } else if sleep.sleepHours >= 7 && !isNegative {
+                clues.append("😴 昨晚睡了 \(String(format: "%.1f", sleep.sleepHours)) 小时，休息充足！")
+            }
+        }
+
+        // Accumulated sleep debt over recent days
+        let sleepDays = summaries.filter { $0.sleepHours > 0 }
+        if sleepDays.count >= 2 {
+            let totalDebt = sleepDays.reduce(0.0) { $0 + max(0, 7.0 - $1.sleepHours) }
+            if totalDebt >= 3 && isTiredQuery {
+                clues.append("💸 最近 \(sleepDays.count) 天累计少睡 \(String(format: "%.1f", totalDebt)) 小时，睡眠债务在积累")
+            }
+        }
+
+        // 2. High exercise load — may explain physical tiredness
+        if let health = recent {
+            if health.exerciseMinutes > 60 && isTiredQuery {
+                clues.append("🏃 \(Calendar.current.isDateInToday(health.date) ? "今天" : "昨天")运动了 \(Int(health.exerciseMinutes)) 分钟，运动量较大，身体可能需要恢复")
+            } else if health.exerciseMinutes > 30 && !isNegative {
+                clues.append("🏃 \(Calendar.current.isDateInToday(health.date) ? "今天" : "昨天")运动了 \(Int(health.exerciseMinutes)) 分钟，保持运动是好心情的助力")
+            }
+
+            if health.steps > 15000 && isTiredQuery {
+                clues.append("👟 已经走了 \(Int(health.steps).formatted()) 步，活动量很大")
+            }
+        }
+
+        // 3. HRV — low HRV indicates stress / poor recovery
+        if let health = recent, health.hrv > 0 {
+            // Check against recent average for personal baseline
+            let hrvDays = summaries.filter { $0.hrv > 0 }
+            if hrvDays.count >= 2 {
+                let avgHRV = hrvDays.reduce(0) { $0 + $1.hrv } / Double(hrvDays.count)
+                if health.hrv < avgHRV * 0.8 && isNegative {
+                    clues.append("📳 HRV \(Int(health.hrv))ms，低于你近期均值 \(Int(avgHRV))ms — 身体恢复状态偏低")
+                } else if health.hrv > avgHRV * 1.1 && !isNegative {
+                    clues.append("📳 HRV \(Int(health.hrv))ms，高于均值 — 身体恢复状态良好")
+                }
+            }
+        }
+
+        // 4. Resting heart rate — elevated RHR can indicate fatigue or stress
+        if let health = recent, health.restingHeartRate > 0 {
+            let rhrDays = summaries.filter { $0.restingHeartRate > 0 }
+            if rhrDays.count >= 2 {
+                let avgRHR = rhrDays.reduce(0) { $0 + $1.restingHeartRate } / Double(rhrDays.count)
+                if health.restingHeartRate > avgRHR + 5 && isNegative {
+                    clues.append("🫀 静息心率 \(Int(health.restingHeartRate))bpm，高于近期均值 \(Int(avgRHR))bpm — 可能反映身体压力")
+                }
+            }
+        }
+
+        guard !clues.isEmpty else { return nil }
+
+        var result = "🔍 看了下你最近的健康数据：\n" + clues.map { "  \($0)" }.joined(separator: "\n")
+
+        // Add actionable suggestion based on findings
+        if isTiredQuery {
+            let hasSleepIssue = clues.contains(where: { $0.contains("睡") })
+            let hasExerciseLoad = clues.contains(where: { $0.contains("运动") || $0.contains("步") })
+            if hasSleepIssue && hasExerciseLoad {
+                result += "\n\n💡 睡眠不足 + 高运动量，身体确实需要休息。今晚试着早睡 30 分钟？"
+            } else if hasSleepIssue {
+                result += "\n\n💡 睡眠不足可能是疲惫的主因，今晚早点休息吧。"
+            } else if hasExerciseLoad {
+                result += "\n\n💡 活动量较大，记得补充水分和营养，让身体恢复。"
+            }
+        }
+
+        return result
     }
 }

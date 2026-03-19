@@ -637,6 +637,14 @@ struct SkillRouter {
         if let specificDate = extractSpecificWeekday(from: text) {
             return .specificDate(specificDate)
         }
+
+        // --- Relative day count parsing (must check before generic keywords) ---
+        // Matches: "最近3天", "过去五天", "这3天", "近7天", "last 3 days", "past 5 days"
+        // Also: "3天前", "五天前" → single specific date N days ago
+        if let relativeRange = extractRelativeDays(from: text) {
+            return relativeRange
+        }
+
         // Future ranges (check before past to avoid "明天" matching "天" in "今天")
         if containsAny(text, ["后天", "day after tomorrow"]) { return .dayAfterTomorrow }
         if containsAny(text, ["明天", "tomorrow"]) { return .tomorrow }
@@ -653,6 +661,151 @@ struct SkillRouter {
         if containsAny(text, ["这个月", "本月", "this month"]) { return .thisMonth }
         if containsAny(text, ["最近", "recent", "lately", "recently"]) { return .lastWeek }
         return .lastWeek
+    }
+
+    // MARK: - Relative Day Count Extraction
+
+    /// Parses relative day count expressions into the appropriate QueryTimeRange.
+    ///
+    /// Supported patterns:
+    /// - "最近N天" / "过去N天" / "这N天" / "近N天" → `.recentDays(N)`
+    /// - "N天前" → `.specificDate(date)` (a single day N days ago)
+    /// - "N天内" / "N天里" → `.recentDays(N)`
+    /// - English: "last N days" / "past N days" / "N days ago"
+    /// - Supports both Arabic (3) and Chinese (三) numerals up to 99
+    private static func extractRelativeDays(from text: String) -> QueryTimeRange? {
+        let lower = text.lowercased()
+
+        // Chinese numeral → Int mapping
+        let chineseDigits: [Character: Int] = [
+            "一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5,
+            "六": 6, "七": 7, "八": 8, "九": 9, "十": 10
+        ]
+
+        /// Extracts an integer from the text at or after the given index.
+        /// Handles Arabic digits ("3", "14") and Chinese numerals ("三", "十二", "二十一").
+        func extractNumber(from str: String, at startIdx: String.Index) -> (value: Int, endIdx: String.Index)? {
+            var idx = startIdx
+            // Skip whitespace
+            while idx < str.endIndex && str[idx] == " " { idx = str.index(after: idx) }
+            guard idx < str.endIndex else { return nil }
+
+            // Try Arabic digits first: "3", "14", "100"
+            if str[idx].isNumber {
+                var numStr = ""
+                var endIdx = idx
+                while endIdx < str.endIndex && str[endIdx].isNumber {
+                    numStr.append(str[endIdx])
+                    endIdx = str.index(after: endIdx)
+                }
+                if let n = Int(numStr), n > 0 && n <= 365 {
+                    return (n, endIdx)
+                }
+                return nil
+            }
+
+            // Try Chinese numerals: "三", "十", "十二", "二十", "二十一"
+            if let digit = chineseDigits[str[idx]] {
+                let nextIdx = str.index(after: idx)
+                if digit == 10 {
+                    // "十" alone = 10, "十二" = 12
+                    if nextIdx < str.endIndex, let ones = chineseDigits[str[nextIdx]], ones < 10 {
+                        return (10 + ones, str.index(after: nextIdx))
+                    }
+                    return (10, nextIdx)
+                } else if digit < 10 {
+                    // Check for tens place: "二十" = 20, "二十一" = 21
+                    if nextIdx < str.endIndex && str[nextIdx] == "十" {
+                        let afterTen = str.index(after: nextIdx)
+                        if afterTen < str.endIndex, let ones = chineseDigits[str[afterTen]], ones < 10 {
+                            return (digit * 10 + ones, str.index(after: afterTen))
+                        }
+                        return (digit * 10, afterTen)
+                    }
+                    // Single digit: "三" = 3
+                    return (digit, nextIdx)
+                }
+            }
+            return nil
+        }
+
+        // --- Chinese patterns: prefix + N + "天" ---
+        // "最近N天", "过去N天", "这N天", "近N天"
+        let prefixes = ["最近", "过去", "这", "近"]
+        for prefix in prefixes {
+            if let prefixRange = lower.range(of: prefix) {
+                let afterPrefix = prefixRange.upperBound
+                if let (n, endIdx) = extractNumber(from: lower, at: afterPrefix) {
+                    // Must be followed by "天" to confirm it's a day count
+                    if endIdx < lower.endIndex && lower[endIdx] == "天" {
+                        return .recentDays(n)
+                    }
+                }
+            }
+        }
+
+        // --- Chinese patterns: N + "天前" (specific date) ---
+        if let range = lower.range(of: "天前") {
+            // Walk backwards from "天前" to find the number
+            let beforeTian = range.lowerBound
+            // Try to find number ending right before "天前"
+            // Search from start for any number followed by "天前"
+            var searchIdx = lower.startIndex
+            while searchIdx < beforeTian {
+                if let (n, endIdx) = extractNumber(from: lower, at: searchIdx) {
+                    if endIdx == beforeTian && n > 0 {
+                        let cal = Calendar.current
+                        let targetDate = cal.date(byAdding: .day, value: -n, to: cal.startOfDay(for: Date()))!
+                        return .specificDate(targetDate)
+                    }
+                }
+                searchIdx = lower.index(after: searchIdx)
+            }
+        }
+
+        // --- Chinese patterns: N + "天内" / "天里" (recent range) ---
+        for suffix in ["天内", "天里"] {
+            if let range = lower.range(of: suffix) {
+                let beforeSuffix = range.lowerBound
+                var searchIdx = lower.startIndex
+                while searchIdx < beforeSuffix {
+                    if let (n, endIdx) = extractNumber(from: lower, at: searchIdx) {
+                        if endIdx == beforeSuffix && n > 0 {
+                            return .recentDays(n)
+                        }
+                    }
+                    searchIdx = lower.index(after: searchIdx)
+                }
+            }
+        }
+
+        // --- English patterns: "last N days", "past N days" ---
+        for prefix in ["last ", "past "] {
+            if let prefixRange = lower.range(of: prefix) {
+                let afterPrefix = prefixRange.upperBound
+                if let (n, endIdx) = extractNumber(from: lower, at: afterPrefix) {
+                    // Check for " day" or " days"
+                    let remainder = String(lower[endIdx...])
+                    if remainder.hasPrefix(" day") {
+                        return .recentDays(n)
+                    }
+                }
+            }
+        }
+
+        // --- English pattern: "N days ago" ---
+        if let agoRange = lower.range(of: " days ago") ?? lower.range(of: " day ago") {
+            let beforeAgo = String(lower[lower.startIndex..<agoRange.lowerBound])
+            // Extract last number from the text before " days ago"
+            let words = beforeAgo.split(separator: " ")
+            if let lastWord = words.last, let n = Int(lastWord), n > 0 && n <= 365 {
+                let cal = Calendar.current
+                let targetDate = cal.date(byAdding: .day, value: -n, to: cal.startOfDay(for: Date()))!
+                return .specificDate(targetDate)
+            }
+        }
+
+        return nil
     }
 
     // MARK: - Specific Weekday Extraction

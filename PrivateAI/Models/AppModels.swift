@@ -317,6 +317,8 @@ enum QueryTimeRange: Equatable {
     case all
     /// A specific calendar date (e.g. "下周一", "本周三", "周五")
     case specificDate(Date)
+    /// A relative range of N days ending at now (e.g. "最近3天", "过去5天")
+    case recentDays(Int)
 
     var interval: DateInterval {
         let cal = Calendar.current
@@ -367,6 +369,9 @@ enum QueryTimeRange: Equatable {
             let start = cal.startOfDay(for: date)
             let end = cal.date(byAdding: .day, value: 1, to: start)!
             return DateInterval(start: start, end: end)
+        case .recentDays(let n):
+            let start = cal.date(byAdding: .day, value: -n, to: todayStart)!
+            return DateInterval(start: start, end: now)
         }
     }
 
@@ -376,6 +381,7 @@ enum QueryTimeRange: Equatable {
         case .tomorrow, .dayAfterTomorrow, .nextWeek: return true
         case .specificDate(let date):
             return date > Calendar.current.startOfDay(for: Date())
+        case .recentDays: return false
         default: return false
         }
     }
@@ -398,6 +404,8 @@ enum QueryTimeRange: Equatable {
             fmt.dateFormat = "M月d日（EEEE）"
             fmt.locale = Locale(identifier: "zh_CN")
             return fmt.string(from: date)
+        case .recentDays(let n):
+            return "最近\(n)天"
         }
     }
 }

@@ -404,21 +404,42 @@ struct SummarySkill: ClawSkill {
         let events = CDLifeEvent.fetch(from: interval.start, to: interval.end, in: context.coreDataContext)
         let locations = CDLocationRecord.fetch(from: interval.start, to: interval.end, in: context.coreDataContext)
 
-        context.healthService.fetchWeeklySummaries { summaries in
+        // Fetch 14 days to enable week-over-week comparison
+        context.healthService.fetchSummaries(days: 14) { allSummaries in
             let cal = Calendar.current
-            let filtered = summaries.filter { interval.contains($0.date) }
+            let filtered = allSummaries.filter { interval.contains($0.date) }
+
+            // Last week's data for comparison
+            let lastWeekEnd = interval.start
+            let lastWeekStart = cal.date(byAdding: .day, value: -7, to: lastWeekEnd) ?? lastWeekEnd
+            let lastWeekHealth = allSummaries.filter { $0.date >= lastWeekStart && $0.date < lastWeekEnd }
+
             var lines: [String] = ["📊 本周生活洞察：\n"]
             var hasAnyData = false
 
             // --- Calendar Events (weekly schedule overview) ---
             let calendarEvents = context.calendarService.fetchEvents(from: interval.start, to: interval.end)
+            // Last week's calendar for comparison
+            let lastWeekCalEvents = context.calendarService.fetchEvents(from: lastWeekStart, to: lastWeekEnd)
+
             if !calendarEvents.isEmpty {
                 hasAnyData = true
                 let timedEvents = calendarEvents.filter { !$0.isAllDay }
                 let totalMinutes = timedEvents.reduce(0.0) { $0 + $1.duration } / 60.0
 
                 lines.append("📅 **日程**")
-                lines.append("  共 \(calendarEvents.count) 个事件，约 \(Self.formatDuration(totalMinutes)) 有安排")
+                var calLine = "  共 \(calendarEvents.count) 个事件，约 \(Self.formatDuration(totalMinutes)) 有安排"
+                // Week-over-week calendar comparison
+                if !lastWeekCalEvents.isEmpty {
+                    let lastCount = lastWeekCalEvents.count
+                    let delta = calendarEvents.count - lastCount
+                    if delta > 0 {
+                        calLine += "（比上周多 \(delta) 个）"
+                    } else if delta < 0 {
+                        calLine += "（比上周少 \(-delta) 个）"
+                    }
+                }
+                lines.append(calLine)
 
                 // Find busiest day
                 let dateFmt = DateFormatter()
@@ -447,8 +468,11 @@ struct SummarySkill: ClawSkill {
                 }
             }
 
-            // --- Health Data (enriched weekly overview) ---
+            // --- Health Data (enriched weekly overview with week-over-week comparison) ---
             let withData = filtered.filter { $0.hasData }
+            let lastWeekWithData = lastWeekHealth.filter { $0.hasData }
+            let hasLastWeek = !lastWeekWithData.isEmpty
+
             if !withData.isEmpty {
                 hasAnyData = true
                 let dayCount = Double(max(withData.count, 1))
@@ -463,13 +487,48 @@ struct SummarySkill: ClawSkill {
                 let exerciseGoalDays = withData.filter { $0.exerciseMinutes >= 30 }.count
                 let totalFlights = withData.reduce(0) { $0 + $1.flightsClimbed }
 
+                // Last week baselines for comparison
+                let lwDayCount = Double(max(lastWeekWithData.count, 1))
+                let lwAvgSteps = hasLastWeek ? lastWeekWithData.reduce(0) { $0 + $1.steps } / lwDayCount : 0
+                let lwAvgExercise = hasLastWeek ? lastWeekWithData.reduce(0) { $0 + $1.exerciseMinutes } / lwDayCount : 0
+                let lwSleepDays = lastWeekWithData.filter { $0.sleepHours > 0 }
+                let lwAvgSleep = lwSleepDays.isEmpty ? 0 : lwSleepDays.reduce(0) { $0 + $1.sleepHours } / Double(lwSleepDays.count)
+                let lwTotalCalories = hasLastWeek ? lastWeekWithData.reduce(0) { $0 + $1.activeCalories } : 0
+                let lwGoalDays = lastWeekWithData.filter { $0.steps >= 8000 }.count
+
                 lines.append("\n🏃 **健康**")
-                lines.append("  👟 日均 \(Int(avgSteps).formatted()) 步，\(goalDays)/\(withData.count) 天达标（≥8000）")
+
+                // Steps with week-over-week delta
+                var stepsLine = "  👟 日均 \(Int(avgSteps).formatted()) 步，\(goalDays)/\(withData.count) 天达标（≥8000）"
+                if hasLastWeek && lwAvgSteps > 0 {
+                    let delta = Self.formatDelta(current: avgSteps, previous: lwAvgSteps)
+                    stepsLine += " \(delta)"
+                }
+                lines.append(stepsLine)
+
+                // Goal attainment comparison
+                if hasLastWeek && lwGoalDays != goalDays {
+                    let diff = goalDays - lwGoalDays
+                    if diff > 0 {
+                        lines.append("     达标天数比上周多 \(diff) 天 📈")
+                    } else if diff < 0 {
+                        lines.append("     达标天数比上周少 \(-diff) 天 📉")
+                    }
+                }
+
                 if totalExercise > 0 {
-                    lines.append("  ⏱ 日均运动 \(Int(avgExercise)) 分钟，\(exerciseGoalDays) 天达标（≥30min）")
+                    var exLine = "  ⏱ 日均运动 \(Int(avgExercise)) 分钟，\(exerciseGoalDays) 天达标（≥30min）"
+                    if hasLastWeek && lwAvgExercise > 0 {
+                        exLine += " \(Self.formatDelta(current: avgExercise, previous: lwAvgExercise))"
+                    }
+                    lines.append(exLine)
                 }
                 if totalCalories > 0 {
-                    lines.append("  🔥 累计消耗 \(Int(totalCalories).formatted()) 千卡")
+                    var calLine = "  🔥 累计消耗 \(Int(totalCalories).formatted()) 千卡"
+                    if lwTotalCalories > 0 {
+                        calLine += " \(Self.formatDelta(current: totalCalories, previous: lwTotalCalories))"
+                    }
+                    lines.append(calLine)
                 }
                 if totalDistance > 0.5 {
                     lines.append("  📏 累计步行 \(String(format: "%.1f", totalDistance)) 公里")
@@ -479,7 +538,15 @@ struct SummarySkill: ClawSkill {
                 }
                 if avgSleep > 0 {
                     let goodSleepDays = sleepDays.filter { $0.sleepHours >= 7 && $0.sleepHours <= 9 }.count
-                    lines.append("  😴 均睡 \(String(format: "%.1f", avgSleep))h，\(goodSleepDays)/\(sleepDays.count) 晚在健康范围")
+                    var sleepLine = "  😴 均睡 \(String(format: "%.1f", avgSleep))h，\(goodSleepDays)/\(sleepDays.count) 晚在健康范围"
+                    if lwAvgSleep > 0 {
+                        let sleepDiff = avgSleep - lwAvgSleep
+                        if abs(sleepDiff) >= 0.3 {
+                            let arrow = sleepDiff > 0 ? "↑" : "↓"
+                            sleepLine += "（\(arrow)\(String(format: "%.1f", abs(sleepDiff)))h vs 上周）"
+                        }
+                    }
+                    lines.append(sleepLine)
                 }
 
                 // Best and worst day for steps
@@ -493,15 +560,34 @@ struct SummarySkill: ClawSkill {
                     lines.append("  📉 最低调：\(fmt.string(from: worst.date)) \(Int(worst.steps).formatted())步")
                 }
 
-                // Overall weekly health verdict
+                // Overall weekly health verdict with trend context
                 var score = 0
                 if avgSteps >= 8000 { score += 1 }
                 if avgExercise >= 30 { score += 1 }
                 if avgSleep >= 7 && avgSleep <= 9 { score += 1 }
+
+                // Detect improvement trend vs last week
+                var lwScore = 0
+                if hasLastWeek {
+                    if lwAvgSteps >= 8000 { lwScore += 1 }
+                    if lwAvgExercise >= 30 { lwScore += 1 }
+                    if lwAvgSleep >= 7 && lwAvgSleep <= 9 { lwScore += 1 }
+                }
+
                 if score == 3 {
-                    lines.append("  ✅ 本周步数、运动、睡眠全面达标！")
+                    if hasLastWeek && lwScore < 3 {
+                        lines.append("  ✅ 本周步数、运动、睡眠全面达标！比上周更好 🎉")
+                    } else {
+                        lines.append("  ✅ 本周步数、运动、睡眠全面达标！")
+                    }
                 } else if score >= 2 {
-                    lines.append("  💪 本周状态不错，还有一项可以提升")
+                    if hasLastWeek && score > lwScore {
+                        lines.append("  💪 本周状态比上周有进步，继续加油！")
+                    } else if hasLastWeek && score < lwScore {
+                        lines.append("  💡 本周表现比上周略有下滑，下周试试找回节奏")
+                    } else {
+                        lines.append("  💪 本周状态不错，还有一项可以提升")
+                    }
                 } else if score == 1 {
                     lines.append("  💡 有提升空间，下周试试从最容易的一项开始")
                 }
@@ -523,11 +609,32 @@ struct SummarySkill: ClawSkill {
                 if let topPlace = placeCount.max(by: { $0.value < $1.value }) {
                     lines.append("\n📍 最常去：\(topPlace.key)（\(topPlace.value) 次）")
                 }
+                // Compare location diversity with last week
+                let lastWeekLocations = CDLocationRecord.fetch(from: lastWeekStart, to: lastWeekEnd, in: context.coreDataContext)
+                if !lastWeekLocations.isEmpty {
+                    let thisPlaces = Set(locations.map { $0.displayName }).count
+                    let lastPlaces = Set(lastWeekLocations.map { $0.displayName }).count
+                    if thisPlaces > lastPlaces {
+                        lines.append("  📈 探索了 \(thisPlaces) 个地方，比上周多 \(thisPlaces - lastPlaces) 个")
+                    } else if thisPlaces < lastPlaces {
+                        lines.append("  📉 本周去了 \(thisPlaces) 个地方，比上周少 \(lastPlaces - thisPlaces) 个")
+                    }
+                }
             }
 
             if !events.isEmpty {
                 hasAnyData = true
-                lines.append("\n📝 共记录 \(events.count) 条生活事件")
+                let lastWeekEvents = CDLifeEvent.fetch(from: lastWeekStart, to: lastWeekEnd, in: context.coreDataContext)
+                var eventLine = "📝 共记录 \(events.count) 条生活事件"
+                if !lastWeekEvents.isEmpty {
+                    let delta = events.count - lastWeekEvents.count
+                    if delta > 0 {
+                        eventLine += "（比上周多 \(delta) 条）"
+                    } else if delta < 0 {
+                        eventLine += "（比上周少 \(-delta) 条）"
+                    }
+                }
+                lines.append("\n\(eventLine)")
             }
 
             // --- Weekly Cross-Data Pattern Discovery ---
@@ -560,6 +667,16 @@ struct SummarySkill: ClawSkill {
         if h > 0 && m > 0 { return "\(h) 小时 \(m) 分钟" }
         if h > 0 { return "\(h) 小时" }
         return "\(m) 分钟"
+    }
+
+    /// Formats a week-over-week percentage delta as a concise arrow string.
+    /// Returns "" if the change is too small to be meaningful (<10%).
+    private static func formatDelta(current: Double, previous: Double) -> String {
+        guard previous > 0 else { return "" }
+        let pct = ((current - previous) / previous) * 100
+        guard abs(pct) >= 10 else { return "" }
+        let arrow = pct > 0 ? "↑" : "↓"
+        return "（vs 上周 \(arrow)\(Int(abs(pct)))%）"
     }
 
     // MARK: - Cross-Data Intelligence

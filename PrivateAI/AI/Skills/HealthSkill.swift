@@ -292,7 +292,7 @@ struct HealthSkill: ClawSkill {
             return
         }
 
-        var lines: [String] = ["❤️ \(range.label)的心率数据\n"]
+        var lines: [String] = ["❤️ \(range.label)的心率分析\n"]
         let avg = hrDays.reduce(0) { $0 + $1.heartRate } / Double(hrDays.count)
         let maxHR = hrDays.max(by: { $0.heartRate < $1.heartRate })!
         let minHR = hrDays.min(by: { $0.heartRate < $1.heartRate })!
@@ -300,15 +300,172 @@ struct HealthSkill: ClawSkill {
         lines.append("💓 平均心率：\(Int(avg)) BPM")
         lines.append("📊 波动范围：\(Int(minHR.heartRate))~\(Int(maxHR.heartRate)) BPM")
 
-        // Context-aware insight
-        if avg < 60 {
-            lines.append("\n🏅 静息心率较低，说明心肺功能不错！")
-        } else if avg <= 80 {
-            lines.append("\n✅ 心率处于正常范围（60-80 BPM）。")
-        } else if avg <= 100 {
-            lines.append("\n💡 心率偏高，可能与压力、缺乏运动或咖啡因有关。")
+        // --- Resting heart rate (the gold-standard fitness indicator) ---
+        let restingDays = summaries.filter { $0.restingHeartRate > 0 }
+        if !restingDays.isEmpty {
+            let avgResting = restingDays.reduce(0) { $0 + $1.restingHeartRate } / Double(restingDays.count)
+            lines.append("")
+            lines.append("🫀 静息心率：\(Int(avgResting)) BPM")
+
+            // Fitness-level interpretation based on resting HR
+            // (AHA guidelines: athletes <60, excellent 60-65, good 66-73, average 74-80, above-average 81+)
+            if avgResting < 60 {
+                lines.append("🏅 运动员水平！静息心率低于 60 说明心肺功能出色。")
+            } else if avgResting <= 65 {
+                lines.append("✅ 心肺功能优秀，静息心率处于健身人群范围。")
+            } else if avgResting <= 73 {
+                lines.append("✅ 静息心率正常偏好，坚持运动可以进一步降低。")
+            } else if avgResting <= 80 {
+                lines.append("💡 静息心率中等，规律有氧运动（跑步、游泳）可以逐步改善。")
+            } else {
+                lines.append("⚠️ 静息心率偏高（>80），建议增加有氧运动并减少久坐。")
+            }
+
+            // Resting HR trend (compare first half vs second half)
+            if restingDays.count >= 4 {
+                let mid = restingDays.count / 2
+                let recentAvg = restingDays.prefix(mid).reduce(0) { $0 + $1.restingHeartRate } / Double(mid)
+                let olderAvg = restingDays.suffix(from: mid).reduce(0) { $0 + $1.restingHeartRate } / Double(restingDays.count - mid)
+                let diff = recentAvg - olderAvg
+                if abs(diff) >= 2 {
+                    if diff < 0 {
+                        lines.append("📈 静息心率呈下降趋势（\(String(format: "%.0f", diff)) BPM），心肺功能在提升！")
+                    } else {
+                        lines.append("📉 静息心率略有上升（+\(String(format: "%.0f", diff)) BPM），可能与疲劳、压力或缺乏运动有关。")
+                    }
+                }
+            }
+        }
+
+        // --- HRV analysis (stress & recovery indicator) ---
+        let hrvDays = summaries.filter { $0.hrv > 0 }
+        if !hrvDays.isEmpty {
+            let avgHRV = hrvDays.reduce(0) { $0 + $1.hrv } / Double(hrvDays.count)
+            let maxHRV = hrvDays.max(by: { $0.hrv < $1.hrv })!
+            let minHRV = hrvDays.min(by: { $0.hrv < $1.hrv })!
+
+            lines.append("")
+            lines.append("📳 心率变异性（HRV）：\(Int(avgHRV)) ms")
+            if hrvDays.count > 1 {
+                lines.append("   波动范围：\(Int(minHRV.hrv))~\(Int(maxHRV.hrv)) ms")
+            }
+
+            // HRV interpretation (higher = better autonomic nervous system balance)
+            // Normal ranges vary greatly by age, so we give general guidance
+            if avgHRV >= 50 {
+                lines.append("✅ HRV 较高，说明身体恢复状态好，自主神经调节能力强。")
+            } else if avgHRV >= 30 {
+                lines.append("💡 HRV 中等，适当休息和规律运动有助于提升。")
+            } else {
+                lines.append("⚠️ HRV 偏低，可能处于疲劳或压力较大的状态，注意恢复。")
+            }
+
+            // HRV consistency — stable HRV is a good sign
+            if hrvDays.count >= 3 {
+                let hrvCV = coefficient(of: hrvDays.map { $0.hrv })
+                if hrvCV < 0.2 {
+                    lines.append("📊 HRV 非常稳定，身体节律良好。")
+                } else if hrvCV > 0.4 {
+                    lines.append("🎢 HRV 波动较大，可能受睡眠质量或压力影响。")
+                }
+            }
+
+            // HRV trend
+            if hrvDays.count >= 4 {
+                let mid = hrvDays.count / 2
+                let recentAvg = hrvDays.prefix(mid).reduce(0) { $0 + $1.hrv } / Double(mid)
+                let olderAvg = hrvDays.suffix(from: mid).reduce(0) { $0 + $1.hrv } / Double(hrvDays.count - mid)
+                let diff = recentAvg - olderAvg
+                if abs(diff) >= 5 {
+                    if diff > 0 {
+                        lines.append("📈 HRV 呈上升趋势（+\(Int(diff)) ms），恢复状态在改善！")
+                    } else {
+                        lines.append("📉 HRV 有所下降（\(Int(diff)) ms），注意休息和压力管理。")
+                    }
+                }
+            }
+        }
+
+        // --- Cross-metric: heart rate vs exercise correlation ---
+        if hrDays.count >= 4 {
+            let paired = summaries.filter { $0.heartRate > 0 && $0.exerciseMinutes > 0 }
+            if paired.count >= 3 {
+                let exerciseMedian = paired.map(\.exerciseMinutes).sorted()[paired.count / 2]
+                let activeDays = paired.filter { $0.exerciseMinutes >= exerciseMedian }
+                let restDays = paired.filter { $0.exerciseMinutes < exerciseMedian }
+
+                if !activeDays.isEmpty && !restDays.isEmpty {
+                    let hrOnActive = activeDays.reduce(0) { $0 + $1.heartRate } / Double(activeDays.count)
+                    let hrOnRest = restDays.reduce(0) { $0 + $1.heartRate } / Double(restDays.count)
+                    let diff = hrOnActive - hrOnRest
+
+                    if abs(diff) >= 3 {
+                        lines.append("")
+                        if diff > 0 {
+                            lines.append("💡 运动日平均心率高 \(Int(diff)) BPM，属于正常的运动反应。")
+                        } else {
+                            lines.append("💡 运动日心率反而低 \(Int(-diff)) BPM，长期运动正在降低你的基础心率。")
+                        }
+                    }
+                }
+            }
+        }
+
+        // --- Context-aware overall insight ---
+        lines.append("")
+        if restingDays.isEmpty && hrvDays.isEmpty {
+            // Fallback: only average HR available (no Apple Watch resting/HRV)
+            if avg < 60 {
+                lines.append("🏅 平均心率较低，心肺功能看起来不错！")
+            } else if avg <= 80 {
+                lines.append("✅ 心率处于正常范围（60-80 BPM）。")
+            } else if avg <= 100 {
+                lines.append("💡 心率偏高，可能与压力、缺乏运动或咖啡因有关。")
+            } else {
+                lines.append("⚠️ 平均心率超过 100 BPM，建议关注并咨询医生。")
+            }
+            lines.append("💡 佩戴 Apple Watch 可获取静息心率和 HRV 数据，提供更深入的心肺分析。")
         } else {
-            lines.append("\n⚠️ 平均心率超过 100 BPM，建议关注并咨询医生。")
+            // Holistic cardiovascular verdict
+            var cardioScore = 0
+            if let rhr = restingDays.isEmpty ? nil : restingDays.reduce(0, { $0 + $1.restingHeartRate }) / Double(restingDays.count) {
+                if rhr <= 73 { cardioScore += 1 }
+            }
+            if let hv = hrvDays.isEmpty ? nil : hrvDays.reduce(0, { $0 + $1.hrv }) / Double(hrvDays.count) {
+                if hv >= 40 { cardioScore += 1 }
+            }
+            // Check HRV stability
+            if hrvDays.count >= 3 {
+                let cv = coefficient(of: hrvDays.map { $0.hrv })
+                if cv < 0.3 { cardioScore += 1 }
+            }
+
+            switch cardioScore {
+            case 3:
+                lines.append("🫀 心血管状态优秀！静息心率、HRV 和稳定性都表现很好。")
+            case 2:
+                lines.append("💪 心血管健康良好，继续保持规律运动。")
+            case 1:
+                lines.append("💡 心血管指标还有提升空间，有氧运动是最好的投资。")
+            default:
+                lines.append("🌱 建议增加有氧运动、改善睡眠，逐步提升心血管健康。")
+            }
+        }
+
+        // Day-by-day HR sparkline
+        if hrDays.count >= 3 {
+            let sorted = hrDays.sorted { $0.date < $1.date }
+            let maxVal = sorted.map(\.heartRate).max() ?? 1
+            let minVal = sorted.map(\.heartRate).min() ?? 0
+            let range = maxVal - minVal
+            if range > 0 {
+                let sparkChars: [Character] = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"]
+                let spark = sorted.map { day -> Character in
+                    let idx = min(Int((day.heartRate - minVal) / range * 7), 7)
+                    return sparkChars[idx]
+                }
+                lines.append("\n📈 心率趋势：\(String(spark))")
+            }
         }
 
         // Variability insight
@@ -500,6 +657,16 @@ struct HealthSkill: ClawSkill {
             }
         }
         if avgHR > 0 { lines.append("❤️ 均心率 \(Int(avgHR)) BPM") }
+        let restingDaysOverview = summaries.filter { $0.restingHeartRate > 0 }
+        if !restingDaysOverview.isEmpty {
+            let avgResting = restingDaysOverview.reduce(0) { $0 + $1.restingHeartRate } / Double(restingDaysOverview.count)
+            lines.append("🫀 静息心率 \(Int(avgResting)) BPM")
+        }
+        let hrvDaysOverview = summaries.filter { $0.hrv > 0 }
+        if !hrvDaysOverview.isEmpty {
+            let avgHRV = hrvDaysOverview.reduce(0) { $0 + $1.hrv } / Double(hrvDaysOverview.count)
+            lines.append("📳 HRV \(Int(avgHRV)) ms · 查看「心率」获取详细分析")
+        }
         if totalFlights > 0 { lines.append("🏢 爬楼 \(Int(totalFlights)) 层（日均 \(Int(totalFlights / dayCount))）") }
 
         // --- Sparkline: day-by-day step trend ---

@@ -320,6 +320,7 @@ struct SkillRouter {
         // --- Health Metrics ---
         if containsAny(lower, ["睡眠", "睡了", "睡得", "睡觉", "入睡", "失眠", "熬夜", "早睡", "晚睡",
                                 "心率", "血压", "卡路里", "健康", "血氧", "脉搏",
+                                "HRV", "hrv", "心率变异", "静息心率",
                                 "爬楼", "楼层", "爬了多少", "几层楼", "爬了几", "几层",
                                 "flights", "climbed",
                                 "走了多远", "跑了多远", "距离多少", "多少公里", "多少距离",
@@ -607,7 +608,7 @@ struct SkillRouter {
 
     private static func extractHealthMetric(from text: String) -> String {
         if containsAny(text, ["睡眠", "睡了", "睡得", "睡觉", "入睡", "失眠", "熬夜", "早睡", "晚睡", "sleep", "slept"]) { return "sleep" }
-        if containsAny(text, ["心率", "脉搏", "heart rate"]) { return "heartRate" }
+        if containsAny(text, ["心率", "脉搏", "heart rate", "HRV", "hrv", "心率变异", "变异性", "静息心率", "resting heart"]) { return "heartRate" }
         if containsAny(text, ["步数", "走路", "步行", "多少步", "几步", "steps", "walk"]) { return "steps" }
         if containsAny(text, ["卡路里", "热量", "calories"]) { return "calories" }
         if containsAny(text, ["爬楼", "楼层", "几层", "爬了", "flights", "climbed", "floor"]) { return "flights" }

@@ -195,6 +195,10 @@ struct HealthSummary {
     /// Core/light sleep (N1+N2 stages)
     var sleepCoreHours: Double = 0
     var heartRate: Double = 0
+    /// Resting heart rate — key cardiovascular fitness indicator (lower = fitter)
+    var restingHeartRate: Double = 0
+    /// Heart rate variability (SDNN in ms) — stress/recovery indicator (higher = better recovery)
+    var hrv: Double = 0
     var distanceKm: Double = 0
     var flightsClimbed: Double = 0
     var date: Date = Date()

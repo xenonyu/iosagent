@@ -17,6 +17,8 @@ final class HealthService: ObservableObject {
             .activeEnergyBurned,
             .appleExerciseTime,
             .heartRate,
+            .restingHeartRate,
+            .heartRateVariabilitySDNN,
             .distanceWalkingRunning,
             .flightsClimbed
         ]
@@ -78,6 +80,24 @@ final class HealthService: ObservableObject {
                      unit: HKUnit.count().unitDivided(by: .minute()),
                      predicate: predicate) { val in
             summary.heartRate = val
+            group.leave()
+        }
+
+        // Resting heart rate (key fitness indicator)
+        group.enter()
+        fetchAverage(.restingHeartRate,
+                     unit: HKUnit.count().unitDivided(by: .minute()),
+                     predicate: predicate) { val in
+            summary.restingHeartRate = val
+            group.leave()
+        }
+
+        // Heart rate variability (SDNN in milliseconds)
+        group.enter()
+        fetchAverage(.heartRateVariabilitySDNN,
+                     unit: .secondUnit(with: .milli),
+                     predicate: predicate) { val in
+            summary.hrv = val
             group.leave()
         }
 

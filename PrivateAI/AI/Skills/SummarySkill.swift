@@ -244,9 +244,14 @@ struct SummarySkill: ClawSkill {
                     lines.append(sleepLine)
                 }
 
-                // Heart rate
-                if health.heartRate > 0 {
-                    lines.append("  ❤️ 静息心率 \(Int(health.heartRate)) BPM")
+                // Heart rate — prefer resting HR (more meaningful) over average
+                if health.restingHeartRate > 0 {
+                    lines.append("  🫀 静息心率 \(Int(health.restingHeartRate)) BPM")
+                    if health.hrv > 0 {
+                        lines.append("  📳 HRV \(Int(health.hrv)) ms")
+                    }
+                } else if health.heartRate > 0 {
+                    lines.append("  ❤️ 平均心率 \(Int(health.heartRate)) BPM")
                 }
 
                 // Quick health score

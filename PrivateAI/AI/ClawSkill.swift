@@ -10,6 +10,7 @@ struct SkillContext {
     let healthService: HealthService
     let calendarService: CalendarService
     let photoService: PhotoMetadataService
+    let locationService: LocationService
     let profile: UserProfileData
     let contextMemory: ContextMemory?
     let originalQuery: String

@@ -36,6 +36,7 @@ final class ChatViewModel: ObservableObject {
             healthService: appState.healthService,
             calendarService: appState.calendarService,
             photoService: appState.photoService,
+            locationService: appState.locationService,
             profile: profile,
             contextMemory: contextMemory
         )

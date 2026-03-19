@@ -197,6 +197,7 @@ final class ContextMemory {
         case .health(_, let r):  return r
         case .calendar(let r):   return r
         case .photos(let r):     return r
+        case .comparison(let r): return r
         default:                 return nil
         }
     }
@@ -213,6 +214,7 @@ final class ContextMemory {
         case .health(let m, _):  return .health(metric: m, range: range)
         case .calendar:          return .calendar(range: range)
         case .photos:            return .photos(range: range)
+        case .comparison:        return .comparison(range: range)
         default:                 return intent
         }
     }

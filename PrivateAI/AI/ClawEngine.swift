@@ -20,6 +20,7 @@ final class ClawEngine {
     private let healthService: HealthService
     private let calendarService: CalendarService
     private let photoService: PhotoMetadataService
+    private let locationService: LocationService
     private var profile: UserProfileData
     private let contextMemory: ContextMemory?
 
@@ -27,12 +28,14 @@ final class ClawEngine {
          healthService: HealthService,
          calendarService: CalendarService,
          photoService: PhotoMetadataService,
+         locationService: LocationService,
          profile: UserProfileData,
          contextMemory: ContextMemory? = nil) {
         self.coreDataContext = context
         self.healthService = healthService
         self.calendarService = calendarService
         self.photoService = photoService
+        self.locationService = locationService
         self.profile = profile
         self.contextMemory = contextMemory
         registerSkills()
@@ -104,6 +107,7 @@ final class ClawEngine {
             healthService: healthService,
             calendarService: calendarService,
             photoService: photoService,
+            locationService: locationService,
             profile: profile,
             contextMemory: contextMemory,
             originalQuery: query

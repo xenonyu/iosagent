@@ -18,12 +18,87 @@ struct LocationSkill: ClawSkill {
         let records = CDLocationRecord.fetch(from: interval.start, to: interval.end, in: context.coreDataContext)
 
         if records.isEmpty {
-            completion("📍 \(range.label)暂无位置记录。\n请确认已开启位置权限，并且在设置中允许后台定位。\n\n💡 开启后，iosclaw 会在后台自动记录你去过的地方（不会持续耗电）。")
+            completion(buildEmptyLocationResponse(range: range, context: context))
             return
         }
 
         let response = buildInsightfulResponse(records: records, range: range, context: context)
         completion(response)
+    }
+
+    // MARK: - Empty State
+
+    /// Builds a context-aware empty response by checking location authorization status.
+    /// Differentiates between: permission not granted, permission granted but no data for
+    /// this period, and when-in-use only (no background tracking).
+    private func buildEmptyLocationResponse(range: QueryTimeRange, context: SkillContext) -> String {
+        let status = context.locationService.authorizationStatus
+
+        switch status {
+        case .notDetermined:
+            return """
+            📍 位置权限尚未开启。
+
+            开启后，iosclaw 会在后台自动记录你去过的地方（不会持续耗电）。
+            请前往「设置 → iosclaw → 位置」选择「始终允许」。
+            """
+
+        case .denied, .restricted:
+            return """
+            📍 位置权限已被关闭。
+
+            无法获取你的位置数据。
+            请前往「设置 → 隐私与安全 → 定位服务 → iosclaw」开启权限。
+
+            💡 选择「始终允许」可以在后台自动记录足迹，不会持续耗电。
+            """
+
+        case .authorizedWhenInUse:
+            // Has some permission but no background tracking → data will be sparse
+            var msg = "📍 \(range.label)暂无位置记录。\n\n"
+            msg += "当前位置权限为「使用 App 期间」，只有打开 iosclaw 时才会记录。\n"
+            msg += "建议前往「设置 → iosclaw → 位置」改为「始终允许」，这样即使 App 在后台也能自动记录足迹。"
+            if range == .today {
+                msg += "\n\n💡 也可以试试「这周去了哪些地方」查看更长时间范围。"
+            }
+            return msg
+
+        case .authorizedAlways:
+            // Permission is fine — genuinely no data for this time range
+            var msg = "📍 \(range.label)暂无位置记录。\n\n"
+            msg += "位置权限已开启，但这段时间没有检测到显著的位置变化。"
+
+            // Suggest broader range for short periods
+            if range == .today {
+                msg += "\niosclaw 使用省电模式追踪位置，短距离移动可能不会被记录。"
+                msg += "\n\n💡 试试「昨天去了哪里」或「这周去了哪些地方」查看更多记录。"
+            } else if range == .yesterday {
+                msg += "\n可能昨天大部分时间待在同一个地方。"
+                msg += "\n\n💡 试试「这周去了哪些地方」查看更长时间的足迹。"
+            } else {
+                // Longer range with no data — check if there's ANY data at all
+                let allRecords = CDLocationRecord.fetch(
+                    from: Calendar.current.date(byAdding: .day, value: -90, to: Date()) ?? Date(),
+                    to: Date(),
+                    in: context.coreDataContext
+                )
+                if allRecords.isEmpty {
+                    msg += "\n最近 90 天内也没有找到任何位置记录。"
+                    msg += "\n\n可能是刚开启定位服务，位置数据会从现在开始逐渐积累。"
+                } else {
+                    let fmt = DateFormatter()
+                    fmt.dateFormat = "M月d日"
+                    if let latest = allRecords.first {
+                        msg += "\n\n最近一条记录是在 \(fmt.string(from: latest.timestamp))。"
+                        msg += "\n试试调整时间范围再查看？"
+                    }
+                }
+            }
+            return msg
+
+        @unknown default:
+            return "📍 \(range.label)暂无位置记录。\n请前往「设置 → iosclaw → 位置」确认权限已开启。"
+        }
     }
 
     // MARK: - Response Builder

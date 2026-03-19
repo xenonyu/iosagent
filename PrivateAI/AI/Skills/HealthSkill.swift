@@ -1664,9 +1664,34 @@ struct HealthSkill: ClawSkill {
     }
 
     private func respondOverview(summaries: [HealthSummary], range: QueryTimeRange, completion: @escaping (String) -> Void) {
-        var lines: [String] = ["📊 \(range.label)健康概览\n"]
+        var lines: [String] = []
         let dayCount = Double(max(summaries.count, 1))
         let cal = Calendar.current
+
+        // --- Holistic Health Score (0-100) at the top ---
+        let healthScore = computeHealthScore(summaries: summaries)
+        let scoreEmoji: String
+        if healthScore.total >= 85 { scoreEmoji = "🌟" }
+        else if healthScore.total >= 70 { scoreEmoji = "✅" }
+        else if healthScore.total >= 50 { scoreEmoji = "💡" }
+        else { scoreEmoji = "🌱" }
+
+        lines.append("📊 \(range.label)健康概览\n")
+        lines.append("\(scoreEmoji) 综合健康评分：\(healthScore.total) / 100")
+        lines.append(healthScoreVerdict(healthScore))
+
+        // Dimension breakdown bar
+        let dims = healthScore.dimensions
+        if !dims.isEmpty {
+            lines.append("")
+            for dim in dims {
+                let filled = max(1, Int(Double(dim.score) / Double(dim.maxScore) * 6))
+                let bar = String(repeating: "▓", count: filled) + String(repeating: "░", count: 6 - filled)
+                let pct = dim.maxScore > 0 ? dim.score * 100 / dim.maxScore : 0
+                lines.append("  \(dim.emoji) \(dim.name) [\(bar)] \(pct)%\(dim.note.isEmpty ? "" : "  \(dim.note)")")
+            }
+            lines.append("")
+        }
 
         // --- Core metrics ---
         let totalSteps = summaries.reduce(0) { $0 + $1.steps }
@@ -1872,27 +1897,217 @@ struct HealthSkill: ClawSkill {
             }
         }
 
-        // --- Overall verdict (enhanced with cross-metric awareness) ---
-        var score = 0
-        var weakAreas: [String] = []
-        if avgSteps >= 8000 { score += 1 } else { weakAreas.append("步数") }
-        if avgExercise >= 30 { score += 1 } else if totalExercise > 0 { weakAreas.append("运动时长") }
-        if avgSleep >= 7 && avgSleep <= 9 { score += 1 } else if avgSleep > 0 { weakAreas.append("睡眠") }
-
-        lines.append("")
-        switch score {
-        case 3:
-            lines.append("✅ 整体状态很好！步数、运动和睡眠都在健康范围。")
-        case 2:
-            lines.append("💪 状态不错！\(weakAreas.joined(separator: "和"))还有提升空间。")
-        case 1:
-            let tip = weakAreas.first ?? "活动"
-            lines.append("💡 \(tip)是最容易改善的一项，从它开始试试？")
-        default:
-            lines.append("🌱 健康之旅从第一步开始，慢慢来。")
+        // --- Actionable improvement tip based on health score dimensions ---
+        let weakest = healthScore.dimensions.filter { $0.maxScore > 0 }
+            .min(by: { Double($0.score) / Double($0.maxScore) < Double($1.score) / Double($1.maxScore) })
+        if let weak = weakest, weak.score < weak.maxScore * 3 / 4 {
+            lines.append("")
+            lines.append("💡 最容易提升的维度：\(weak.emoji) \(weak.name) — \(weak.tip)")
         }
 
         completion(lines.joined(separator: "\n"))
+    }
+
+    // MARK: - Holistic Health Score
+
+    /// A single dimension contributing to the overall health score.
+    private struct ScoreDimension {
+        let emoji: String
+        let name: String
+        let score: Int      // earned points
+        let maxScore: Int   // maximum possible
+        let note: String    // short status note
+        let tip: String     // improvement suggestion
+    }
+
+    /// Composite health score result.
+    private struct HealthScoreResult {
+        let total: Int
+        let dimensions: [ScoreDimension]
+    }
+
+    /// Computes a holistic health score (0-100) from all available HealthKit dimensions:
+    ///   - Activity (30 pts): daily steps + exercise minutes
+    ///   - Sleep (25 pts): duration adequacy + consistency
+    ///   - Cardio (25 pts): resting HR + HRV
+    ///   - Consistency (10 pts): low day-to-day variance in steps
+    ///   - Body (10 pts): weight data availability + stability
+    private func computeHealthScore(summaries: [HealthSummary]) -> HealthScoreResult {
+        let dayCount = Double(max(summaries.count, 1))
+        var dims: [ScoreDimension] = []
+
+        // 1. Activity (30 pts) — steps target 8000, exercise target 30 min
+        let avgSteps = summaries.reduce(0) { $0 + $1.steps } / dayCount
+        let avgExercise = summaries.reduce(0) { $0 + $1.exerciseMinutes } / dayCount
+        var activityPts = 0.0
+        // Steps: 0-8000 → 0-18 pts, above 8000 = full 18
+        activityPts += min(avgSteps / 8000.0, 1.0) * 18
+        // Exercise: 0-30 min → 0-12 pts
+        activityPts += min(avgExercise / 30.0, 1.0) * 12
+        let actScore = min(30, Int(activityPts))
+        let actNote: String
+        if actScore >= 25 { actNote = "达标" }
+        else if actScore >= 15 { actNote = "尚可" }
+        else { actNote = "不足" }
+        dims.append(ScoreDimension(
+            emoji: "🏃", name: "活动量", score: actScore, maxScore: 30,
+            note: actNote,
+            tip: avgSteps < 8000
+                ? "日均步数 \(Int(avgSteps).formatted())，目标 8000 步，试试饭后散步 15 分钟"
+                : "增加运动时长到每天 30 分钟，收益更大"))
+
+        // 2. Sleep (25 pts) — duration adequacy (15) + consistency (10)
+        let sleepDays = summaries.filter { $0.sleepHours > 0 }
+        var sleepPts = 0.0
+        if !sleepDays.isEmpty {
+            let avgSleep = sleepDays.reduce(0) { $0 + $1.sleepHours } / Double(sleepDays.count)
+            // Duration: 7-9h = full 15 pts, gradual falloff
+            if avgSleep >= 7 && avgSleep <= 9 {
+                sleepPts += 15
+            } else if avgSleep >= 6 && avgSleep < 7 {
+                sleepPts += 15 * (avgSleep - 5) / 2
+            } else if avgSleep > 9 && avgSleep <= 10 {
+                sleepPts += 15 * (10 - avgSleep)
+            } else if avgSleep >= 5 {
+                sleepPts += 5
+            }
+            // Consistency: low stddev = high score
+            if sleepDays.count >= 3 {
+                let stdDev = standardDeviation(of: sleepDays.map { $0.sleepHours })
+                if stdDev < 0.3 { sleepPts += 10 }
+                else if stdDev < 0.5 { sleepPts += 8 }
+                else if stdDev < 1.0 { sleepPts += 5 }
+                else if stdDev < 1.5 { sleepPts += 2 }
+            } else {
+                sleepPts += 5 // not enough data
+            }
+        }
+        let slpScore = min(25, Int(sleepPts))
+        let slpAvg = sleepDays.isEmpty ? 0 : sleepDays.reduce(0) { $0 + $1.sleepHours } / Double(sleepDays.count)
+        let slpNote: String
+        if sleepDays.isEmpty { slpNote = "无数据" }
+        else if slpScore >= 20 { slpNote = "优质" }
+        else if slpScore >= 12 { slpNote = "一般" }
+        else { slpNote = "需关注" }
+        dims.append(ScoreDimension(
+            emoji: "😴", name: "睡  眠", score: slpScore, maxScore: 25,
+            note: slpNote,
+            tip: sleepDays.isEmpty
+                ? "开启睡眠追踪以获取睡眠评分"
+                : (slpAvg < 7
+                    ? "平均 \(String(format: "%.1f", slpAvg))h，试着提前 \(Int((7 - slpAvg) * 60)) 分钟上床"
+                    : "保持规律的起床时间，比延长睡眠更重要")))
+
+        // 3. Cardio (25 pts) — resting HR (12) + HRV (13)
+        let restingDays = summaries.filter { $0.restingHeartRate > 0 }
+        let hrvDays = summaries.filter { $0.hrv > 0 }
+        var cardioPts = 0.0
+        if !restingDays.isEmpty {
+            let avgResting = restingDays.reduce(0) { $0 + $1.restingHeartRate } / Double(restingDays.count)
+            if avgResting < 60 { cardioPts += 12 }
+            else if avgResting <= 65 { cardioPts += 11 }
+            else if avgResting <= 73 { cardioPts += 9 }
+            else if avgResting <= 80 { cardioPts += 6 }
+            else { cardioPts += 3 }
+        } else {
+            cardioPts += 6 // no data = neutral
+        }
+        if !hrvDays.isEmpty {
+            let avgHRV = hrvDays.reduce(0) { $0 + $1.hrv } / Double(hrvDays.count)
+            if avgHRV >= 50 { cardioPts += 13 }
+            else if avgHRV >= 40 { cardioPts += 10 }
+            else if avgHRV >= 30 { cardioPts += 7 }
+            else { cardioPts += 4 }
+            // Stability bonus: replace 1-2 pts based on HRV CV
+            if hrvDays.count >= 3 {
+                let cv = coefficient(of: hrvDays.map { $0.hrv })
+                if cv < 0.2 { cardioPts += 1 }
+            }
+        } else {
+            cardioPts += 6.5 // no data = neutral
+        }
+        let cardScore = min(25, Int(cardioPts))
+        let cardNote: String
+        if restingDays.isEmpty && hrvDays.isEmpty { cardNote = "需 Watch" }
+        else if cardScore >= 20 { cardNote = "优秀" }
+        else if cardScore >= 13 { cardNote = "正常" }
+        else { cardNote = "偏弱" }
+        dims.append(ScoreDimension(
+            emoji: "🫀", name: "心  血管", score: cardScore, maxScore: 25,
+            note: cardNote,
+            tip: restingDays.isEmpty
+                ? "佩戴 Apple Watch 可获取静息心率和 HRV 数据"
+                : "规律有氧运动（跑步、游泳）是降低静息心率的最佳方式"))
+
+        // 4. Consistency (10 pts) — how regular are daily patterns
+        let stepValues = summaries.map(\.steps).filter { $0 > 0 }
+        var consistPts = 0.0
+        if stepValues.count >= 3 {
+            let cv = coefficient(of: stepValues)
+            if cv < 0.15 { consistPts = 10 }
+            else if cv < 0.25 { consistPts = 8 }
+            else if cv < 0.4 { consistPts = 5 }
+            else if cv < 0.6 { consistPts = 3 }
+            else { consistPts = 1 }
+        } else {
+            consistPts = 5 // not enough data
+        }
+        let conScore = min(10, Int(consistPts))
+        let conNote: String
+        if stepValues.count < 3 { conNote = "数据少" }
+        else if conScore >= 8 { conNote = "规律" }
+        else if conScore >= 5 { conNote = "一般" }
+        else { conNote = "波动大" }
+        dims.append(ScoreDimension(
+            emoji: "🎯", name: "规律性", score: conScore, maxScore: 10,
+            note: conNote,
+            tip: "每天固定时间散步或运动，建立稳定的活动节律"))
+
+        // 5. Body (10 pts) — weight tracking + stability
+        let weightDays = summaries.filter { $0.bodyMassKg > 0 }.sorted { $0.date < $1.date }
+        var bodyPts = 0.0
+        if weightDays.count >= 2 {
+            bodyPts += 5 // has tracking data
+            let first = weightDays.first!.bodyMassKg
+            let last = weightDays.last!.bodyMassKg
+            let changePct = abs(last - first) / first * 100
+            if changePct < 1.0 { bodyPts += 5 }       // very stable
+            else if changePct < 2.0 { bodyPts += 4 }
+            else if changePct < 5.0 { bodyPts += 2 }
+            else { bodyPts += 1 }
+        } else if weightDays.count == 1 {
+            bodyPts += 5 // has some data
+        } else {
+            bodyPts += 5 // no data = neutral (don't penalize)
+        }
+        let bodyScore = min(10, Int(bodyPts))
+        let bodyNote: String
+        if weightDays.isEmpty { bodyNote = "未记录" }
+        else if bodyScore >= 8 { bodyNote = "稳定" }
+        else { bodyNote = "波动中" }
+        dims.append(ScoreDimension(
+            emoji: "⚖️", name: "体  重", score: bodyScore, maxScore: 10,
+            note: bodyNote,
+            tip: weightDays.isEmpty
+                ? "连接智能体重秤或手动记录体重，追踪长期趋势"
+                : "体重小幅波动是正常的，关注周均值而非每日数字"))
+
+        let total = min(100, dims.reduce(0) { $0 + $1.score })
+        return HealthScoreResult(total: total, dimensions: dims)
+    }
+
+    /// Verdict text for the holistic health score.
+    private func healthScoreVerdict(_ result: HealthScoreResult) -> String {
+        let s = result.total
+        if s >= 85 {
+            return "   身体状态优秀 — 活动充足、睡眠规律、心血管健康"
+        } else if s >= 70 {
+            return "   整体状态良好 — 大部分指标正常，部分维度有优化空间"
+        } else if s >= 50 {
+            return "   状态一般 — 某些方面需要关注，小改变就能带来大提升"
+        } else {
+            return "   建议关注健康 — 从最弱的一项开始，每天改善一点点"
+        }
     }
 
     // MARK: - Streak

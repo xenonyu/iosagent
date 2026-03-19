@@ -36,70 +36,253 @@ struct SummarySkill: ClawSkill {
 
     private func respondSummary(range: QueryTimeRange, context: SkillContext, completion: @escaping (String) -> Void) {
         let interval = range.interval
+        let cal = Calendar.current
         let events = CDLifeEvent.fetch(from: interval.start, to: interval.end, in: context.coreDataContext)
         let locations = CDLocationRecord.fetch(from: interval.start, to: interval.end, in: context.coreDataContext)
+        let spanDays = max(1, cal.dateComponents([.day], from: interval.start, to: interval.end).day ?? 1)
 
-        // Calculate fetch days to cover the full requested range
-        let fetchDays = max(Calendar.current.dateComponents([.day], from: interval.start, to: Date()).day ?? 7, 1) + 1
-        context.healthService.fetchSummaries(days: fetchDays) { allSummaries in
-            // Filter health summaries to the requested interval
+        // Fetch health data covering the requested range + previous period for comparison
+        let fetchDays = max(cal.dateComponents([.day], from: interval.start, to: Date()).day ?? 7, 1) + 1
+        let totalFetchDays = fetchDays + spanDays // extra span for previous-period comparison
+        context.healthService.fetchSummaries(days: totalFetchDays) { allSummaries in
             let summaries = allSummaries.filter { interval.contains($0.date) }
+            let withData = summaries.filter { $0.hasData }
+
+            // Previous period of equal length for comparison
+            let prevEnd = interval.start
+            let prevStart = cal.date(byAdding: .day, value: -spanDays, to: prevEnd) ?? prevEnd
+            let prevSummaries = allSummaries.filter { $0.date >= prevStart && $0.date < prevEnd && $0.hasData }
+
             var lines: [String] = ["📋 \(range.label)的生活总结：\n"]
             var hasAnyData = false
 
-            // --- Calendar Events (use full-period interval to include upcoming events) ---
+            // ── Calendar Events ──
             let calInterval = Self.calendarInterval(for: range)
             let calendarEvents = context.calendarService.fetchEvents(from: calInterval.start, to: calInterval.end)
             if !calendarEvents.isEmpty {
                 hasAnyData = true
                 let timedEvents = calendarEvents.filter { !$0.isAllDay }
                 let totalMinutes = timedEvents.reduce(0.0) { $0 + $1.duration } / 60.0
-                lines.append("📅 日程：\(calendarEvents.count) 个事件\(totalMinutes >= 60 ? "，约 \(Self.formatDuration(totalMinutes)) 有安排" : "")")
-            }
 
-            if !events.isEmpty {
-                hasAnyData = true
-                let byCategory = Dictionary(grouping: events, by: { $0.category })
-                lines.append("\n📌 生活事件（共 \(events.count) 条）")
-                byCategory.forEach { cat, evts in
-                    lines.append("  \(cat.label)：\(evts.count) 条")
+                lines.append("📅 **日程**")
+                var calLine = "  共 \(calendarEvents.count) 个事件"
+                if totalMinutes >= 60 { calLine += "，约 \(Self.formatDuration(totalMinutes)) 有安排" }
+                lines.append(calLine)
+
+                // Busiest day
+                if spanDays > 1 {
+                    let dateFmt = DateFormatter()
+                    dateFmt.dateFormat = "M月d日（E）"
+                    dateFmt.locale = Locale(identifier: "zh_CN")
+                    let grouped = Dictionary(grouping: timedEvents) { cal.startOfDay(for: $0.startDate) }
+                    if let busiestDay = grouped.max(by: { $0.value.count < $1.value.count }),
+                       busiestDay.value.count > 1 {
+                        lines.append("  📊 最忙：\(dateFmt.string(from: busiestDay.key))（\(busiestDay.value.count) 个会议）")
+                    }
+                    // Free days
+                    let daysWithEvents = grouped.count
+                    let freeDays = spanDays - daysWithEvents
+                    if freeDays > 0 {
+                        lines.append("  💚 \(freeDays) 天没有日程安排")
+                    }
+                }
+
+                // Previous-period calendar comparison
+                let prevCalEvents = context.calendarService.fetchEvents(from: prevStart, to: prevEnd)
+                if !prevCalEvents.isEmpty {
+                    let delta = calendarEvents.count - prevCalEvents.count
+                    if delta > 2 {
+                        lines.append("  📈 比上个同期多 \(delta) 个事件")
+                    } else if delta < -2 {
+                        lines.append("  📉 比上个同期少 \(-delta) 个事件，节奏放缓")
+                    }
                 }
             }
 
-            if !locations.isEmpty {
+            // ── Health Data with averages, goals, and trends ──
+            if !withData.isEmpty {
                 hasAnyData = true
-                let uniquePlaces = Set(locations.map { $0.displayName }).count
-                lines.append("\n📍 去过 \(uniquePlaces) 个地点，共记录 \(locations.count) 次")
+                let dayCount = Double(max(withData.count, 1))
+                let totalSteps = withData.reduce(0) { $0 + $1.steps }
+                let avgSteps = totalSteps / dayCount
+                let totalExercise = withData.reduce(0) { $0 + $1.exerciseMinutes }
+                let avgExercise = totalExercise / dayCount
+                let totalCalories = withData.reduce(0) { $0 + $1.activeCalories }
+                let totalDistance = withData.reduce(0) { $0 + $1.distanceKm }
+                let totalFlights = withData.reduce(0) { $0 + $1.flightsClimbed }
+                let sleepDays = withData.filter { $0.sleepHours > 0 }
+                let avgSleep = sleepDays.isEmpty ? 0.0 : sleepDays.reduce(0) { $0 + $1.sleepHours } / Double(sleepDays.count)
+                let goalDays = withData.filter { $0.steps >= 8000 }.count
+                let exerciseGoalDays = withData.filter { $0.exerciseMinutes >= 30 }.count
+
+                // Previous-period health baselines
+                let hasPrev = !prevSummaries.isEmpty
+                let prevDayCount = Double(max(prevSummaries.count, 1))
+                let prevAvgSteps = hasPrev ? prevSummaries.reduce(0) { $0 + $1.steps } / prevDayCount : 0
+                let prevAvgExercise = hasPrev ? prevSummaries.reduce(0) { $0 + $1.exerciseMinutes } / prevDayCount : 0
+                let prevSleepDays = prevSummaries.filter { $0.sleepHours > 0 }
+                let prevAvgSleep = prevSleepDays.isEmpty ? 0.0 : prevSleepDays.reduce(0) { $0 + $1.sleepHours } / Double(prevSleepDays.count)
+
+                lines.append("\n🏃 **健康**")
+
+                // Steps: daily average + goal attainment + trend
+                if totalSteps > 0 {
+                    var stepsLine = "  👟 日均 \(Int(avgSteps).formatted()) 步"
+                    if withData.count > 1 { stepsLine += "，\(goalDays)/\(withData.count) 天达标（≥8000）" }
+                    if hasPrev && prevAvgSteps > 0 {
+                        stepsLine += " \(Self.formatDelta(current: avgSteps, previous: prevAvgSteps))"
+                    }
+                    lines.append(stepsLine)
+                }
+
+                // Exercise: daily average + goal days
+                if totalExercise > 0 {
+                    var exLine = "  ⏱ 日均运动 \(Int(avgExercise)) 分钟"
+                    if withData.count > 1 { exLine += "，\(exerciseGoalDays) 天达标（≥30min）" }
+                    if hasPrev && prevAvgExercise > 0 {
+                        exLine += " \(Self.formatDelta(current: avgExercise, previous: prevAvgExercise))"
+                    }
+                    lines.append(exLine)
+                }
+
+                // Calories
+                if totalCalories > 0 {
+                    lines.append("  🔥 累计消耗 \(Int(totalCalories).formatted()) 千卡")
+                }
+
+                // Distance + flights
+                if totalDistance > 0.5 {
+                    var moveLine = "  📏 步行 \(String(format: "%.1f", totalDistance)) 公里"
+                    if totalFlights > 0 { moveLine += "，爬楼 \(Int(totalFlights)) 层" }
+                    lines.append(moveLine)
+                } else if totalFlights > 0 {
+                    lines.append("  🏢 爬楼 \(Int(totalFlights)) 层")
+                }
+
+                // Sleep average
+                if avgSleep > 0 {
+                    let goodSleepDays = sleepDays.filter { $0.sleepHours >= 7 && $0.sleepHours <= 9 }.count
+                    var sleepLine = "  😴 均睡 \(String(format: "%.1f", avgSleep))h"
+                    if sleepDays.count > 1 {
+                        sleepLine += "，\(goodSleepDays)/\(sleepDays.count) 晚在健康范围"
+                    }
+                    if prevAvgSleep > 0 {
+                        let sleepDiff = avgSleep - prevAvgSleep
+                        if abs(sleepDiff) >= 0.3 {
+                            let arrow = sleepDiff > 0 ? "↑" : "↓"
+                            sleepLine += "（\(arrow)\(String(format: "%.1f", abs(sleepDiff)))h vs 上期）"
+                        }
+                    }
+                    lines.append(sleepLine)
+                }
+
+                // Best and worst day
+                if withData.count >= 3, let best = withData.max(by: { $0.steps < $1.steps }),
+                   let worst = withData.filter({ $0.steps > 0 }).min(by: { $0.steps < $1.steps }),
+                   best.steps > worst.steps * 1.5 {
+                    let fmt = DateFormatter()
+                    fmt.dateFormat = "M/d（E）"
+                    fmt.locale = Locale(identifier: "zh_CN")
+                    lines.append("  🏆 最活跃：\(fmt.string(from: best.date)) \(Int(best.steps).formatted())步")
+                    lines.append("  📉 最安静：\(fmt.string(from: worst.date)) \(Int(worst.steps).formatted())步")
+                }
+
+                // Overall health verdict
+                var score = 0
+                if avgSteps >= 8000 { score += 1 }
+                if avgExercise >= 30 { score += 1 }
+                if avgSleep >= 7 && avgSleep <= 9 { score += 1 }
+                if score == 3 {
+                    lines.append("  ✅ 步数、运动、睡眠全面达标！")
+                } else if score >= 2 {
+                    lines.append("  💪 整体状态不错，还有一项可以提升")
+                } else if score == 1 && withData.count >= 3 {
+                    lines.append("  💡 有提升空间，试试从最容易的一项开始")
+                }
             }
 
-            // --- Photo Activity ---
+            // ── Locations with top places ──
+            if !locations.isEmpty {
+                hasAnyData = true
+                let uniquePlaces = Set(locations.map { $0.displayName })
+                var placeCount: [String: Int] = [:]
+                locations.forEach { placeCount[$0.displayName, default: 0] += 1 }
+                let sorted = placeCount.sorted { $0.value > $1.value }
+
+                lines.append("\n📍 **足迹**  \(uniquePlaces.count) 个地点")
+                // Top 3 places
+                for (place, count) in sorted.prefix(3) {
+                    lines.append("  • \(place)（\(count) 次）")
+                }
+                if uniquePlaces.count > 3 {
+                    lines.append("  …还去过 \(uniquePlaces.count - 3) 个其他地点")
+                }
+            }
+
+            // ── Photo Activity with peak day ──
             if context.photoService.isAuthorized {
                 let photos = context.photoService.fetchMetadata(from: interval.start, to: interval.end)
                 if !photos.isEmpty {
                     hasAnyData = true
-                    let activeDays = Set(photos.map { Calendar.current.startOfDay(for: $0.date) }).count
+                    let activeDays = Set(photos.map { cal.startOfDay(for: $0.date) }).count
                     let favCount = photos.filter { $0.isFavorite }.count
-                    var photoLine = "\n📷 拍了 \(photos.count) 张照片"
+
+                    var photoLine = "\n📷 **照片**  \(photos.count) 张"
                     if activeDays > 1 { photoLine += "，\(activeDays) 天有拍照" }
                     if favCount > 0 { photoLine += "，\(favCount) 张收藏" }
                     lines.append(photoLine)
+
+                    // Peak shooting day
+                    if activeDays >= 2 {
+                        var dayPhotoCount: [Date: Int] = [:]
+                        photos.forEach { dayPhotoCount[cal.startOfDay(for: $0.date), default: 0] += 1 }
+                        if let (bestDay, count) = dayPhotoCount.max(by: { $0.value < $1.value }), count >= 3 {
+                            let dayFmt = DateFormatter()
+                            dayFmt.dateFormat = "M月d日"
+                            dayFmt.locale = Locale(identifier: "zh_CN")
+                            lines.append("  🏆 拍照最多：\(dayFmt.string(from: bestDay))（\(count) 张）")
+                        }
+                    }
                 }
             }
 
-            let totalSteps = summaries.reduce(0) { $0 + $1.steps }
-            let totalExercise = summaries.reduce(0) { $0 + $1.exerciseMinutes }
-            if totalSteps > 0 || totalExercise > 0 {
+            // ── Life Events ──
+            if !events.isEmpty {
                 hasAnyData = true
-                lines.append("\n🏃 健康数据：")
-                if totalSteps > 0 { lines.append("  步数：\(Int(totalSteps).formatted()) 步") }
-                if totalExercise > 0 { lines.append("  运动：\(Int(totalExercise)) 分钟") }
+                let byCategory = Dictionary(grouping: events, by: { $0.category })
+                lines.append("\n📝 **生活事件**（\(events.count) 条）")
+                for (cat, evts) in byCategory.sorted(by: { $0.value.count > $1.value.count }) {
+                    lines.append("  \(cat.label)：\(evts.count) 条")
+                }
             }
 
+            // ── Mood ──
             let moods = events.map { $0.mood }
             if !moods.isEmpty {
-                let dominant = Dictionary(grouping: moods, by: { $0 })
-                    .max(by: { $0.value.count < $1.value.count })?.key ?? .neutral
-                lines.append("\n\(dominant.emoji) 整体心情：\(dominant.label)")
+                let moodCount = Dictionary(grouping: moods, by: { $0 }).mapValues { $0.count }
+                if let dominant = moodCount.max(by: { $0.value < $1.value }) {
+                    var moodLine = "\(dominant.key.emoji) 主要心情：\(dominant.key.label)"
+                    if moodCount.count >= 2 {
+                        let sorted = moodCount.sorted { $0.value > $1.value }
+                        let desc = sorted.prefix(3).map { "\($0.key.emoji)\($0.value)次" }.joined(separator: " ")
+                        moodLine += "（\(desc)）"
+                    }
+                    lines.append("\n\(moodLine)")
+                }
+            }
+
+            // ── Cross-Data Insights for the period ──
+            if hasAnyData && withData.count >= 2 {
+                let periodInsights = Self.buildPeriodCrossInsights(
+                    healthSummaries: withData,
+                    calendarEvents: calendarEvents,
+                    locations: locations,
+                    cal: cal
+                )
+                if !periodInsights.isEmpty {
+                    lines.append("\n💡 **发现**")
+                    periodInsights.forEach { lines.append("  \($0)") }
+                }
             }
 
             if !hasAnyData {
@@ -1006,6 +1189,112 @@ struct SummarySkill: ClawSkill {
         }
 
         return Array(insights.prefix(2))
+    }
+
+    /// Discovers cross-data patterns for arbitrary time periods (used by respondSummary).
+    /// Reuses similar logic to weekly insights but adapted for variable-length ranges.
+    private static func buildPeriodCrossInsights(
+        healthSummaries: [HealthSummary],
+        calendarEvents: [CalendarEventItem],
+        locations: [LocationRecord],
+        cal: Calendar
+    ) -> [String] {
+        var insights: [String] = []
+        guard !healthSummaries.isEmpty else { return [] }
+
+        // --- Insight 1: Meeting-heavy days vs step count ---
+        if !calendarEvents.isEmpty && healthSummaries.count >= 3 {
+            let timedEvents = calendarEvents.filter { !$0.isAllDay }
+            var meetingsPerDay: [Date: Int] = [:]
+            for e in timedEvents {
+                let day = cal.startOfDay(for: e.startDate)
+                meetingsPerDay[day, default: 0] += 1
+            }
+            var busyDaySteps: [Double] = []
+            var freeDaySteps: [Double] = []
+            for h in healthSummaries where h.steps > 0 {
+                let day = cal.startOfDay(for: h.date)
+                let meetings = meetingsPerDay[day] ?? 0
+                if meetings >= 3 { busyDaySteps.append(h.steps) }
+                else if meetings <= 1 { freeDaySteps.append(h.steps) }
+            }
+            if busyDaySteps.count >= 1 && freeDaySteps.count >= 1 {
+                let busyAvg = busyDaySteps.reduce(0, +) / Double(busyDaySteps.count)
+                let freeAvg = freeDaySteps.reduce(0, +) / Double(freeDaySteps.count)
+                if freeAvg > 0 {
+                    let diff = (busyAvg - freeAvg) / freeAvg * 100
+                    if diff <= -25 {
+                        insights.append("📅↔️🏃 会议多的日子步数少 \(Int(-diff))% —— 忙碌日记得会间走动")
+                    } else if diff >= 25 {
+                        insights.append("📅↔️🏃 会议多的日子反而更活跃，通勤换场的功劳")
+                    }
+                }
+            }
+        }
+
+        // --- Insight 2: Location variety vs activity ---
+        if !locations.isEmpty && healthSummaries.count >= 3 {
+            var placesPerDay: [Date: Set<String>] = [:]
+            for loc in locations {
+                let day = cal.startOfDay(for: loc.timestamp)
+                placesPerDay[day, default: []].insert(loc.displayName)
+            }
+            var manySteps: [Double] = []
+            var fewSteps: [Double] = []
+            for h in healthSummaries where h.steps > 0 {
+                let day = cal.startOfDay(for: h.date)
+                let places = placesPerDay[day]?.count ?? 0
+                if places >= 3 { manySteps.append(h.steps) }
+                else if places <= 1 { fewSteps.append(h.steps) }
+            }
+            if manySteps.count >= 1 && fewSteps.count >= 1 {
+                let manyAvg = manySteps.reduce(0, +) / Double(manySteps.count)
+                let fewAvg = fewSteps.reduce(0, +) / Double(fewSteps.count)
+                if fewAvg > 0 && manyAvg > fewAvg * 1.3 {
+                    insights.append("📍↔️👟 外出多的日子比宅家日多走 \(Int((manyAvg - fewAvg) / fewAvg * 100))% —— 出门就是运动")
+                }
+            }
+        }
+
+        // --- Insight 3: Exercise-sleep correlation ---
+        let withSleep = healthSummaries.filter { $0.sleepHours > 0 }
+        if withSleep.count >= 4 {
+            let exerciseDays = withSleep.filter { $0.exerciseMinutes >= 30 }
+            let restDays = withSleep.filter { $0.exerciseMinutes < 15 }
+            if exerciseDays.count >= 2 && restDays.count >= 2 {
+                let sleepOnEx = exerciseDays.reduce(0) { $0 + $1.sleepHours } / Double(exerciseDays.count)
+                let sleepOnRest = restDays.reduce(0) { $0 + $1.sleepHours } / Double(restDays.count)
+                let diff = sleepOnEx - sleepOnRest
+                if diff >= 0.5 {
+                    insights.append("🏃↔️😴 运动日比休息日多睡 \(String(format: "%.1f", diff))h —— 运动助眠效果明显")
+                } else if diff <= -0.5 {
+                    insights.append("🏃↔️😴 运动日反而少睡 \(String(format: "%.1f", -diff))h —— 试试把运动提前到更早")
+                }
+            }
+        }
+
+        // --- Insight 4: Most active weekday ---
+        if healthSummaries.count >= 5 {
+            var weekdayScores: [Int: (steps: Double, count: Int)] = [:]
+            for h in healthSummaries where h.steps > 0 {
+                let wd = cal.component(.weekday, from: h.date)
+                let cur = weekdayScores[wd] ?? (0, 0)
+                weekdayScores[wd] = (cur.steps + h.steps, cur.count + 1)
+            }
+            if let best = weekdayScores.max(by: {
+                ($0.value.count > 0 ? $0.value.steps / Double($0.value.count) : 0) <
+                ($1.value.count > 0 ? $1.value.steps / Double($1.value.count) : 0)
+            }), best.value.count > 0 {
+                let avgSteps = best.value.steps / Double(best.value.count)
+                let overallAvg = healthSummaries.reduce(0) { $0 + $1.steps } / Double(healthSummaries.count)
+                if avgSteps > overallAvg * 1.2 {
+                    let dayName = weekdayName(best.key)
+                    insights.append("🗓↔️🏃 \(dayName)是你最活跃的日子（均 \(Int(avgSteps).formatted()) 步）")
+                }
+            }
+        }
+
+        return Array(insights.prefix(3))
     }
 
     /// Returns Chinese weekday name from Calendar weekday number (1=Sun, 7=Sat).

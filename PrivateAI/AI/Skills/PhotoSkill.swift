@@ -70,8 +70,8 @@ struct PhotoSkill: ClawSkill {
             if wd == 1 || wd == 7 { weekendPhotos += 1 } else { weekdayPhotos += 1 }
         }
 
-        // --- Location clusters ---
-        let locationClusters = buildLocationClusters(photos: photos.filter { $0.hasLocation })
+        // --- Location clusters (cross-referenced with user's location history) ---
+        let locationClusters = buildLocationClusters(photos: photos.filter { $0.hasLocation }, context: context)
 
         // --- Build response ---
         var lines = ["📷 \(range.label)的照片记录\n"]
@@ -582,9 +582,13 @@ struct PhotoSkill: ClawSkill {
         let longitude: Double
     }
 
-    /// Groups photos by proximity into location clusters.
-    private func buildLocationClusters(photos: [PhotoMetadataItem]) -> [LocationCluster] {
+    /// Groups photos by proximity into location clusters, using the user's
+    /// own location history (CDLocationRecord) to resolve coordinates to real place names.
+    private func buildLocationClusters(photos: [PhotoMetadataItem], context: SkillContext? = nil) -> [LocationCluster] {
         guard !photos.isEmpty else { return [] }
+
+        // Load user's location history for cross-referencing
+        let knownPlaces = loadKnownPlaces(from: context)
 
         // Simple grid-based clustering (~5km cells)
         let gridSize = 0.05 // ~5km in degrees
@@ -600,10 +604,10 @@ struct PhotoSkill: ClawSkill {
             }
         }
 
-        // Convert to clusters, sorted by count
+        // Convert to clusters, resolving names via location history → city lookup → coordinates
         var clusters = grid.values.map { entry in
             LocationCluster(
-                name: coordinateDescription(lat: entry.lat, lon: entry.lon),
+                name: resolveLocationName(lat: entry.lat, lon: entry.lon, knownPlaces: knownPlaces),
                 count: entry.count,
                 latitude: entry.lat,
                 longitude: entry.lon
@@ -611,13 +615,157 @@ struct PhotoSkill: ClawSkill {
         }
         clusters.sort { $0.count > $1.count }
 
-        return clusters
+        // Merge clusters that resolved to the same place name
+        var merged: [String: LocationCluster] = [:]
+        for cluster in clusters {
+            if let existing = merged[cluster.name] {
+                merged[cluster.name] = LocationCluster(
+                    name: cluster.name,
+                    count: existing.count + cluster.count,
+                    latitude: existing.latitude,
+                    longitude: existing.longitude
+                )
+            } else {
+                merged[cluster.name] = cluster
+            }
+        }
+
+        return merged.values.sorted { $0.count > $1.count }
     }
 
-    /// Simple coordinate to rough area description.
-    private func coordinateDescription(lat: Double, lon: Double) -> String {
-        // Provide a rough geographic label based on coordinates
-        // This is a simplified offline lookup — real reverse geocoding would be async
+    // MARK: - Location Name Resolution
+
+    /// A known place from the user's location history.
+    private struct KnownPlace {
+        let name: String
+        let lat: Double
+        let lon: Double
+    }
+
+    /// Loads the user's location history from CoreData for cross-referencing.
+    private func loadKnownPlaces(from context: SkillContext?) -> [KnownPlace] {
+        guard let ctx = context?.coreDataContext else { return [] }
+        let request = CDLocationRecord.fetchRequest()
+        request.sortDescriptors = [NSSortDescriptor(key: "timestamp", ascending: false)]
+        request.fetchLimit = 500
+
+        guard let records = try? ctx.fetch(request) as? [CDLocationRecord] else { return [] }
+
+        var seen = Set<String>()
+        var places: [KnownPlace] = []
+        for r in records {
+            guard let name = r.placeName, !name.isEmpty,
+                  r.latitude != 0, r.longitude != 0,
+                  seen.insert(name).inserted else { continue }
+            places.append(KnownPlace(name: name, lat: r.latitude, lon: r.longitude))
+        }
+        return places
+    }
+
+    /// Resolves a coordinate to a human-readable name using three strategies:
+    /// 1. Match against user's own location records (best — personalized place names)
+    /// 2. Match against known cities (good — recognizable city names)
+    /// 3. Fall back to approximate coordinate description (last resort)
+    private func resolveLocationName(lat: Double, lon: Double, knownPlaces: [KnownPlace]) -> String {
+        // Strategy 1: Check user's own location history (within 2km)
+        for place in knownPlaces {
+            let distance = haversineDistance(lat1: lat, lon1: lon, lat2: place.lat, lon2: place.lon)
+            if distance < 2000 {
+                return place.name
+            }
+        }
+
+        // Strategy 2: Check known cities (within city radius)
+        if let city = matchCity(lat: lat, lon: lon) {
+            return city
+        }
+
+        // Strategy 3: Approximate description
+        return approximateRegion(lat: lat, lon: lon)
+    }
+
+    /// Haversine distance in meters between two coordinates.
+    private func haversineDistance(lat1: Double, lon1: Double, lat2: Double, lon2: Double) -> Double {
+        let R = 6371000.0 // Earth radius in meters
+        let dLat = (lat2 - lat1) * .pi / 180
+        let dLon = (lon2 - lon1) * .pi / 180
+        let a = sin(dLat / 2) * sin(dLat / 2) +
+                cos(lat1 * .pi / 180) * cos(lat2 * .pi / 180) *
+                sin(dLon / 2) * sin(dLon / 2)
+        let c = 2 * atan2(sqrt(a), sqrt(1 - a))
+        return R * c
+    }
+
+    /// Matches coordinates against major cities.
+    private func matchCity(lat: Double, lon: Double) -> String? {
+        let cities: [(name: String, lat: Double, lon: Double, radius: Double)] = [
+            ("北京", 39.90, 116.41, 60_000),
+            ("上海", 31.23, 121.47, 50_000),
+            ("广州", 23.13, 113.26, 40_000),
+            ("深圳", 22.54, 114.06, 35_000),
+            ("杭州", 30.27, 120.16, 35_000),
+            ("成都", 30.57, 104.07, 35_000),
+            ("南京", 32.06, 118.80, 35_000),
+            ("武汉", 30.59, 114.31, 35_000),
+            ("重庆", 29.56, 106.55, 35_000),
+            ("西安", 34.34, 108.94, 35_000),
+            ("苏州", 31.30, 120.59, 30_000),
+            ("厦门", 24.48, 118.09, 25_000),
+            ("青岛", 36.07, 120.38, 30_000),
+            ("天津", 39.08, 117.20, 40_000),
+            ("长沙", 28.23, 112.94, 30_000),
+            ("郑州", 34.75, 113.65, 30_000),
+            ("三亚", 18.25, 109.51, 25_000),
+            ("昆明", 25.04, 102.71, 30_000),
+            ("大连", 38.91, 121.60, 30_000),
+            ("东京", 35.68, 139.65, 40_000),
+            ("大阪", 34.69, 135.50, 35_000),
+            ("首尔", 37.57, 126.98, 35_000),
+            ("曼谷", 13.76, 100.50, 35_000),
+            ("新加坡", 1.35, 103.82, 25_000),
+            ("纽约", 40.71, -74.01, 40_000),
+            ("旧金山", 37.77, -122.42, 35_000),
+            ("洛杉矶", 34.05, -118.24, 50_000),
+            ("巴黎", 48.86, 2.35, 30_000),
+            ("伦敦", 51.51, -0.13, 35_000),
+            ("悉尼", -33.87, 151.21, 35_000),
+            ("香港", 22.32, 114.17, 20_000),
+            ("台北", 25.03, 121.57, 25_000),
+        ]
+
+        for city in cities {
+            let distance = haversineDistance(lat1: lat, lon1: lon, lat2: city.lat, lon2: city.lon)
+            if distance < city.radius {
+                return city.name
+            }
+        }
+        return nil
+    }
+
+    /// Provides an approximate region description based on latitude/longitude.
+    private func approximateRegion(lat: Double, lon: Double) -> String {
+        // China mainland rough bounding box
+        if lat >= 18 && lat <= 54 && lon >= 73 && lon <= 135 {
+            // Approximate province-level region within China
+            if lat > 39 && lon > 115 && lon < 118 { return "京津冀地区" }
+            if lat > 30 && lat < 32 && lon > 120 && lon < 122 { return "长三角地区" }
+            if lat > 22 && lat < 24 && lon > 112 && lon < 115 { return "珠三角地区" }
+            if lat > 28 && lat < 32 && lon > 103 && lon < 108 { return "川渝地区" }
+            return "中国"
+        }
+        // Japan
+        if lat >= 30 && lat <= 46 && lon >= 129 && lon <= 146 { return "日本" }
+        // Korea
+        if lat >= 33 && lat <= 39 && lon >= 124 && lon <= 132 { return "韩国" }
+        // Southeast Asia
+        if lat >= -10 && lat <= 25 && lon >= 95 && lon <= 140 { return "东南亚" }
+        // Europe
+        if lat >= 35 && lat <= 71 && lon >= -10 && lon <= 40 { return "欧洲" }
+        // North America
+        if lat >= 25 && lat <= 50 && lon >= -130 && lon <= -65 { return "北美" }
+        // Australia
+        if lat >= -45 && lat <= -10 && lon >= 112 && lon <= 154 { return "澳大利亚" }
+
         let latDir = lat >= 0 ? "N" : "S"
         let lonDir = lon >= 0 ? "E" : "W"
         return String(format: "%.1f°%@, %.1f°%@", abs(lat), latDir, abs(lon), lonDir)

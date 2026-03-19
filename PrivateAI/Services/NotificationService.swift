@@ -96,7 +96,7 @@ final class NotificationService: ObservableObject {
 
     private func dailyReminderBody() -> String {
         let hour = Calendar.current.component(.hour, from: Date())
-        let steps = UserDefaults(suiteName: "group.com.privateai.assistant")?
+        let steps = UserDefaults(suiteName: "group.com.iosclaw.assistant")?
             .integer(forKey: "widget_today_steps") ?? 0
 
         switch hour {

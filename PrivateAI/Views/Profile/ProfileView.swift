@@ -7,13 +7,13 @@ struct ProfileView: View {
     @FocusState private var interestFieldFocused: Bool
 
     private var todaySteps: Int {
-        UserDefaults(suiteName: "group.com.privateai.assistant")?.integer(forKey: "widget_today_steps") ?? 0
+        UserDefaults(suiteName: "group.com.iosclaw.assistant")?.integer(forKey: "widget_today_steps") ?? 0
     }
     private var todaySleep: Double {
-        UserDefaults(suiteName: "group.com.privateai.assistant")?.double(forKey: "widget_today_sleep_hours") ?? 0
+        UserDefaults(suiteName: "group.com.iosclaw.assistant")?.double(forKey: "widget_today_sleep_hours") ?? 0
     }
     private var todayMood: String {
-        UserDefaults(suiteName: "group.com.privateai.assistant")?.string(forKey: "widget_today_mood") ?? ""
+        UserDefaults(suiteName: "group.com.iosclaw.assistant")?.string(forKey: "widget_today_mood") ?? ""
     }
 
     var body: some View {

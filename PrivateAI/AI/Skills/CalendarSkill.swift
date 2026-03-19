@@ -16,6 +16,75 @@ struct CalendarSkill: ClawSkill {
         completion(buildResponse(range: range, context: context))
     }
 
+    // MARK: - Time-of-Day Filter
+
+    /// Represents a user's time-of-day focus for calendar queries.
+    /// Parsed from natural language like "今天下午有什么安排", "明天早上有会吗".
+    private enum TimeOfDayFilter {
+        case morning    // 早上/上午: 6:00-12:00
+        case afternoon  // 下午: 12:00-18:00
+        case evening    // 晚上/今晚: 18:00-23:59
+
+        var label: String {
+            switch self {
+            case .morning:   return "上午"
+            case .afternoon: return "下午"
+            case .evening:   return "晚上"
+            }
+        }
+
+        var hourRange: Range<Int> {
+            switch self {
+            case .morning:   return 6..<12
+            case .afternoon: return 12..<18
+            case .evening:   return 18..<24
+            }
+        }
+
+        /// Checks whether an event overlaps with this time-of-day period on the given date.
+        func matches(event: CalendarEventItem, on date: Date) -> Bool {
+            if event.isAllDay { return false }
+            let cal = Calendar.current
+            let startHour = cal.component(.hour, from: event.startDate)
+            let endHour = cal.component(.hour, from: event.endDate)
+            let endMin = cal.component(.minute, from: event.endDate)
+
+            // Event overlaps this period if it starts before the period ends
+            // AND ends after the period starts.
+            // An event ending exactly at period start (e.g. 12:00 for afternoon) doesn't count.
+            let periodStart = hourRange.lowerBound
+            let periodEnd = hourRange.upperBound
+
+            let eventEndsAfterPeriodStart = endHour > periodStart || (endHour == periodStart && endMin > 0)
+            let eventStartsBeforePeriodEnd = startHour < periodEnd
+
+            return eventEndsAfterPeriodStart && eventStartsBeforePeriodEnd
+        }
+    }
+
+    /// Parses the user's query for time-of-day keywords.
+    private func parseTimeOfDayFilter(from query: String) -> TimeOfDayFilter? {
+        let lower = query.lowercased()
+        // Morning
+        if lower.contains("早上") || lower.contains("上午") || lower.contains("早晨")
+            || lower.contains("今早") || lower.contains("明早")
+            || lower.contains("morning") {
+            return .morning
+        }
+        // Afternoon
+        if lower.contains("下午") || lower.contains("午后")
+            || lower.contains("afternoon") {
+            return .afternoon
+        }
+        // Evening
+        if lower.contains("晚上") || lower.contains("今晚") || lower.contains("明晚")
+            || lower.contains("傍晚") || lower.contains("晚间") || lower.contains("夜里")
+            || lower.contains("evening") || lower.contains("tonight") {
+            return .evening
+        }
+        return nil
+    }
+
     // MARK: - Response Builder
 
     private func buildResponse(range: QueryTimeRange, context: SkillContext) -> String {
@@ -33,8 +102,11 @@ struct CalendarSkill: ClawSkill {
         let cal = Calendar.current
         let spanDays = max(1, cal.dateComponents([.day], from: interval.start, to: interval.end).day ?? 1)
 
+        // Parse time-of-day filter from the user's original query
+        let todFilter = parseTimeOfDayFilter(from: context.originalQuery)
+
         if spanDays <= 1 {
-            return buildSingleDayResponse(events: events, range: range, date: interval.start)
+            return buildSingleDayResponse(events: events, range: range, date: interval.start, timeOfDay: todFilter)
         } else {
             return buildMultiDayResponse(events: events, range: range, interval: interval, spanDays: spanDays, context: context)
         }
@@ -97,7 +169,7 @@ struct CalendarSkill: ClawSkill {
 
     // MARK: - Single Day Response (Today / Tomorrow / Specific Day)
 
-    private func buildSingleDayResponse(events: [CalendarEventItem], range: QueryTimeRange, date: Date) -> String {
+    private func buildSingleDayResponse(events: [CalendarEventItem], range: QueryTimeRange, date: Date, timeOfDay: TimeOfDayFilter? = nil) -> String {
         var lines: [String] = []
         let now = Date()
         let cal = Calendar.current
@@ -107,15 +179,41 @@ struct CalendarSkill: ClawSkill {
         // --- Header with busy-ness ---
         let timedEvents = events.filter { !$0.isAllDay }
         let allDayEvents = events.filter { $0.isAllDay }
+
+        // When user asks about a specific time-of-day, split events into focused + rest
+        let focusedTimedEvents: [CalendarEventItem]
+        let otherTimedEvents: [CalendarEventItem]
+        if let tod = timeOfDay {
+            focusedTimedEvents = timedEvents.filter { tod.matches(event: $0, on: date) }
+            otherTimedEvents = timedEvents.filter { !tod.matches(event: $0, on: date) }
+        } else {
+            focusedTimedEvents = timedEvents
+            otherTimedEvents = []
+        }
+
         let totalMeetingMinutes = timedEvents.reduce(0.0) { $0 + $1.duration } / 60.0
         let busyLevel = busyScore(timedCount: timedEvents.count, totalMinutes: totalMeetingMinutes)
 
-        lines.append("📅 \(range.label)的日程 \(busyLevel.emoji)")
-        lines.append("\(busyLevel.description)，共 \(events.count) 个事件\(totalMeetingMinutes >= 60 ? "，约 \(formatDuration(totalMeetingMinutes)) 有安排" : "")。\n")
+        // Adjust header to reflect time-of-day focus
+        if let tod = timeOfDay {
+            let focusedMinutes = focusedTimedEvents.reduce(0.0) { $0 + $1.duration } / 60.0
+            let focusBusy = busyScore(timedCount: focusedTimedEvents.count, totalMinutes: focusedMinutes)
+            lines.append("📅 \(range.label)\(tod.label)的日程 \(focusBusy.emoji)")
+            if focusedTimedEvents.isEmpty {
+                lines.append("\(tod.label)没有安排，完全自由！\n")
+            } else {
+                lines.append("\(tod.label)有 \(focusedTimedEvents.count) 个事件\(focusedMinutes >= 60 ? "，约 \(formatDuration(focusedMinutes)) 有安排" : "")。\n")
+            }
+        } else {
+            lines.append("📅 \(range.label)的日程 \(busyLevel.emoji)")
+            lines.append("\(busyLevel.description)，共 \(events.count) 个事件\(totalMeetingMinutes >= 60 ? "，约 \(formatDuration(totalMeetingMinutes)) 有安排" : "")。\n")
+        }
 
         // --- Next upcoming event (only for today) ---
+        // When time-of-day filter is active, scope "next event" to the focused period.
         if isToday {
-            let upcoming = timedEvents.filter { $0.endDate > now }.sorted { $0.startDate < $1.startDate }
+            let relevantEvents = timeOfDay != nil ? focusedTimedEvents : timedEvents
+            let upcoming = relevantEvents.filter { $0.endDate > now }.sorted { $0.startDate < $1.startDate }
             if let next = upcoming.first {
                 let minutesUntil = next.startDate.timeIntervalSince(now) / 60
                 if minutesUntil > 0 && minutesUntil <= 480 {
@@ -132,16 +230,24 @@ struct CalendarSkill: ClawSkill {
                     if !next.location.isEmpty { ongoingLine += "  📍\(next.location)" }
                     lines.append(ongoingLine + "\n")
                 }
-            } else if !timedEvents.isEmpty {
-                lines.append("✅ 今天的日程已全部结束。\n")
+            } else if !relevantEvents.isEmpty {
+                if let tod = timeOfDay {
+                    lines.append("✅ \(tod.label)的日程已全部结束。\n")
+                } else {
+                    lines.append("✅ 今天的日程已全部结束。\n")
+                }
             }
         }
 
         // --- First event preview for future days ---
-        if isFutureDay && !timedEvents.isEmpty {
-            let sorted = timedEvents.sorted { $0.startDate < $1.startDate }
-            if let first = sorted.first {
-                lines.append("⏰ 最早的安排：\(first.timeDisplay)「\(first.title)」\n")
+        if isFutureDay {
+            let previewEvents = timeOfDay != nil ? focusedTimedEvents : timedEvents
+            if !previewEvents.isEmpty {
+                let sorted = previewEvents.sorted { $0.startDate < $1.startDate }
+                if let first = sorted.first {
+                    let label = timeOfDay != nil ? "\(timeOfDay!.label)最早的安排" : "最早的安排"
+                    lines.append("⏰ \(label)：\(first.timeDisplay)「\(first.title)」\n")
+                }
             }
         }
 
@@ -153,7 +259,31 @@ struct CalendarSkill: ClawSkill {
         }
 
         // --- Timed events list ---
-        if !timedEvents.isEmpty {
+        // When time-of-day filter is active, show focused events prominently,
+        // then show remaining events as secondary context.
+        if timeOfDay != nil && !focusedTimedEvents.isEmpty {
+            lines.append("🕐 \(timeOfDay!.label)安排：")
+            focusedTimedEvents.forEach { event in
+                var line = "  • \(event.timeDisplay) \(event.title)"
+                if !event.location.isEmpty { line += "  📍\(event.location)" }
+                lines.append(line)
+                if let preview = notesPreview(event.notes) {
+                    lines.append("    💬 \(preview)")
+                }
+            }
+            lines.append("")
+
+            // Show other events as secondary context
+            if !otherTimedEvents.isEmpty {
+                lines.append("📋 其他时段还有 \(otherTimedEvents.count) 个安排：")
+                otherTimedEvents.forEach { event in
+                    var line = "  · \(event.timeDisplay) \(event.title)"
+                    if !event.location.isEmpty { line += "  📍\(event.location)" }
+                    lines.append(line)
+                }
+                lines.append("")
+            }
+        } else if !timedEvents.isEmpty {
             lines.append("🕐 时间安排：")
             timedEvents.forEach { event in
                 var line = "  • \(event.timeDisplay) \(event.title)"

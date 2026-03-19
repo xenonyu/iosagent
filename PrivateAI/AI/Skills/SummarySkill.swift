@@ -499,6 +499,12 @@ struct SummarySkill: ClawSkill {
                         sleepLine += "（深睡 \(String(format: "%.1f", health.sleepDeepHours))h·\(deepPct)%）"
                     }
                     lines.append(sleepLine)
+                    // Show bedtime/wake time if available
+                    if let onset = health.sleepOnset, let wake = health.wakeTime {
+                        let timeFmt = DateFormatter()
+                        timeFmt.dateFormat = "HH:mm"
+                        lines.append("     🕐 \(timeFmt.string(from: onset)) 入睡 → \(timeFmt.string(from: wake)) 醒来")
+                    }
                 }
 
                 // Heart rate — prefer resting HR (more meaningful) over average

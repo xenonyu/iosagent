@@ -277,6 +277,10 @@ struct HealthSummary {
     var sleepCoreHours: Double = 0
     /// Time spent in bed (includes awake time) — used to compute sleep efficiency
     var inBedHours: Double = 0
+    /// When the user fell asleep (earliest asleep sample start) — for circadian analysis
+    var sleepOnset: Date?
+    /// When the user woke up (latest asleep sample end) — for circadian analysis
+    var wakeTime: Date?
     var heartRate: Double = 0
     /// Resting heart rate — key cardiovascular fitness indicator (lower = fitter)
     var restingHeartRate: Double = 0

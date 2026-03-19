@@ -971,6 +971,131 @@ struct HealthSkill: ClawSkill {
             }
         }
 
+        // --- Sleep Timing & Circadian Rhythm ---
+        // Surface bedtime/wake time patterns from HealthKit sleep samples.
+        // Consistent timing is more important than duration for long-term health.
+        let timingDays = sleepDays.filter { $0.sleepOnset != nil && $0.wakeTime != nil }
+        if !timingDays.isEmpty {
+            let timeFmt = DateFormatter()
+            timeFmt.dateFormat = "HH:mm"
+
+            if timingDays.count == 1, let day = timingDays.first,
+               let onset = day.sleepOnset, let wake = day.wakeTime {
+                // Single day: just show the times
+                lines.append("")
+                lines.append("🕐 作息时间")
+                lines.append("   入睡 \(timeFmt.string(from: onset)) → 醒来 \(timeFmt.string(from: wake))")
+                let onsetHour = cal.component(.hour, from: onset)
+                if onsetHour >= 0 && onsetHour < 6 {
+                    lines.append("   ⚠️ 凌晨才入睡，即使时长够，也会错过深睡眠的最佳窗口（22:00-02:00）。")
+                } else if onsetHour >= 22 && onsetHour < 24 || onsetHour >= 0 && onsetHour < 1 {
+                    lines.append("   ✅ 入睡时间在理想窗口内。")
+                }
+            } else if timingDays.count >= 2 {
+                // Multi-day: compute average onset/wake + consistency
+                // Convert onset times to "minutes since midnight" for averaging
+                // Sleep onset often crosses midnight, so normalize to 18:00 as base
+                // (anything >= 18h stays as-is, < 18h add 24h to treat as next day)
+                let onsetMinutes: [Double] = timingDays.compactMap { day in
+                    guard let onset = day.sleepOnset else { return nil }
+                    let h = Double(cal.component(.hour, from: onset))
+                    let m = Double(cal.component(.minute, from: onset))
+                    let raw = h * 60 + m
+                    return raw < 18 * 60 ? raw + 24 * 60 : raw // normalize past-midnight onsets
+                }
+                let wakeMinutes: [Double] = timingDays.compactMap { day in
+                    guard let wake = day.wakeTime else { return nil }
+                    let h = Double(cal.component(.hour, from: wake))
+                    let m = Double(cal.component(.minute, from: wake))
+                    return h * 60 + m
+                }
+
+                if !onsetMinutes.isEmpty && !wakeMinutes.isEmpty {
+                    let avgOnsetMins = onsetMinutes.reduce(0, +) / Double(onsetMinutes.count)
+                    let avgWakeMins = wakeMinutes.reduce(0, +) / Double(wakeMinutes.count)
+
+                    // Format average onset (may be > 1440 if past midnight)
+                    let normalizedOnset = avgOnsetMins.truncatingRemainder(dividingBy: 1440)
+                    let onsetH = Int(normalizedOnset) / 60
+                    let onsetM = Int(normalizedOnset) % 60
+                    let wakeH = Int(avgWakeMins) / 60
+                    let wakeM = Int(avgWakeMins) % 60
+
+                    lines.append("")
+                    lines.append("🕐 作息时间")
+                    lines.append("   平均入睡 \(String(format: "%02d:%02d", onsetH, onsetM)) → 平均醒来 \(String(format: "%02d:%02d", wakeH, wakeM))")
+
+                    // Late sleeper warning
+                    if normalizedOnset >= 0 * 60 && normalizedOnset < 6 * 60 {
+                        lines.append("   ⚠️ 平均凌晨才入睡，深睡眠的黄金窗口（22:00-02:00）被压缩。")
+                        lines.append("   建议每周提前 15 分钟入睡，逐步调整到 23:00 前。")
+                    } else if normalizedOnset >= 22 * 60 && normalizedOnset < 23.5 * 60 {
+                        lines.append("   ✅ 平均入睡时间在理想窗口（22:00-23:30），有利于深睡眠。")
+                    } else if normalizedOnset >= 23.5 * 60 {
+                        lines.append("   💡 接近午夜入睡，可以尝试再提前 30 分钟。")
+                    }
+
+                    // Circadian consistency: bedtime regularity
+                    if onsetMinutes.count >= 3 {
+                        let onsetStdDev = standardDeviation(of: onsetMinutes) // in minutes
+                        let wakeStdDev = standardDeviation(of: wakeMinutes)
+
+                        lines.append("")
+                        lines.append("⏱ 作息规律性")
+                        if onsetStdDev < 30 {
+                            lines.append("   🌙 入睡时间波动 ±\(Int(onsetStdDev)) 分钟 ✅ 非常规律")
+                        } else if onsetStdDev < 60 {
+                            lines.append("   🌙 入睡时间波动 ±\(Int(onsetStdDev)) 分钟 — 较规律，继续保持")
+                        } else {
+                            lines.append("   🌙 入睡时间波动 ±\(Int(onsetStdDev)) 分钟 ⚠️ 不太规律")
+                            lines.append("   作息不规律相当于每天经历「时差」，比睡眠不足更伤身体。")
+                        }
+                        if wakeStdDev < 30 {
+                            lines.append("   ☀️ 起床时间波动 ±\(Int(wakeStdDev)) 分钟 ✅ 非常规律")
+                        } else if wakeStdDev < 60 {
+                            lines.append("   ☀️ 起床时间波动 ±\(Int(wakeStdDev)) 分钟 — 较规律")
+                        } else {
+                            lines.append("   ☀️ 起床时间波动 ±\(Int(wakeStdDev)) 分钟 ⚠️ 不太规律")
+                            lines.append("   💡 即使睡眠时间不同，固定起床时间是稳定生物钟最有效的方法。")
+                        }
+
+                        // Social jet lag: weekday vs weekend onset difference
+                        let wdOnsets = timingDays.filter { !cal.isDateInWeekend($0.date) }
+                            .compactMap { day -> Double? in
+                                guard let onset = day.sleepOnset else { return nil }
+                                let h = Double(cal.component(.hour, from: onset))
+                                let m = Double(cal.component(.minute, from: onset))
+                                let raw = h * 60 + m
+                                return raw < 18 * 60 ? raw + 24 * 60 : raw
+                            }
+                        let weOnsets = timingDays.filter { cal.isDateInWeekend($0.date) }
+                            .compactMap { day -> Double? in
+                                guard let onset = day.sleepOnset else { return nil }
+                                let h = Double(cal.component(.hour, from: onset))
+                                let m = Double(cal.component(.minute, from: onset))
+                                let raw = h * 60 + m
+                                return raw < 18 * 60 ? raw + 24 * 60 : raw
+                            }
+                        if wdOnsets.count >= 2 && weOnsets.count >= 1 {
+                            let wdAvgOnset = wdOnsets.reduce(0, +) / Double(wdOnsets.count)
+                            let weAvgOnset = weOnsets.reduce(0, +) / Double(weOnsets.count)
+                            let jetLagMins = abs(weAvgOnset - wdAvgOnset)
+                            if jetLagMins >= 60 {
+                                lines.append("")
+                                lines.append("🌀 社交时差：周末比工作日晚睡 \(Int(jetLagMins)) 分钟")
+                                if jetLagMins >= 120 {
+                                    lines.append("   ⚠️ 相当于每周经历 \(String(format: "%.1f", jetLagMins / 60)) 小时时差，影响周一状态。")
+                                    lines.append("   研究表明社交时差 >2h 会增加代谢疾病风险。")
+                                } else {
+                                    lines.append("   💡 轻度时差，周末尽量不比工作日晚睡超过 1 小时。")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // --- Calendar ↔ Sleep Correlation ---
         // Show whether busy days with many meetings lead to worse sleep.
         let interval = range.interval

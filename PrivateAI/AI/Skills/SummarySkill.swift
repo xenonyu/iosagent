@@ -47,8 +47,9 @@ struct SummarySkill: ClawSkill {
             var lines: [String] = ["📋 \(range.label)的生活总结：\n"]
             var hasAnyData = false
 
-            // --- Calendar Events ---
-            let calendarEvents = context.calendarService.fetchEvents(from: interval.start, to: interval.end)
+            // --- Calendar Events (use full-period interval to include upcoming events) ---
+            let calInterval = Self.calendarInterval(for: range)
+            let calendarEvents = context.calendarService.fetchEvents(from: calInterval.start, to: calInterval.end)
             if !calendarEvents.isEmpty {
                 hasAnyData = true
                 let timedEvents = calendarEvents.filter { !$0.isAllDay }
@@ -115,8 +116,9 @@ struct SummarySkill: ClawSkill {
 
             var hasData = false
 
-            // --- Calendar Events (iOS native schedule) ---
-            let calendarEvents = context.calendarService.fetchEvents(from: interval.start, to: interval.end)
+            // --- Calendar Events (iOS native schedule, full day to include upcoming events) ---
+            let calDayInterval = Self.calendarInterval(for: .today)
+            let calendarEvents = context.calendarService.fetchEvents(from: calDayInterval.start, to: calDayInterval.end)
             if !calendarEvents.isEmpty {
                 hasData = true
                 let timedEvents = calendarEvents.filter { !$0.isAllDay }
@@ -417,8 +419,9 @@ struct SummarySkill: ClawSkill {
             var lines: [String] = ["📊 本周生活洞察：\n"]
             var hasAnyData = false
 
-            // --- Calendar Events (weekly schedule overview) ---
-            let calendarEvents = context.calendarService.fetchEvents(from: interval.start, to: interval.end)
+            // --- Calendar Events (full week to include upcoming events) ---
+            let calWeekInterval = Self.calendarInterval(for: .thisWeek)
+            let calendarEvents = context.calendarService.fetchEvents(from: calWeekInterval.start, to: calWeekInterval.end)
             // Last week's calendar for comparison
             let lastWeekCalEvents = context.calendarService.fetchEvents(from: lastWeekStart, to: lastWeekEnd)
 
@@ -656,6 +659,36 @@ struct SummarySkill: ClawSkill {
             }
 
             completion(lines.joined(separator: "\n"))
+        }
+    }
+
+    // MARK: - Calendar Interval
+
+    /// Returns a full-period interval for calendar queries.
+    /// `.today` extends to end of day so upcoming events are included;
+    /// `.thisWeek` extends to end of week; `.thisMonth` to end of month.
+    /// Health/location data use `range.interval` (ending at now) which is correct
+    /// for retrospective data, but calendar must include future events in the period.
+    private static func calendarInterval(for range: QueryTimeRange) -> DateInterval {
+        let cal = Calendar.current
+        let now = Date()
+        let todayStart = cal.startOfDay(for: now)
+        switch range {
+        case .today:
+            let endOfDay = cal.date(byAdding: .day, value: 1, to: todayStart)!
+            return DateInterval(start: todayStart, end: endOfDay)
+        case .thisWeek:
+            let comps = cal.dateComponents([.yearForWeekOfYear, .weekOfYear], from: now)
+            let weekStart = cal.date(from: comps)!
+            let weekEnd = cal.date(byAdding: .day, value: 7, to: weekStart)!
+            return DateInterval(start: weekStart, end: weekEnd)
+        case .thisMonth:
+            let monthComps = cal.dateComponents([.year, .month], from: now)
+            let monthStart = cal.date(from: monthComps)!
+            let nextMonth = cal.date(byAdding: .month, value: 1, to: monthStart)!
+            return DateInterval(start: monthStart, end: nextMonth)
+        default:
+            return range.interval
         }
     }
 

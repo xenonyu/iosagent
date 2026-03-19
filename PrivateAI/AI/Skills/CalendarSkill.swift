@@ -19,7 +19,11 @@ struct CalendarSkill: ClawSkill {
     // MARK: - Response Builder
 
     private func buildResponse(range: QueryTimeRange, context: SkillContext) -> String {
-        let interval = range.interval
+        // Calendar queries need the FULL period, not truncated at "now".
+        // QueryTimeRange.today/.thisWeek/.thisMonth end at Date() which is correct
+        // for health/location data, but calendar users asking "今天有什么安排" at 9am
+        // need to see their 2pm meeting. Extend the interval to cover the full period.
+        let interval = calendarInterval(for: range)
         let events = context.calendarService.fetchEvents(from: interval.start, to: interval.end)
 
         if events.isEmpty {
@@ -33,6 +37,35 @@ struct CalendarSkill: ClawSkill {
             return buildSingleDayResponse(events: events, range: range, date: interval.start)
         } else {
             return buildMultiDayResponse(events: events, range: range, interval: interval, spanDays: spanDays, context: context)
+        }
+    }
+
+    /// Extends the time interval to the end of the period for calendar-specific queries.
+    /// `.today` → start of today … end of today (not "now")
+    /// `.thisWeek` → start of week … end of week (not "now")
+    /// `.thisMonth` → start of month … end of month (not "now")
+    /// Other ranges (yesterday, lastWeek, tomorrow, etc.) are already correct.
+    private func calendarInterval(for range: QueryTimeRange) -> DateInterval {
+        let cal = Calendar.current
+        let now = Date()
+        let todayStart = cal.startOfDay(for: now)
+
+        switch range {
+        case .today:
+            let endOfDay = cal.date(byAdding: .day, value: 1, to: todayStart)!
+            return DateInterval(start: todayStart, end: endOfDay)
+        case .thisWeek:
+            let comps = cal.dateComponents([.yearForWeekOfYear, .weekOfYear], from: now)
+            let weekStart = cal.date(from: comps)!
+            let weekEnd = cal.date(byAdding: .day, value: 7, to: weekStart)!
+            return DateInterval(start: weekStart, end: weekEnd)
+        case .thisMonth:
+            let monthComps = cal.dateComponents([.year, .month], from: now)
+            let monthStart = cal.date(from: monthComps)!
+            let nextMonth = cal.date(byAdding: .month, value: 1, to: monthStart)!
+            return DateInterval(start: monthStart, end: nextMonth)
+        default:
+            return range.interval
         }
     }
 

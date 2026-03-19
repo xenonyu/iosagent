@@ -1601,6 +1601,7 @@ struct HealthSkill: ClawSkill {
     // MARK: - Distance
 
     private func respondDistance(summaries: [HealthSummary], range: QueryTimeRange, completion: @escaping (String) -> Void) {
+        let cal = Calendar.current
         let distanceDays = summaries.filter { $0.distanceKm > 0.01 }
         guard !distanceDays.isEmpty else {
             completion("📏 \(range.label)暂无步行距离数据。\n开启健康权限后可以自动追踪步行和跑步距离。")
@@ -1611,38 +1612,120 @@ struct HealthSkill: ClawSkill {
         let total = distanceDays.reduce(0) { $0 + $1.distanceKm }
         let avg = total / Double(distanceDays.count)
         let best = distanceDays.max(by: { $0.distanceKm < $1.distanceKm })!
+        let worst = distanceDays.min(by: { $0.distanceKm < $1.distanceKm })!
 
         lines.append("🛣 总距离：\(String(format: "%.1f", total)) 公里（日均 \(String(format: "%.1f", avg)) 公里）")
+        lines.append("📊 波动范围：\(String(format: "%.1f", worst.distanceKm))~\(String(format: "%.1f", best.distanceKm)) 公里")
 
         if distanceDays.count > 1 {
             let fmt = DateFormatter()
             fmt.dateFormat = "M月d日(E)"
             fmt.locale = Locale(identifier: "zh_CN")
-            lines.append("🏆 最远的一天：\(fmt.string(from: best.date))，\(String(format: "%.1f", best.distanceKm)) 公里")
+            lines.append("🏆 最远：\(fmt.string(from: best.date)) \(String(format: "%.1f", best.distanceKm)) km")
+            lines.append("📉 最短：\(fmt.string(from: worst.date)) \(String(format: "%.1f", worst.distanceKm)) km")
         }
 
-        // Correlate with steps if available
+        // --- Day-by-day trend chart ---
+        if distanceDays.count >= 3 {
+            let sorted = distanceDays.sorted { $0.date < $1.date }
+            lines.append("")
+            lines.append("📈 逐日趋势")
+            let dayFmt = DateFormatter()
+            dayFmt.dateFormat = "E"
+            dayFmt.locale = Locale(identifier: "zh_CN")
+            let maxDist = sorted.map(\.distanceKm).max() ?? 1
+            for day in sorted {
+                let blocks = max(1, min(8, Int((day.distanceKm / maxDist) * 8)))
+                let bar = String(repeating: "▓", count: blocks) + String(repeating: "░", count: 8 - blocks)
+                let color = day.distanceKm >= 5 ? "🟢" : (day.distanceKm >= 3 ? "🟡" : "🔴")
+                lines.append("   \(dayFmt.string(from: day.date)) \(color) \(bar) \(String(format: "%.1f", day.distanceKm)) km")
+            }
+        }
+
+        // --- Goal analysis (5 km daily — WHO moderate activity target) ---
+        let goalKm = 5.0
+        let goalDays = distanceDays.filter { $0.distanceKm >= goalKm }.count
+        let goalRate = Double(goalDays) / Double(distanceDays.count) * 100
+        lines.append("\n🎯 达标天数（≥\(String(format: "%.0f", goalKm))km）：\(goalDays)/\(distanceDays.count) 天（\(Int(goalRate))%）")
+
+        if goalRate >= 80 {
+            lines.append("   太棒了！日常活动量非常充足 🏅")
+        } else if goalRate >= 50 {
+            lines.append("   过半天数达标，保持这个节奏 💪")
+        } else if avg >= 3 {
+            let gap = String(format: "%.1f", goalKm - avg)
+            lines.append("   每天再多走 \(gap) 公里就达标了，饭后散步 15 分钟试试？")
+        } else {
+            lines.append("   活动距离偏少，从每天多走一站路开始。")
+        }
+
+        // Correlate with steps: stride length
         let totalSteps = distanceDays.reduce(0) { $0 + $1.steps }
         if totalSteps > 0 && total > 0 {
             let strideCm = Int(total * 100000 / totalSteps)
-            lines.append("👣 平均步幅约 \(strideCm) cm")
+            lines.append("\n👣 平均步幅约 \(strideCm) cm")
+            if strideCm >= 70 {
+                lines.append("   步幅较大，走路速度应该不慢！")
+            } else if strideCm <= 50 {
+                lines.append("   步幅偏小，有意识地迈大步可以提升锻炼效果。")
+            }
         }
 
-        // Fun distance comparisons
-        lines.append("")
-        if total >= 42.195 {
-            let marathons = total / 42.195
-            lines.append("🏅 累计距离超过 \(String(format: "%.1f", marathons)) 个马拉松！")
-        } else if total >= 21.1 {
-            lines.append("🏅 累计距离超过一个半马拉松（21.1km），继续加油！")
-        } else if total >= 10 {
-            let remaining = 21.1 - total
-            lines.append("🎯 再走 \(String(format: "%.1f", remaining)) 公里就达到半马距离了。")
-        } else if total >= 5 {
-            lines.append("🚶 保持日常步行，积少成多。")
+        // --- Cross-metric: distance vs exercise time → effective walking pace ---
+        let pairedDays = distanceDays.filter { $0.exerciseMinutes > 0 && $0.distanceKm >= 0.5 }
+        if !pairedDays.isEmpty {
+            let totalExMin = pairedDays.reduce(0) { $0 + $1.exerciseMinutes }
+            let totalExDist = pairedDays.reduce(0) { $0 + $1.distanceKm }
+            if totalExDist > 0 {
+                let minPerKm = totalExMin / totalExDist
+                lines.append("")
+                lines.append("⏱ 运动效率")
+                lines.append("   平均配速约 \(String(format: "%.0f", minPerKm)) 分钟/公里")
+                if minPerKm < 8 {
+                    lines.append("   🏃 以跑步为主的节奏，运动强度不错！")
+                } else if minPerKm < 12 {
+                    lines.append("   🚶‍♂️ 快走节奏，属于中等强度有氧运动。")
+                } else {
+                    lines.append("   🚶 以日常步行为主，尝试加入 15 分钟快走提升心率。")
+                }
+            }
         }
 
-        // Trend (compare first half vs second half)
+        // --- Weekday vs weekend pattern ---
+        if distanceDays.count >= 5 {
+            let weekdays = distanceDays.filter { !cal.isDateInWeekend($0.date) }
+            let weekends = distanceDays.filter { cal.isDateInWeekend($0.date) }
+            if !weekdays.isEmpty && !weekends.isEmpty {
+                let wdAvg = weekdays.reduce(0) { $0 + $1.distanceKm } / Double(weekdays.count)
+                let weAvg = weekends.reduce(0) { $0 + $1.distanceKm } / Double(weekends.count)
+                let pct = wdAvg > 0 ? abs(weAvg - wdAvg) / wdAvg * 100 : 0
+                if pct > 15 {
+                    lines.append("")
+                    lines.append("🗓 工作日 vs 周末")
+                    lines.append("   工作日均 \(String(format: "%.1f", wdAvg)) km · 周末均 \(String(format: "%.1f", weAvg)) km")
+                    if weAvg > wdAvg {
+                        lines.append("   周末更爱走动（+\(Int(pct))%），可能有户外活动或逛街。")
+                    } else {
+                        lines.append("   工作日走更远（+\(Int(pct))%），通勤贡献了不少距离。")
+                    }
+                }
+            }
+        }
+
+        // --- Consistency analysis ---
+        if distanceDays.count >= 3 {
+            let cv = coefficient(of: distanceDays.map { $0.distanceKm })
+            lines.append("")
+            if cv < 0.2 {
+                lines.append("🎯 步行距离非常规律（波动仅 \(Int(cv * 100))%），好习惯！")
+            } else if cv < 0.4 {
+                lines.append("📊 距离比较规律（波动 \(Int(cv * 100))%），偶有高低。")
+            } else {
+                lines.append("🎢 距离波动较大（\(Int(cv * 100))%），可以固定时间散步来建立规律。")
+            }
+        }
+
+        // --- Trend: first half vs second half ---
         if distanceDays.count >= 4 {
             let sorted = distanceDays.sorted { $0.date < $1.date }
             let mid = sorted.count / 2
@@ -1650,12 +1733,80 @@ struct HealthSkill: ClawSkill {
             let recentAvg = sorted.suffix(from: mid).reduce(0) { $0 + $1.distanceKm } / Double(sorted.count - mid)
             if olderAvg > 0 {
                 let pct = ((recentAvg - olderAvg) / olderAvg) * 100
-                if pct >= 10 {
-                    lines.append("📈 步行距离呈上升趋势（+\(Int(pct))%），活动量在增加！")
-                } else if pct <= -10 {
-                    lines.append("📉 步行距离有所下降（\(Int(pct))%），试试换条新路线散步？")
+                if abs(pct) >= 10 {
+                    if pct > 0 {
+                        lines.append("📈 步行距离呈上升趋势（+\(Int(pct))%），活动量在增加！")
+                    } else {
+                        lines.append("📉 步行距离有所下降（\(Int(pct))%），试试换条新路线散步？")
+                    }
+                } else {
+                    lines.append("📊 步行距离保持稳定，节奏不错。")
                 }
             }
+        }
+
+        // --- Cross-metric: distance vs sleep correlation ---
+        if distanceDays.count >= 4 {
+            let paired = summaries.filter { $0.distanceKm > 0.01 && $0.sleepHours > 0 }
+            if paired.count >= 3 {
+                let distMedian = paired.map(\.distanceKm).sorted()[paired.count / 2]
+                let highDistDays = paired.filter { $0.distanceKm >= distMedian }
+                let lowDistDays = paired.filter { $0.distanceKm < distMedian }
+                if !highDistDays.isEmpty && !lowDistDays.isEmpty {
+                    let sleepOnHigh = highDistDays.reduce(0) { $0 + $1.sleepHours } / Double(highDistDays.count)
+                    let sleepOnLow = lowDistDays.reduce(0) { $0 + $1.sleepHours } / Double(lowDistDays.count)
+                    let diff = sleepOnHigh - sleepOnLow
+                    if abs(diff) >= 0.3 {
+                        lines.append("")
+                        lines.append("🔗 距离与睡眠的关联")
+                        if diff > 0 {
+                            lines.append("   走得多的日子平均多睡 \(String(format: "%.1f", diff)) 小时 — 白天活动有助于提升睡眠质量。")
+                        } else {
+                            lines.append("   走得少的日子反而多睡 \(String(format: "%.1f", -diff)) 小时 — 可能在休息日补觉较多。")
+                        }
+                    }
+                }
+            }
+        }
+
+        // --- Fun distance comparisons ---
+        lines.append("")
+        if total >= 42.195 {
+            let marathons = total / 42.195
+            lines.append("🏅 累计距离相当于 \(String(format: "%.1f", marathons)) 个全马！")
+        } else if total >= 21.1 {
+            let remaining = 42.195 - total
+            lines.append("🏅 已超过半马距离！再走 \(String(format: "%.1f", remaining)) km 就是一个全马。")
+        } else if total >= 10 {
+            let remaining = 21.1 - total
+            lines.append("🎯 再走 \(String(format: "%.1f", remaining)) 公里就达到半马距离了。")
+        } else if total >= 5 {
+            lines.append("🚶 保持日常步行，积少成多。")
+        }
+
+        // Sparkline
+        if distanceDays.count >= 3 {
+            let sorted = distanceDays.sorted { $0.date < $1.date }
+            let maxDist = sorted.map(\.distanceKm).max() ?? 1
+            if maxDist > 0 {
+                let sparkChars: [Character] = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"]
+                let spark = sorted.map { day -> Character in
+                    let idx = min(Int(day.distanceKm / maxDist * 7), 7)
+                    return sparkChars[idx]
+                }
+                lines.append("📈 距离趋势：\(String(spark))")
+            }
+        }
+
+        // --- Overall insight ---
+        lines.append("")
+        if avg >= goalKm {
+            lines.append("✅ 日均活动距离充足，保持现在的节奏！")
+        } else if avg >= 3 {
+            let extraMin = Int((goalKm - avg) / 0.08) // ~80m per minute of walking
+            lines.append("💡 每天再多走 \(extraMin) 分钟就达到推荐活动量——午间散步是个好选择。")
+        } else {
+            lines.append("🌱 增加日常步行是最简单的运动方式，从出门走走开始吧。")
         }
 
         completion(lines.joined(separator: "\n"))

@@ -789,15 +789,17 @@ struct HealthSkill: ClawSkill {
         let maxSleep = sleepDays.max(by: { $0.sleepHours < $1.sleepHours })!
         let minSleep = sleepDays.min(by: { $0.sleepHours < $1.sleepHours })!
 
-        // --- Sleep Quality Score (composite 0-100) ---
-        let qualityScore = computeSleepQualityScore(sleepDays: sleepDays, avgHours: avg)
+        // --- Sleep Quality Score (composite 0-100) with per-dimension breakdown ---
+        let scoreResult = computeSleepQualityScore(sleepDays: sleepDays, avgHours: avg)
+        let qualityScore = scoreResult.total
         let scoreEmoji: String
         if qualityScore >= 85 { scoreEmoji = "🌟" }
         else if qualityScore >= 70 { scoreEmoji = "✅" }
         else if qualityScore >= 50 { scoreEmoji = "💡" }
         else { scoreEmoji = "⚠️" }
         lines.append("\(scoreEmoji) 睡眠质量评分：\(qualityScore) / 100")
-        lines.append(sleepScoreBreakdown(qualityScore))
+        lines.append(sleepScoreDimensionBar(scoreResult))
+        lines.append(sleepScoreTargetedAdvice(scoreResult))
         lines.append("")
 
         lines.append("💤 平均睡眠：\(String(format: "%.1f", avg)) 小时")
@@ -1275,29 +1277,60 @@ struct HealthSkill: ClawSkill {
 
     // MARK: - Sleep Quality Score
 
-    /// Computes a composite sleep quality score (0-100) from multiple dimensions:
+    /// Per-dimension breakdown of the sleep quality score (0-100).
     /// - Duration adequacy (30 pts): how close to the 7-9h ideal
     /// - Phase quality (25 pts): deep + REM ratios within healthy ranges
     /// - Consistency (25 pts): low variance in sleep duration across days
     /// - Efficiency (20 pts): time asleep vs time in bed
-    private func computeSleepQualityScore(sleepDays: [HealthSummary], avgHours: Double) -> Int {
-        var score: Double = 0
+    private struct SleepScoreResult {
+        let durationScore: Double   // out of 30
+        let phaseScore: Double      // out of 25
+        let consistencyScore: Double // out of 25
+        let efficiencyScore: Double // out of 20
+        let hasPhaseData: Bool
+        let hasEfficiencyData: Bool
+        let avgHours: Double
+        let stdDev: Double          // sleep duration standard deviation
+        let efficiencyPct: Double   // sleep efficiency as percentage (0-100)
 
+        var total: Int {
+            min(100, max(0, Int(durationScore + phaseScore + consistencyScore + efficiencyScore)))
+        }
+
+        /// Returns the weakest dimension (lowest score as fraction of its max).
+        var weakestDimension: String {
+            let dims: [(name: String, ratio: Double, available: Bool)] = [
+                ("duration", durationScore / 30, true),
+                ("phase", phaseScore / 25, hasPhaseData),
+                ("consistency", consistencyScore / 25, true),
+                ("efficiency", efficiencyScore / 20, hasEfficiencyData)
+            ]
+            // Only consider dimensions with real data
+            let available = dims.filter { $0.available }
+            return available.min(by: { $0.ratio < $1.ratio })?.name ?? "duration"
+        }
+    }
+
+    private func computeSleepQualityScore(sleepDays: [HealthSummary], avgHours: Double) -> SleepScoreResult {
         // 1. Duration adequacy (30 pts) — peak at 7.5-8h
+        var durationPts: Double = 0
         if avgHours >= 7 && avgHours <= 9 {
-            score += 30
+            durationPts = 30
         } else if avgHours >= 6 && avgHours < 7 {
-            score += 30 * (avgHours - 5) / 2   // 5h=0, 7h=30
+            durationPts = 30 * (avgHours - 5) / 2   // 5h=0, 7h=30
         } else if avgHours > 9 && avgHours <= 10 {
-            score += 30 * (10 - avgHours)       // 9h=30, 10h=0
+            durationPts = 30 * (10 - avgHours)       // 9h=30, 10h=0
         } else if avgHours >= 5 {
-            score += 10
+            durationPts = 10
         }
         // below 5h or above 10h = 0 pts
 
         // 2. Phase quality (25 pts)
+        var phasePts: Double = 0
+        var hasPhaseData = false
         let phaseDays = sleepDays.filter { $0.hasSleepPhases }
         if !phaseDays.isEmpty {
+            hasPhaseData = true
             let avgDeep = phaseDays.reduce(0) { $0 + $1.sleepDeepHours } / Double(phaseDays.count)
             let avgREM = phaseDays.reduce(0) { $0 + $1.sleepREMHours } / Double(phaseDays.count)
             let avgCore = phaseDays.reduce(0) { $0 + $1.sleepCoreHours } / Double(phaseDays.count)
@@ -1308,56 +1341,114 @@ struct HealthSkill: ClawSkill {
                 // Deep: ideal 15-25%, REM: ideal 20-25%
                 let deepScore = deepPct >= 15 && deepPct <= 25 ? 12.5 : max(0, 12.5 - abs(deepPct - 20) * 0.8)
                 let remScore = remPct >= 20 && remPct <= 25 ? 12.5 : max(0, 12.5 - abs(remPct - 22.5) * 0.8)
-                score += deepScore + remScore
+                phasePts = deepScore + remScore
             }
         } else {
             // No phase data — give neutral mid-range score
-            score += 12.5
+            phasePts = 12.5
         }
 
         // 3. Consistency (25 pts) — low standard deviation = high score
+        var consistencyPts: Double = 0
+        var stdDev: Double = 0
         if sleepDays.count >= 3 {
-            let stdDev = standardDeviation(of: sleepDays.map { $0.sleepHours })
-            if stdDev < 0.3 { score += 25 }
-            else if stdDev < 0.5 { score += 22 }
-            else if stdDev < 1.0 { score += 15 }
-            else if stdDev < 1.5 { score += 8 }
-            else { score += 3 }
+            stdDev = standardDeviation(of: sleepDays.map { $0.sleepHours })
+            if stdDev < 0.3 { consistencyPts = 25 }
+            else if stdDev < 0.5 { consistencyPts = 22 }
+            else if stdDev < 1.0 { consistencyPts = 15 }
+            else if stdDev < 1.5 { consistencyPts = 8 }
+            else { consistencyPts = 3 }
         } else {
-            score += 15 // not enough data to judge consistency
+            consistencyPts = 15 // not enough data to judge consistency
         }
 
         // 4. Efficiency (20 pts)
+        var efficiencyPts: Double = 0
+        var hasEffData = false
+        var effPct: Double = 0
         let bedDays = sleepDays.filter { $0.inBedHours > 0 }
         if !bedDays.isEmpty {
+            hasEffData = true
             let avgInBed = bedDays.reduce(0) { $0 + $1.inBedHours } / Double(bedDays.count)
             let avgAsleep = bedDays.reduce(0) { $0 + $1.sleepHours } / Double(bedDays.count)
             // Handle both Apple Watch (inBed = total bed time) and third-party apps (inBed = awake only)
             let totalBed = avgInBed >= avgAsleep ? avgInBed : avgInBed + avgAsleep
             if totalBed > 0 {
                 let eff = avgAsleep / totalBed
-                if eff >= 0.9 { score += 20 }
-                else if eff >= 0.85 { score += 16 }
-                else if eff >= 0.75 { score += 10 }
-                else { score += 5 }
+                effPct = eff * 100
+                if eff >= 0.9 { efficiencyPts = 20 }
+                else if eff >= 0.85 { efficiencyPts = 16 }
+                else if eff >= 0.75 { efficiencyPts = 10 }
+                else { efficiencyPts = 5 }
             }
         } else {
-            score += 12 // no in-bed data, neutral score
+            efficiencyPts = 12 // no in-bed data, neutral score
         }
 
-        return min(100, max(0, Int(score)))
+        return SleepScoreResult(
+            durationScore: durationPts,
+            phaseScore: phasePts,
+            consistencyScore: consistencyPts,
+            efficiencyScore: efficiencyPts,
+            hasPhaseData: hasPhaseData,
+            hasEfficiencyData: hasEffData,
+            avgHours: avgHours,
+            stdDev: stdDev,
+            efficiencyPct: effPct
+        )
     }
 
-    /// Short text explanation for the quality score range.
-    private func sleepScoreBreakdown(_ score: Int) -> String {
-        if score >= 85 {
-            return "   睡眠质量优秀 — 时长充足、节律稳定、入睡高效"
-        } else if score >= 70 {
-            return "   睡眠质量良好 — 整体不错，部分维度还有优化空间"
-        } else if score >= 50 {
-            return "   睡眠质量一般 — 可能存在时长不足、节律不规律或入睡困难"
-        } else {
-            return "   睡眠质量需要关注 — 建议从固定作息时间开始改善"
+    /// Displays a transparent per-dimension score bar so users can see WHERE quality is strong/weak.
+    private func sleepScoreDimensionBar(_ result: SleepScoreResult) -> String {
+        var parts: [String] = []
+        parts.append("时长 \(Int(result.durationScore))/30")
+        if result.hasPhaseData {
+            parts.append("阶段 \(Int(result.phaseScore))/25")
+        }
+        parts.append("规律 \(Int(result.consistencyScore))/25")
+        if result.hasEfficiencyData {
+            parts.append("效率 \(Int(result.efficiencyScore))/20")
+        }
+        return "   📊 " + parts.joined(separator: " · ")
+    }
+
+    /// Pinpoints the weakest dimension and gives a specific, actionable suggestion.
+    private func sleepScoreTargetedAdvice(_ result: SleepScoreResult) -> String {
+        let total = result.total
+
+        // For excellent sleep, just affirm
+        if total >= 85 {
+            return "   睡眠质量优秀 — 时长、节律、效率全面达标，继续保持！"
+        }
+
+        // For scores below 85, identify the weakest dimension and give targeted advice
+        switch result.weakestDimension {
+        case "duration":
+            if result.avgHours < 6 {
+                return "   ⚡ 最大提升点：睡眠时长 — 平均仅 \(String(format: "%.1f", result.avgHours))h，远低于 7h 底线。试着每周提前 15 分钟上床，逐步调整。"
+            } else if result.avgHours < 7 {
+                let deficit = Int((7 - result.avgHours) * 60)
+                return "   ⚡ 最大提升点：睡眠时长 — 平均差 \(deficit) 分钟达到 7h，提前半小时上床就能补回来。"
+            } else {
+                return "   ⚡ 最大提升点：睡眠时长 — 平均 \(String(format: "%.1f", result.avgHours))h 偏长，试试固定起床时间来提升精力。"
+            }
+
+        case "phase":
+            return "   ⚡ 最大提升点：睡眠阶段 — 深睡或 REM 比例偏离理想区间。避免睡前饮酒、减少屏幕蓝光有助改善。"
+
+        case "consistency":
+            let stdDevMin = Int(result.stdDev * 60)
+            return "   ⚡ 最大提升点：作息规律性 — 每晚睡眠波动约 ±\(stdDevMin) 分钟。固定上床和起床时间比多睡一小时更有效。"
+
+        case "efficiency":
+            if result.efficiencyPct > 0 && result.efficiencyPct < 85 {
+                let wasteMin = Int((100 - result.efficiencyPct) / 100 * result.avgHours * 60)
+                return "   ⚡ 最大提升点：入睡效率（\(Int(result.efficiencyPct))%）— 每晚约 \(wasteMin) 分钟在床上未入睡。试试「困了再上床」和睡前放松练习。"
+            }
+            return "   ⚡ 最大提升点：入睡效率 — 尝试在固定时间上床，避免在床上看手机。"
+
+        default:
+            return "   睡眠质量 \(total >= 70 ? "良好" : total >= 50 ? "一般" : "需要关注") — 从最薄弱的维度开始改善。"
         }
     }
 

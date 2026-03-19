@@ -623,7 +623,7 @@ struct SkillRouter {
     /// instead of the generic `.lastWeek` fallback.
     static func hasExplicitTimeReference(_ text: String) -> Bool {
         let timeKeywords = [
-            "今天", "昨天", "前天", "大前天", "明天", "后天",
+            "今天", "昨天", "前天", "大前天", "明天", "后天", "大后天",
             "这周", "本周", "上周", "上上周", "下周",
             "这个月", "本月", "上个月", "下个月",
             "今年", "最近", "近期",
@@ -656,6 +656,25 @@ struct SkillRouter {
         if let relativeRange = extractRelativeDays(from: text) {
             return relativeRange
         }
+
+        // --- Longer expressions must be checked BEFORE their substrings ---
+        // "大后天" contains "后天", "大前天" contains "前天", "上上周" contains "上周".
+        // Without this ordering, "大前天" silently misparses as "前天" (off by 1 day).
+        let cal = Calendar.current
+        let todayStart = cal.startOfDay(for: Date())
+
+        // 大后天 (3 days from now) — must check before 后天
+        if containsAny(text, ["大后天"]) {
+            let date = cal.date(byAdding: .day, value: 3, to: todayStart)!
+            return .specificDate(date)
+        }
+        // 大前天 (3 days ago) — must check before 前天
+        if containsAny(text, ["大前天"]) {
+            let date = cal.date(byAdding: .day, value: -3, to: todayStart)!
+            return .specificDate(date)
+        }
+        // 上上周 (the week before last) — must check before 上周
+        if containsAny(text, ["上上周", "上上个星期"]) { return .recentDays(14) }
 
         // Future ranges (check before past to avoid "明天" matching "天" in "今天")
         if containsAny(text, ["后天", "day after tomorrow"]) { return .dayAfterTomorrow }

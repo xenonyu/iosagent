@@ -721,10 +721,12 @@ struct HealthSkill: ClawSkill {
 
     private func respondHealth(metric: String, range: QueryTimeRange, context: SkillContext, completion: @escaping (String) -> Void) {
         let baseFetchDays = fetchDaysNeeded(for: range)
-        // For the general overview, fetch 2x the range to provide previous-period comparison
+        // Always fetch at least 8 days so individual metric handlers (steps, calories, etc.)
+        // can show personal baseline comparison even for single-day queries like "今天步数".
+        // For the general overview, fetch 2x the range for previous-period comparison.
         let isOverview = (metric == "general")
         let spanDays = max(1, Calendar.current.dateComponents([.day], from: range.interval.start, to: range.interval.end).day ?? 1)
-        let fetchDays = isOverview ? baseFetchDays + spanDays : baseFetchDays
+        let fetchDays = isOverview ? baseFetchDays + spanDays : max(baseFetchDays, 8)
         context.healthService.fetchSummaries(days: fetchDays) { allSummaries in
             let interval = range.interval
             let filtered = allSummaries.filter { interval.contains($0.date) }
@@ -755,13 +757,13 @@ struct HealthSkill: ClawSkill {
             case "heartRate":
                 self.respondHeartRate(summaries: withData, range: range, completion: completion)
             case "steps":
-                self.respondSteps(summaries: withData, range: range, completion: completion)
+                self.respondSteps(summaries: withData, allSummaries: allSummaries, range: range, completion: completion)
             case "flights":
                 self.respondFlights(summaries: withData, range: range, completion: completion)
             case "distance":
                 self.respondDistance(summaries: withData, range: range, completion: completion)
             case "calories":
-                self.respondCalories(summaries: withData, range: range, completion: completion)
+                self.respondCalories(summaries: withData, allSummaries: allSummaries, range: range, completion: completion)
             case "weight":
                 self.respondWeight(summaries: withData, range: range, context: context, completion: completion)
             case "recovery":
@@ -1712,7 +1714,7 @@ struct HealthSkill: ClawSkill {
         completion(lines.joined(separator: "\n"))
     }
 
-    private func respondSteps(summaries: [HealthSummary], range: QueryTimeRange, completion: @escaping (String) -> Void) {
+    private func respondSteps(summaries: [HealthSummary], allSummaries: [HealthSummary] = [], range: QueryTimeRange, completion: @escaping (String) -> Void) {
         let stepDays = summaries.filter { $0.steps > 0 }
         guard !stepDays.isEmpty else {
             completion("👟 \(range.label)暂无步数记录。")
@@ -1727,7 +1729,68 @@ struct HealthSkill: ClawSkill {
         let worst = stepDays.min(by: { $0.steps < $1.steps })!
 
         lines.append("📊 总步数：\(Int(total).formatted()) 步")
-        lines.append("📈 日均：\(Int(avg).formatted()) 步")
+
+        // --- Personal baseline comparison for single-day queries ---
+        // When asking "今天步数" or "昨天步数", show how it compares to the 7-day average.
+        // This transforms a raw number into a meaningful insight.
+        let isSingleDay = (range == .today || range == .yesterday || range == .dayBeforeYesterday)
+        if isSingleDay, let todaySteps = stepDays.first {
+            let interval = range.interval
+            let baseline = allSummaries.filter { $0.steps > 0 && !interval.contains($0.date) }
+            if !baseline.isEmpty {
+                let baselineAvg = baseline.reduce(0) { $0 + $1.steps } / Double(baseline.count)
+                let diff = todaySteps.steps - baselineAvg
+                let pct = baselineAvg > 0 ? abs(diff) / baselineAvg * 100 : 0
+
+                if pct >= 10 && baselineAvg > 0 {
+                    if diff > 0 {
+                        lines.append("📈 比你 7 日均值（\(Int(baselineAvg).formatted())）高 \(Int(pct))%")
+                    } else {
+                        lines.append("📉 比你 7 日均值（\(Int(baselineAvg).formatted())）低 \(Int(pct))%")
+                    }
+                } else if baselineAvg > 0 {
+                    lines.append("📊 与你 7 日均值（\(Int(baselineAvg).formatted())）持平")
+                }
+            }
+
+            // Goal projection for today: estimate end-of-day steps based on current pace
+            if range == .today {
+                let hour = cal.component(.hour, from: Date())
+                let minute = cal.component(.minute, from: Date())
+                let elapsedHours = Double(hour) + Double(minute) / 60.0
+                // Only project if we have a meaningful portion of the day (after 9 AM)
+                // and before 10 PM (projection makes less sense very late)
+                if elapsedHours >= 9 && elapsedHours < 22 && todaySteps.steps > 0 {
+                    // Discount: people walk less in late evening
+                    let activeHoursLeft = max(0, 22.0 - elapsedHours)
+                    let pacePerHour = todaySteps.steps / elapsedHours
+                    let projected = todaySteps.steps + pacePerHour * activeHoursLeft * 0.6
+                    if projected >= 8000 && todaySteps.steps < 8000 {
+                        lines.append("🎯 按当前节奏，今天有望达到 \(Int(projected).formatted()) 步（达标 ✅）")
+                    } else if todaySteps.steps < 8000 {
+                        let remaining = 8000 - todaySteps.steps
+                        lines.append("🎯 距 8000 步目标还差 \(Int(remaining).formatted()) 步")
+                    }
+                }
+            }
+
+            // Yesterday comparison for today
+            if range == .today {
+                let yesterdaySummary = allSummaries.first { cal.isDateInYesterday($0.date) && $0.steps > 0 }
+                if let yd = yesterdaySummary {
+                    let diff = todaySteps.steps - yd.steps
+                    if abs(diff) >= 500 {
+                        if diff > 0 {
+                            lines.append("↗️ 比昨天同期多走了 \(Int(diff).formatted()) 步")
+                        } else {
+                            lines.append("↘️ 比昨天少了 \(Int(-diff).formatted()) 步")
+                        }
+                    }
+                }
+            }
+        } else {
+            lines.append("📈 日均：\(Int(avg).formatted()) 步")
+        }
 
         if stepDays.count > 1 {
             let fmt = DateFormatter()
@@ -2156,7 +2219,7 @@ struct HealthSkill: ClawSkill {
 
     // MARK: - Calories (Active Energy)
 
-    private func respondCalories(summaries: [HealthSummary], range: QueryTimeRange, completion: @escaping (String) -> Void) {
+    private func respondCalories(summaries: [HealthSummary], allSummaries: [HealthSummary] = [], range: QueryTimeRange, completion: @escaping (String) -> Void) {
         let calDays = summaries.filter { $0.activeCalories > 0 }
         guard !calDays.isEmpty else {
             completion("🔥 \(range.label)暂无热量消耗数据。\n开启健康权限后可以自动追踪每日活动消耗。")
@@ -2173,7 +2236,42 @@ struct HealthSkill: ClawSkill {
 
         // Core metrics
         lines.append("🔥 总活动消耗：\(Int(total).formatted()) 千卡")
-        lines.append("📊 日均消耗：\(Int(avg).formatted()) 千卡")
+
+        // --- Personal baseline comparison for single-day queries ---
+        let isSingleDay = (range == .today || range == .yesterday || range == .dayBeforeYesterday)
+        if isSingleDay, let todayCal = calDays.first {
+            let interval = range.interval
+            let baseline = allSummaries.filter { $0.activeCalories > 0 && !interval.contains($0.date) }
+            if !baseline.isEmpty {
+                let baselineAvg = baseline.reduce(0) { $0 + $1.activeCalories } / Double(baseline.count)
+                let diff = todayCal.activeCalories - baselineAvg
+                let pct = baselineAvg > 0 ? abs(diff) / baselineAvg * 100 : 0
+
+                if pct >= 10 && baselineAvg > 0 {
+                    if diff > 0 {
+                        lines.append("📈 比你 7 日均值（\(Int(baselineAvg).formatted())）高 \(Int(pct))%")
+                    } else {
+                        lines.append("📉 比你 7 日均值（\(Int(baselineAvg).formatted())）低 \(Int(pct))%")
+                    }
+                } else if baselineAvg > 0 {
+                    lines.append("📊 与你 7 日均值（\(Int(baselineAvg).formatted())）持平")
+                }
+            }
+
+            // Ring completion progress for today
+            if range == .today {
+                let goalKcal = 500.0
+                if todayCal.activeCalories >= goalKcal {
+                    lines.append("🔴 活动环已合环！超出 \(Int(todayCal.activeCalories - goalKcal)) 千卡 ✅")
+                } else {
+                    let remaining = goalKcal - todayCal.activeCalories
+                    let walkMin = Int(remaining / 5) // ~5 kcal per minute of brisk walking
+                    lines.append("🔴 距合环（\(Int(goalKcal))千卡）还差 \(Int(remaining)) 千卡（约快走 \(walkMin) 分钟）")
+                }
+            }
+        } else {
+            lines.append("📊 日均消耗：\(Int(avg).formatted()) 千卡")
+        }
 
         if calDays.count > 1 {
             let fmt = DateFormatter()

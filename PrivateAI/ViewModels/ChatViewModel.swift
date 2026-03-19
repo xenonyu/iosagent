@@ -57,17 +57,19 @@ final class ChatViewModel: ObservableObject {
         }
 
         return """
-        \(greeting)！我是 iosclaw 助理 🤖
+        \(greeting)！我是 iosclaw 智能助理 🤖
 
-        我的所有数据都存在你手机本地，绝对私密。
+        我可以在本地处理大部分查询，无需联网即可使用。
 
-        你可以问我：
-        • 「我上周做了什么运动？」
-        • 「最近去过哪些地方？」
-        • 「帮我总结这个月的生活」
-        • 「给老婆推荐礼物」
+        试试这些功能：
+        • 「今天走了多少步？」— 健康数据
+        • 「帮我记个笔记」— 笔记 / 待办 / 记录
+        • 「设个25分钟番茄钟」— 专注计时
+        • 「帮我算 128×37」— 计算 / 单位换算
+        • 「今天喝了500ml水」— 饮水追踪
+        • 或者问我任何其他问题 ✨
 
-        或者直接告诉我你今天做了什么，我会帮你记录下来。
+        直接打字或语音输入即可。
         """
     }
 
@@ -88,16 +90,6 @@ final class ChatViewModel: ObservableObject {
         // Build profile from CoreData
         let profile = CDUserProfile.fetchOrCreate(in: context).toProfileData()
 
-        // Resolve intent with context memory (handles follow-ups like "那昨天呢?")
-        let resolvedIntent = contextMemory.resolveIntent(from: text)
-        contextMemory.setLastIntent(resolvedIntent)
-
-        // Handle photo search locally (no GPT needed, fast path)
-        if case .photoSearch(let query) = resolvedIntent {
-            handlePhotoSearch(query: query)
-            return
-        }
-
         let engine = ClawEngine(
             context: context,
             healthService: appState.healthService,
@@ -107,8 +99,31 @@ final class ChatViewModel: ObservableObject {
             contextMemory: contextMemory
         )
 
-        // Try rawGPT first; fall back to ClawEngine if unavailable
-        engine.buildGPTPrompt(userQuery: text) { [weak self] prompt in
+        // Local-first routing: use SkillRouter to determine intent
+        let intent = SkillRouter.parse(text)
+
+        // Photo search has dedicated UI handling
+        if case .photoSearch(let query) = intent {
+            handlePhotoSearch(query: query)
+            return
+        }
+
+        // For known intents, handle locally via ClawEngine skills
+        if !intent.isUnknown {
+            engine.respond(to: text, preResolvedIntent: intent) { [weak self] response in
+                guard let self else { return }
+                let aiMsg = ChatMessage(content: response, isUser: false)
+                self.append(message: aiMsg)
+                self.persist(message: aiMsg)
+                self.contextMemory.add(message: aiMsg)
+                self.isThinking = false
+            }
+            return
+        }
+
+        // For unknown intents, try GPT API with full context, fall back to local UnknownSkill
+        let recentHistory = contextMemory.recentMessages
+        engine.buildGPTPrompt(userQuery: text, conversationHistory: recentHistory) { [weak self] prompt in
             guard let self else { return }
             Task {
                 do {
@@ -121,11 +136,11 @@ final class ChatViewModel: ObservableObject {
                         self.isThinking = false
                     }
                 } catch {
-                    // Network unavailable or API error → ClawEngine local fallback
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                        engine.respond(to: text, preResolvedIntent: resolvedIntent) { [weak self] response in
+                    // GPT unavailable — fall back to local UnknownSkill for a graceful response
+                    await MainActor.run {
+                        engine.respond(to: text, preResolvedIntent: .unknown) { [weak self] localResponse in
                             guard let self else { return }
-                            let aiMsg = ChatMessage(content: response, isUser: false)
+                            let aiMsg = ChatMessage(content: localResponse, isUser: false)
                             self.append(message: aiMsg)
                             self.persist(message: aiMsg)
                             self.contextMemory.add(message: aiMsg)

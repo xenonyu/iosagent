@@ -37,6 +37,12 @@ enum QueryIntent {
     case search(keyword: String)
     case note(action: NoteAction, content: String)
     case unknown
+
+    /// Whether this intent could not be matched to any known skill.
+    var isUnknown: Bool {
+        if case .unknown = self { return true }
+        return false
+    }
 }
 
 // MARK: - Note Action

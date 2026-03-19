@@ -98,7 +98,9 @@ struct SummarySkill: ClawSkill {
         let events = CDLifeEvent.fetch(from: interval.start, to: interval.end, in: context.coreDataContext)
         let locations = CDLocationRecord.fetch(from: interval.start, to: interval.end, in: context.coreDataContext)
 
+        // Fetch today + recent 7 days for comparison context
         context.healthService.fetchDailySummary(for: Date()) { health in
+            context.healthService.fetchSummaries(days: 7) { recentSummaries in
             let cal = Calendar.current
             let now = Date()
             let hour = cal.component(.hour, from: now)
@@ -160,13 +162,106 @@ struct SummarySkill: ClawSkill {
                 }
             }
 
-            // --- Health Data ---
-            if health.steps > 0 || health.exerciseMinutes > 0 || health.sleepHours > 0 {
+            // --- Health Data (enriched with weekly context) ---
+            let hasHealthData = health.steps > 0 || health.exerciseMinutes > 0 || health.sleepHours > 0
+                || health.activeCalories > 0 || health.distanceKm > 0.01 || health.flightsClimbed > 0
+                || health.heartRate > 0
+            if hasHealthData {
                 hasData = true
+                // Compute 7-day averages for comparison (exclude today)
+                let pastDays = recentSummaries.filter { !cal.isDateInToday($0.date) && $0.hasData }
+                let avgSteps = pastDays.isEmpty ? 0 : pastDays.reduce(0) { $0 + $1.steps } / Double(pastDays.count)
+                let avgExercise = pastDays.isEmpty ? 0 : pastDays.reduce(0) { $0 + $1.exerciseMinutes } / Double(pastDays.count)
+
                 lines.append("\n🏃 **健康**")
-                if health.steps > 0 { lines.append("  步数：\(Int(health.steps).formatted()) 步") }
-                if health.exerciseMinutes > 0 { lines.append("  运动：\(Int(health.exerciseMinutes)) 分钟") }
-                if health.sleepHours > 0 { lines.append("  昨晚睡眠：\(String(format: "%.1f", health.sleepHours)) 小时") }
+
+                // Steps with goal progress
+                if health.steps > 0 {
+                    let stepGoal = 8000.0
+                    let progress = min(health.steps / stepGoal, 1.0)
+                    let barFilled = Int(progress * 8)
+                    let bar = String(repeating: "▓", count: barFilled) + String(repeating: "░", count: 8 - barFilled)
+                    let goalTag = health.steps >= stepGoal ? " ✅" : ""
+                    lines.append("  👟 \(Int(health.steps).formatted()) 步 \(bar)\(goalTag)")
+                    // Compare to weekly average
+                    if avgSteps > 0 {
+                        let diff = ((health.steps - avgSteps) / avgSteps) * 100
+                        if abs(diff) >= 15 {
+                            let arrow = diff > 0 ? "↑" : "↓"
+                            lines.append("     较近 7 日均值 \(arrow)\(abs(Int(diff)))%")
+                        }
+                    }
+                }
+
+                // Exercise with goal progress
+                if health.exerciseMinutes > 0 {
+                    let exGoal = 30.0
+                    let progress = min(health.exerciseMinutes / exGoal, 1.0)
+                    let barFilled = Int(progress * 8)
+                    let bar = String(repeating: "▓", count: barFilled) + String(repeating: "░", count: 8 - barFilled)
+                    let goalTag = health.exerciseMinutes >= exGoal ? " ✅" : ""
+                    lines.append("  ⏱ 运动 \(Int(health.exerciseMinutes)) 分钟 \(bar)\(goalTag)")
+                    if avgExercise > 0 {
+                        let diff = ((health.exerciseMinutes - avgExercise) / avgExercise) * 100
+                        if abs(diff) >= 20 {
+                            let arrow = diff > 0 ? "↑" : "↓"
+                            lines.append("     较近 7 日均值 \(arrow)\(abs(Int(diff)))%")
+                        }
+                    }
+                }
+
+                // Calories
+                if health.activeCalories > 0 {
+                    lines.append("  🔥 消耗 \(Int(health.activeCalories).formatted()) 千卡")
+                }
+
+                // Distance
+                if health.distanceKm > 0.1 {
+                    lines.append("  📏 步行 \(String(format: "%.1f", health.distanceKm)) 公里")
+                }
+
+                // Flights climbed
+                if health.flightsClimbed > 0 {
+                    lines.append("  🏢 爬楼 \(Int(health.flightsClimbed)) 层")
+                }
+
+                // Sleep (from last night)
+                if health.sleepHours > 0 {
+                    var sleepLine = "  😴 昨晚 \(String(format: "%.1f", health.sleepHours))h"
+                    if health.sleepHours >= 7 && health.sleepHours <= 9 {
+                        sleepLine += " ✅"
+                    } else if health.sleepHours < 6 {
+                        sleepLine += " ⚠️ 偏少"
+                    } else if health.sleepHours > 9.5 {
+                        sleepLine += " 💤 偏多"
+                    }
+                    // Append sleep phase summary if available
+                    if health.hasSleepPhases {
+                        let deepPct = health.sleepHours > 0
+                            ? Int(health.sleepDeepHours / health.sleepHours * 100) : 0
+                        sleepLine += "（深睡 \(String(format: "%.1f", health.sleepDeepHours))h·\(deepPct)%）"
+                    }
+                    lines.append(sleepLine)
+                }
+
+                // Heart rate
+                if health.heartRate > 0 {
+                    lines.append("  ❤️ 静息心率 \(Int(health.heartRate)) BPM")
+                }
+
+                // Quick health score
+                var score = 0
+                var total = 0
+                if health.steps > 0 { total += 1; if health.steps >= 8000 { score += 1 } }
+                if health.exerciseMinutes > 0 { total += 1; if health.exerciseMinutes >= 30 { score += 1 } }
+                if health.sleepHours > 0 { total += 1; if health.sleepHours >= 7 && health.sleepHours <= 9 { score += 1 } }
+                if total >= 2 {
+                    if score == total {
+                        lines.append("  🏅 全部达标，状态很棒！")
+                    } else if score == 0 {
+                        lines.append("  💡 今天几项指标还没达标，加油！")
+                    }
+                }
             }
 
             // --- Habits ---
@@ -272,7 +367,8 @@ struct SummarySkill: ClawSkill {
             }
 
             completion(lines.joined(separator: "\n"))
-        }
+        } // end fetchSummaries
+        } // end fetchDailySummary
     }
 
     // MARK: - Weekly Insight
@@ -325,16 +421,64 @@ struct SummarySkill: ClawSkill {
                 }
             }
 
-            // --- Health Data ---
-            if !filtered.isEmpty {
+            // --- Health Data (enriched weekly overview) ---
+            let withData = filtered.filter { $0.hasData }
+            if !withData.isEmpty {
                 hasAnyData = true
-                let avgSteps = filtered.reduce(0) { $0 + $1.steps } / Double(max(filtered.count, 1))
-                let avgSleep = filtered.reduce(0) { $0 + $1.sleepHours } / Double(max(filtered.count, 1))
-                let goalDays = filtered.filter { $0.steps >= 8000 }.count
+                let dayCount = Double(max(withData.count, 1))
+                let avgSteps = withData.reduce(0) { $0 + $1.steps } / dayCount
+                let totalExercise = withData.reduce(0) { $0 + $1.exerciseMinutes }
+                let avgExercise = totalExercise / dayCount
+                let totalCalories = withData.reduce(0) { $0 + $1.activeCalories }
+                let totalDistance = withData.reduce(0) { $0 + $1.distanceKm }
+                let sleepDays = withData.filter { $0.sleepHours > 0 }
+                let avgSleep = sleepDays.isEmpty ? 0 : sleepDays.reduce(0) { $0 + $1.sleepHours } / Double(sleepDays.count)
+                let goalDays = withData.filter { $0.steps >= 8000 }.count
+                let exerciseGoalDays = withData.filter { $0.exerciseMinutes >= 30 }.count
+                let totalFlights = withData.reduce(0) { $0 + $1.flightsClimbed }
+
                 lines.append("\n🏃 **健康**")
-                lines.append("  日均步数：\(Int(avgSteps).formatted()) 步")
-                lines.append("  达成 8000 步目标：\(goalDays) 天")
-                if avgSleep > 0 { lines.append("  平均睡眠：\(String(format: "%.1f", avgSleep)) 小时") }
+                lines.append("  👟 日均 \(Int(avgSteps).formatted()) 步，\(goalDays)/\(withData.count) 天达标（≥8000）")
+                if totalExercise > 0 {
+                    lines.append("  ⏱ 日均运动 \(Int(avgExercise)) 分钟，\(exerciseGoalDays) 天达标（≥30min）")
+                }
+                if totalCalories > 0 {
+                    lines.append("  🔥 累计消耗 \(Int(totalCalories).formatted()) 千卡")
+                }
+                if totalDistance > 0.5 {
+                    lines.append("  📏 累计步行 \(String(format: "%.1f", totalDistance)) 公里")
+                }
+                if totalFlights > 0 {
+                    lines.append("  🏢 累计爬楼 \(Int(totalFlights)) 层")
+                }
+                if avgSleep > 0 {
+                    let goodSleepDays = sleepDays.filter { $0.sleepHours >= 7 && $0.sleepHours <= 9 }.count
+                    lines.append("  😴 均睡 \(String(format: "%.1f", avgSleep))h，\(goodSleepDays)/\(sleepDays.count) 晚在健康范围")
+                }
+
+                // Best and worst day for steps
+                if withData.count >= 3, let best = withData.max(by: { $0.steps < $1.steps }),
+                   let worst = withData.filter({ $0.steps > 0 }).min(by: { $0.steps < $1.steps }),
+                   best.steps > worst.steps {
+                    let fmt = DateFormatter()
+                    fmt.dateFormat = "E"
+                    fmt.locale = Locale(identifier: "zh_CN")
+                    lines.append("  🏆 最活跃：\(fmt.string(from: best.date)) \(Int(best.steps).formatted())步")
+                    lines.append("  📉 最低调：\(fmt.string(from: worst.date)) \(Int(worst.steps).formatted())步")
+                }
+
+                // Overall weekly health verdict
+                var score = 0
+                if avgSteps >= 8000 { score += 1 }
+                if avgExercise >= 30 { score += 1 }
+                if avgSleep >= 7 && avgSleep <= 9 { score += 1 }
+                if score == 3 {
+                    lines.append("  ✅ 本周步数、运动、睡眠全面达标！")
+                } else if score >= 2 {
+                    lines.append("  💪 本周状态不错，还有一项可以提升")
+                } else if score == 1 {
+                    lines.append("  💡 有提升空间，下周试试从最容易的一项开始")
+                }
             }
 
             if !events.isEmpty {

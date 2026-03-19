@@ -306,6 +306,14 @@ struct SkillRouter {
             return .exerciseLastOccurrence(workoutFilter: filter)
         }
 
+        // --- Streak with exercise context ---
+        // Must be checked before general exercise: "运动打卡" / "坚持运动" / "连续锻炼"
+        // should route to streak analysis, not exercise stats.
+        let streakKeywords = ["打卡", "连续", "坚持", "达标", "完成率", "合环", "streak", "consecutive"]
+        if containsAny(lower, streakKeywords) && containsAny(lower, exerciseContextKeywords) {
+            return .streak
+        }
+
         // --- Exercise / Fitness ---
         if containsAny(lower, ["运动", "锻炼", "健身", "跑步", "步数", "走路", "步行",
                                 "运动量", "活动量", "消耗", "有氧", "骑车", "骑行",
@@ -476,7 +484,7 @@ struct SkillRouter {
             // "比上周" / "这周" → week-level comparison
             // No explicit time → default to thisWeek (most natural comparison unit)
             let compRange: QueryTimeRange
-            if containsAny(lower, ["上个月", "上月", "这个月", "本月", "last month", "this month"]) {
+            if containsAny(lower, ["上个月", "上月", "这个月", "本月", "下个月", "下月", "last month", "this month", "next month"]) {
                 compRange = .thisMonth
             } else if containsAny(lower, ["上周", "这周", "本周", "last week", "this week"]) {
                 compRange = .thisWeek
@@ -724,7 +732,7 @@ struct SkillRouter {
         let timeKeywords = [
             "今天", "昨天", "前天", "大前天", "明天", "后天", "大后天",
             "这周", "本周", "上周", "上上周", "下周",
-            "这个月", "本月", "上个月", "下个月",
+            "这个月", "本月", "上个月", "下个月", "下月",
             "今年", "最近", "近期",
             // Relative day patterns: "5天前", "3天内", "过去五天"
             "天前", "天内", "天里", "过去",
@@ -791,6 +799,7 @@ struct SkillRouter {
         if containsAny(text, ["上周", "上个星期", "last week", "past week"]) { return .lastWeek }
         if containsAny(text, ["这周", "本周", "this week"]) { return .thisWeek }
         if containsAny(text, ["上个月", "上月", "last month"]) { return .lastMonth }
+        if containsAny(text, ["下个月", "下月", "next month"]) { return .nextMonth }
         if containsAny(text, ["这个月", "本月", "this month"]) { return .thisMonth }
         if containsAny(text, ["最近", "recent", "lately", "recently"]) { return .lastWeek }
         return .lastWeek

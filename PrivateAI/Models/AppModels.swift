@@ -318,6 +318,7 @@ enum QueryTimeRange: Equatable {
     case nextWeek
     case lastMonth
     case thisMonth
+    case nextMonth
     case all
     /// A specific calendar date (e.g. "下周一", "本周三", "周五")
     case specificDate(Date)
@@ -367,6 +368,13 @@ enum QueryTimeRange: Equatable {
             let comps = cal.dateComponents([.year, .month], from: now)
             let start = cal.date(from: comps)!
             return DateInterval(start: start, end: now)
+        case .nextMonth:
+            // 1st of next month through end of next month
+            let thisMonthComps = cal.dateComponents([.year, .month], from: now)
+            let thisMonthStart = cal.date(from: thisMonthComps)!
+            let start = cal.date(byAdding: .month, value: 1, to: thisMonthStart)!
+            let end = cal.date(byAdding: .month, value: 1, to: start)!
+            return DateInterval(start: start, end: end)
         case .all:
             return DateInterval(start: Date.distantPast, end: now)
         case .specificDate(let date):
@@ -382,7 +390,7 @@ enum QueryTimeRange: Equatable {
     /// Whether this range represents a future time period.
     var isFuture: Bool {
         switch self {
-        case .tomorrow, .dayAfterTomorrow, .nextWeek: return true
+        case .tomorrow, .dayAfterTomorrow, .nextWeek, .nextMonth: return true
         case .specificDate(let date):
             return date > Calendar.current.startOfDay(for: Date())
         case .recentDays: return false
@@ -402,6 +410,7 @@ enum QueryTimeRange: Equatable {
         case .nextWeek:           return "下周"
         case .lastMonth:          return "过去30天"
         case .thisMonth:          return "本月"
+        case .nextMonth:          return "下个月"
         case .all:                return "全部"
         case .specificDate(let date):
             let fmt = DateFormatter()

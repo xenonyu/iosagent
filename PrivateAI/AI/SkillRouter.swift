@@ -343,9 +343,16 @@ struct SkillRouter {
                                 "通勤", "上班路上", "下班路上", "上下班", "路上花多",
                                 "回家要多久", "上班要多久", "通勤时间", "通勤多久",
                                 "commute", "commuting",
+                                // Travel / trips
+                                "旅行", "旅游", "出差", "出远门", "远行", "远门",
+                                "宅", "宅在家", "没出门", "没出去", "一直在家",
+                                "待在家", "呆在家", "没有出", "几天没出",
+                                // Farthest / new places
+                                "最远", "最远的", "新地方", "新的地方", "没去过",
                                 "where", "place", "location", "visit", "went to", "been to",
                                 "footprint", "places", "traveled", "visited",
-                                "travel distance", "activity radius", "how far"]) {
+                                "travel distance", "activity radius", "how far",
+                                "travel", "trip", "stayed home"]) {
             return .location(range: range)
         }
 

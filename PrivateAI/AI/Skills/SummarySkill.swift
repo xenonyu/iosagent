@@ -1100,6 +1100,21 @@ struct SummarySkill: ClawSkill {
                 }
             }
 
+            // --- Actionable Next-Week Suggestions ---
+            if hasAnyData {
+                let suggestions = Self.buildNextWeekSuggestions(
+                    healthSummaries: withData,
+                    calendarEvents: calendarEvents,
+                    locations: locations,
+                    nextWeekCalendar: context.calendarService,
+                    cal: cal
+                )
+                if !suggestions.isEmpty {
+                    lines.append("\n🎯 **下周建议**")
+                    suggestions.forEach { lines.append("  \($0)") }
+                }
+            }
+
             if !hasAnyData {
                 lines.append("本周数据较少，建议开启健康、日历、位置权限并多与我分享，让周报更丰富！")
             }
@@ -1439,6 +1454,125 @@ struct SummarySkill: ClawSkill {
         }
 
         return Array(insights.prefix(3))
+    }
+
+    // MARK: - Next Week Suggestions
+
+    /// Analyzes this week's weakest areas and generates 2-3 specific, data-driven
+    /// action items for the upcoming week. Looks at next week's calendar to give
+    /// context-aware advice (e.g., "busy Monday — plan a walk between meetings").
+    private static func buildNextWeekSuggestions(
+        healthSummaries: [HealthSummary],
+        calendarEvents: [CalendarEventItem],
+        locations: [LocationRecord],
+        nextWeekCalendar: CalendarService,
+        cal: Calendar
+    ) -> [String] {
+        var suggestions: [String] = []
+        guard !healthSummaries.isEmpty else { return [] }
+
+        let dayCount = Double(max(healthSummaries.count, 1))
+
+        // Compute this week's key metrics
+        let avgSteps = healthSummaries.reduce(0) { $0 + $1.steps } / dayCount
+        let avgExercise = healthSummaries.reduce(0) { $0 + $1.exerciseMinutes } / dayCount
+        let sleepDays = healthSummaries.filter { $0.sleepHours > 0 }
+        let avgSleep = sleepDays.isEmpty ? 0.0 : sleepDays.reduce(0) { $0 + $1.sleepHours } / Double(sleepDays.count)
+        let stepGoalDays = healthSummaries.filter { $0.steps >= 8000 }.count
+        let exerciseGoalDays = healthSummaries.filter { $0.exerciseMinutes >= 30 }.count
+
+        // Sleep consistency
+        var sleepStdDev: Double = 0
+        if sleepDays.count >= 3 {
+            let mean = sleepDays.reduce(0) { $0 + $1.sleepHours } / Double(sleepDays.count)
+            let variance = sleepDays.reduce(0) { $0 + ($1.sleepHours - mean) * ($1.sleepHours - mean) } / Double(sleepDays.count)
+            sleepStdDev = sqrt(variance)
+        }
+
+        // Find weakest days (lowest step days) — what weekday patterns are weak?
+        let sorted = healthSummaries.sorted { $0.steps < $1.steps }
+        let weakDayNames: [String] = sorted.prefix(2).compactMap { day in
+            guard day.steps > 0, day.steps < avgSteps * 0.6 else { return nil }
+            let fmt = DateFormatter()
+            fmt.dateFormat = "EEEE"
+            fmt.locale = Locale(identifier: "zh_CN")
+            return fmt.string(from: day.date)
+        }
+
+        // Peek at next week's calendar for context-aware suggestions
+        let nextWeekStart = cal.date(byAdding: .day, value: 1, to: cal.startOfDay(for: Date()))!
+        let nextWeekEnd = cal.date(byAdding: .day, value: 7, to: nextWeekStart)!
+        let nextEvents = nextWeekCalendar.fetchEvents(from: nextWeekStart, to: nextWeekEnd)
+        let nextTimedEvents = nextEvents.filter { !$0.isAllDay }
+        let nextWeekBusy = !nextTimedEvents.isEmpty
+
+        // Group next week's events by day to find busiest day
+        var nextMeetingsPerDay: [Date: Int] = [:]
+        for e in nextTimedEvents {
+            nextMeetingsPerDay[cal.startOfDay(for: e.startDate), default: 0] += 1
+        }
+        let busiestNextDay = nextMeetingsPerDay.max(by: { $0.value < $1.value })
+
+        // --- Priority 1: Steps improvement (if below goal) ---
+        if avgSteps < 8000 {
+            let deficit = Int(8000 - avgSteps)
+            if deficit > 3000 {
+                suggestions.append("👟 日均步数差 \(deficit) 步达标，试试每天饭后散步 20 分钟（约 2000 步）")
+            } else if !weakDayNames.isEmpty {
+                suggestions.append("👟 \(weakDayNames.joined(separator: "和"))步数偏低，下周这几天安排一次午间散步")
+            } else {
+                suggestions.append("👟 再多走 \(deficit) 步就能日均达标，试试提前一站下车走路")
+            }
+        } else if stepGoalDays < healthSummaries.count && stepGoalDays > 0 {
+            let missedDays = healthSummaries.count - stepGoalDays
+            suggestions.append("👟 本周有 \(missedDays) 天步数未达标，试试把散步加入固定日程")
+        }
+
+        // --- Priority 2: Exercise consistency ---
+        if avgExercise < 15 {
+            suggestions.append("🏃 本周运动时间偏少，下周试试每天 15 分钟快走或拉伸起步")
+        } else if avgExercise < 30 && exerciseGoalDays < 3 {
+            let gap = 30 - Int(avgExercise)
+            suggestions.append("🏃 每天再多运动 \(gap) 分钟就能达标，可以拆分成 2 段短时运动")
+        } else if exerciseGoalDays >= 3 {
+            // Exercise is OK — suggest variety if doing same type
+            let allWorkouts = healthSummaries.flatMap { $0.workouts }
+            let uniqueTypes = Set(allWorkouts.map { $0.typeName })
+            if uniqueTypes.count == 1, let onlyType = uniqueTypes.first {
+                suggestions.append("🏃 本周都是\(onlyType)，下周试试搭配不同类型来均衡发展")
+            }
+        }
+
+        // --- Priority 3: Sleep regularity ---
+        if avgSleep > 0 && avgSleep < 6.5 {
+            suggestions.append("😴 均睡 \(String(format: "%.1f", avgSleep))h 偏少，下周试试提前 30 分钟上床")
+        } else if sleepStdDev >= 1.0 {
+            suggestions.append("😴 作息波动大（±\(String(format: "%.1f", sleepStdDev))h），固定就寝时间能显著改善睡眠质量")
+        } else if avgSleep > 9.5 {
+            suggestions.append("😴 均睡超过 9.5h，适当减少赖床可以提升白天精力")
+        }
+
+        // --- Priority 4: Calendar-aware tips (use next week's schedule) ---
+        if let (busiestDay, meetingCount) = busiestNextDay, meetingCount >= 4 {
+            let fmt = DateFormatter()
+            fmt.dateFormat = "EEEE"
+            fmt.locale = Locale(identifier: "zh_CN")
+            let dayName = fmt.string(from: busiestDay)
+            suggestions.append("📅 下周\(dayName)有 \(meetingCount) 个会议，提前规划会议间的活动时间")
+        } else if nextWeekBusy && avgExercise < 30 {
+            suggestions.append("📅 下周有日程安排，记得提前预留运动时间段")
+        }
+
+        // --- Priority 5: Location-based suggestion ---
+        if !locations.isEmpty {
+            let uniquePlaces = Set(locations.map { $0.displayName }).count
+            if uniquePlaces <= 2 {
+                suggestions.append("📍 本周活动范围较集中，周末可以探索一个新地方")
+            }
+        }
+
+        // Cap at 3 most relevant suggestions
+        return Array(suggestions.prefix(3))
     }
 
     /// Discovers cross-data patterns for arbitrary time periods (used by respondSummary).

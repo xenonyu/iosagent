@@ -13,6 +13,7 @@ enum QueryIntent {
     case events(range: QueryTimeRange)
     case health(metric: String, range: QueryTimeRange)
     case calendar(range: QueryTimeRange)
+    case calendarNext
     case photos(range: QueryTimeRange)
     case profile
     case addEvent(title: String, content: String, mood: MoodType)
@@ -441,6 +442,7 @@ struct SkillRouter {
         if containsAny(lower, ["睡眠", "睡了", "睡得", "睡觉", "入睡", "失眠", "熬夜", "早睡", "晚睡",
                                 "睡不好", "睡不着", "睡不够", "没睡好", "没睡够",
                                 "夜醒", "浅眠", "多梦", "嗜睡", "打鼾", "打呼噜",
+                                "作息", "生物钟", "日夜颠倒", "昼夜颠倒", "起得早", "起得晚", "几点起的",
                                 "心率", "心跳", "血压", "卡路里", "热量", "千卡", "大卡", "健康", "血氧", "脉搏",
                                 "身体", "体质", "体能", "精力", "活力", "身体状况", "恢复",
                                 "能运动吗", "适合运动", "能不能练", "能锻炼", "适合锻炼",
@@ -583,6 +585,38 @@ struct SkillRouter {
             return .events(range: range)
         }
 
+        // --- Calendar: "next event" / upcoming events (MUST check before general calendar) ---
+        // Queries like "接下来有什么", "下一个会议", "还有几个会", "马上有什么安排"
+        // want a focused "what's next" answer from NOW, not a full day overview.
+        // These contain "next/upcoming" intent markers — route to calendarNext.
+        let nextEventKeywords = ["接下来", "下一个", "下一场", "下一节",
+                                  "还有几个", "还剩几个", "还有多少个",
+                                  "还有什么会", "还有什么事", "还有啥事", "还有啥安排",
+                                  "还剩什么", "还剩啥",
+                                  "马上有什么", "马上有啥", "马上要开",
+                                  "快到了", "快开始",
+                                  "what's next", "next meeting", "next event",
+                                  "upcoming", "what's coming up"]
+        let calendarContextKeywords = ["安排", "会议", "会", "事", "日程", "行程",
+                                        "meeting", "event", "schedule"]
+        // Match: pure "next" keywords that imply calendar (接下来有什么, 下一个会议)
+        // OR: "next" keyword + calendar context word
+        if containsAny(lower, ["接下来有什么", "接下来有啥", "接下来还有",
+                                "下一个会议", "下一个安排", "下一个事",
+                                "下一场会议", "下一场会",
+                                "还有几个会", "还剩几个会",
+                                "还有什么会", "还有什么事", "还有什么安排",
+                                "还有啥事", "还有啥安排", "还剩什么事",
+                                "马上有什么", "马上有啥", "马上要开会",
+                                "what's next", "next meeting", "next event",
+                                "upcoming event", "upcoming meeting",
+                                "what's coming up"]) {
+            return .calendarNext
+        }
+        if containsAny(lower, nextEventKeywords) && containsAny(lower, calendarContextKeywords) {
+            return .calendarNext
+        }
+
         // --- Calendar ---
         // Calendar queries are inherently present/future-oriented.
         // When user asks "忙不忙", "有空吗", "有什么安排" without a time word,
@@ -692,6 +726,9 @@ struct SkillRouter {
 
         // --- Profile ---
         if containsAny(lower, ["我是谁", "我叫什么", "我的信息", "个人资料",
+                                "了解我自己", "关于我", "我的画像", "自我画像",
+                                "认识我", "数据画像", "告诉我关于我",
+                                "describe me", "about me", "my portrait",
                                 "who am i", "my profile", "my info"]) {
             return .profile
         }
@@ -1192,6 +1229,7 @@ struct SkillRouter {
         if containsAny(text, ["睡眠", "睡了", "睡得", "睡觉", "入睡", "失眠", "熬夜", "早睡", "晚睡",
                               "睡不好", "睡不着", "睡不够", "没睡好", "没睡够",
                               "夜醒", "浅眠", "多梦", "嗜睡", "打鼾", "打呼噜",
+                              "作息", "生物钟", "日夜颠倒", "昼夜颠倒", "起得早", "起得晚", "几点起的",
                               "sleep", "slept", "insomnia"]) { return "sleep" }
         if containsAny(text, ["心率", "心跳", "脉搏", "heart rate", "heartbeat",
                               "HRV", "hrv", "心率变异", "变异性", "静息心率", "resting heart"]) { return "heartRate" }

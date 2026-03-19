@@ -7,11 +7,17 @@ struct CalendarSkill: ClawSkill {
     let id = "calendar"
 
     func canHandle(intent: QueryIntent) -> Bool {
-        if case .calendar = intent { return true }
-        return false
+        switch intent {
+        case .calendar, .calendarNext: return true
+        default: return false
+        }
     }
 
     func execute(intent: QueryIntent, context: SkillContext, completion: @escaping (String) -> Void) {
+        if case .calendarNext = intent {
+            completion(buildNextEventResponse(context: context))
+            return
+        }
         guard case .calendar(let range) = intent else { return }
 
         // For today/tomorrow schedule, enrich with health context (sleep + activity + HRV readiness)
@@ -61,6 +67,140 @@ struct CalendarSkill: ClawSkill {
         } else {
             completion(buildResponse(range: range, context: context))
         }
+    }
+
+    // MARK: - Next Event Response
+
+    /// Builds a focused "what's next" response showing the next few upcoming events from NOW.
+    /// Unlike the full-day overview, this answers "接下来有什么" with minimal, actionable info.
+    private func buildNextEventResponse(context: SkillContext) -> String {
+        guard context.calendarService.isAuthorized else {
+            return """
+            📅 日历权限未开启，无法查看接下来的安排。
+
+            请前往「设置 → iosclaw → 日历」开启权限。
+            """
+        }
+
+        let now = Date()
+        let cal = Calendar.current
+
+        // Look ahead: rest of today + tomorrow (covers overnight events and next-morning meetings)
+        let todayEnd = cal.date(byAdding: .day, value: 1, to: cal.startOfDay(for: now))!
+        let tomorrowEnd = cal.date(byAdding: .day, value: 1, to: todayEnd)!
+
+        let todayEvents = context.calendarService.fetchEvents(from: now, to: todayEnd)
+        let tomorrowEvents = context.calendarService.fetchEvents(from: todayEnd, to: tomorrowEnd)
+
+        // Split into ongoing and upcoming (today only)
+        let timedToday = todayEvents.filter { !$0.isAllDay }
+        let ongoing = timedToday.filter { $0.startDate <= now && $0.endDate > now }
+        let upcoming = timedToday.filter { $0.startDate > now }
+        let remainingCount = ongoing.count + upcoming.count
+
+        // Nothing left today
+        if remainingCount == 0 {
+            // Check tomorrow
+            let timedTomorrow = tomorrowEvents.filter { !$0.isAllDay }
+            if timedTomorrow.isEmpty {
+                return "✅ 今天的安排已经全部结束了，明天也暂时没有日程。\n\n好好休息吧 🌙"
+            }
+            let first = timedTomorrow.sorted { $0.startDate < $1.startDate }.first!
+            let timeFmt = DateFormatter()
+            timeFmt.dateFormat = "HH:mm"
+            var msg = "✅ 今天的安排已经全部结束了。\n\n"
+            msg += "📅 明天最早的安排：\(timeFmt.string(from: first.startDate)) 「\(first.title)」"
+            if !first.location.isEmpty { msg += "\n  📍 \(first.location)" }
+            if timedTomorrow.count > 1 {
+                msg += "\n  明天共有 \(timedTomorrow.count) 个事件。"
+            }
+            return msg
+        }
+
+        var lines: [String] = []
+        let timeFmt = DateFormatter()
+        timeFmt.dateFormat = "HH:mm"
+
+        // Ongoing events
+        for event in ongoing {
+            let remainMin = Int(event.endDate.timeIntervalSince(now) / 60)
+            var line = "🔴 正在进行：「\(event.title)」（\(event.timeDisplay)）"
+            if remainMin > 0 {
+                line += "\n  还剩 \(formatDuration(Double(remainMin)))"
+            }
+            if !event.location.isEmpty { line += "  📍 \(event.location)" }
+            lines.append(line)
+        }
+
+        // Next upcoming events (show up to 3)
+        let sortedUpcoming = upcoming.sorted { $0.startDate < $1.startDate }
+        for (i, event) in sortedUpcoming.prefix(3).enumerated() {
+            let minutesUntil = event.startDate.timeIntervalSince(now) / 60
+
+            let countdown: String
+            if minutesUntil < 1 {
+                countdown = "马上开始"
+            } else if minutesUntil < 60 {
+                countdown = "\(Int(minutesUntil)) 分钟后"
+            } else {
+                let hours = Int(minutesUntil / 60)
+                let mins = Int(minutesUntil.truncatingRemainder(dividingBy: 60))
+                countdown = mins > 0 ? "\(hours) 小时 \(mins) 分钟后" : "\(hours) 小时后"
+            }
+
+            let prefix = (i == 0 && ongoing.isEmpty) ? "⏰ 下一个" : "  📋"
+            var line = "\(prefix)：\(countdown) — 「\(event.title)」（\(event.timeDisplay)）"
+            if !event.location.isEmpty { line += "\n    📍 \(event.location)" }
+
+            // Duration hint for the next event
+            if i == 0 {
+                let durationMin = event.duration / 60
+                if durationMin >= 30 {
+                    line += "\n    时长 \(formatDuration(durationMin))"
+                }
+            }
+
+            lines.append(line)
+        }
+
+        // Remaining count if there are more
+        if sortedUpcoming.count > 3 {
+            lines.append("\n  …之后还有 \(sortedUpcoming.count - 3) 个安排")
+        }
+
+        // Summary line: how many left, when done
+        if let lastEvent = sortedUpcoming.last ?? ongoing.last {
+            let doneTime = timeFmt.string(from: lastEvent.endDate)
+            if remainingCount == 1 {
+                if !ongoing.isEmpty {
+                    lines.append("\n这是今天最后一个安排，\(doneTime) 结束后就自由了。")
+                } else {
+                    lines.append("\n这是今天最后一个安排了。")
+                }
+            } else {
+                // Find the actual last event of the day
+                let allRemaining = (ongoing + sortedUpcoming).sorted { $0.endDate < $1.endDate }
+                if let trueLast = allRemaining.last {
+                    let finalTime = timeFmt.string(from: trueLast.endDate)
+                    lines.append("\n今天还剩 \(remainingCount) 个安排，预计 \(finalTime) 全部结束。")
+                }
+            }
+        }
+
+        // Gap analysis: time until next event (if ongoing, show gap after it ends)
+        if let currentEnd = ongoing.first?.endDate, let nextStart = sortedUpcoming.first?.startDate {
+            let gapMin = nextStart.timeIntervalSince(currentEnd) / 60
+            if gapMin >= 15 && gapMin <= 180 {
+                lines.append("💚 当前事件结束后有 \(formatDuration(gapMin)) 的空隙。")
+            }
+        } else if ongoing.isEmpty, let next = sortedUpcoming.first {
+            let gapMin = next.startDate.timeIntervalSince(now) / 60
+            if gapMin >= 30 {
+                lines.append("💚 距下一个安排还有 \(formatDuration(gapMin))，可以专注做点事。")
+            }
+        }
+
+        return lines.joined(separator: "\n")
     }
 
     // MARK: - Time-of-Day Filter

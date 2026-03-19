@@ -39,6 +39,7 @@ enum QueryIntent {
     case textTool(action: TextToolAction, content: String)
     case dailyQuote(category: QuoteCategory)
     case personalStats
+    case lunarCalendar(query: LunarCalendarQuery)
     case unknown
 
     /// Whether this intent could not be matched to any known skill.
@@ -46,6 +47,15 @@ enum QueryIntent {
         if case .unknown = self { return true }
         return false
     }
+}
+
+// MARK: - Lunar Calendar Query
+
+enum LunarCalendarQuery {
+    case today       // 今天农历
+    case zodiac      // 今年生肖
+    case solarTerm   // 节气
+    case fullInfo    // 农历万年历 (综合)
 }
 
 // MARK: - Quote Category
@@ -189,6 +199,11 @@ struct SkillRouter {
         let lower = text.lowercased()
         let trimmed = lower.trimmingCharacters(in: .whitespacesAndNewlines)
         let range = extractTimeRange(from: lower)
+
+        // --- Lunar Calendar / Chinese Calendar ---
+        if let lunarQuery = parseLunarCalendar(lower) {
+            return .lunarCalendar(query: lunarQuery)
+        }
 
         // --- Date / Time ---
         if let dtQuery = parseDateTimeQuery(lower) {
@@ -691,6 +706,39 @@ struct SkillRouter {
 
     /// Detects conversational greetings. Uses a length cap to avoid matching longer queries
     /// that happen to contain a greeting word (e.g., "你好，帮我总结这周运动").
+    private static func parseLunarCalendar(_ text: String) -> LunarCalendarQuery? {
+        let hasLunar = containsAny(text, ["农历", "阴历", "黄历", "老历", "旧历", "lunar"])
+        let hasSolarTerm = containsAny(text, ["节气", "solar term", "二十四节气"])
+        let hasZodiac = containsAny(text, ["生肖", "属什么", "属啥", "zodiac", "什么年"])
+
+        // Solar term query
+        if hasSolarTerm {
+            return .solarTerm
+        }
+
+        // Zodiac query
+        if hasZodiac {
+            return .zodiac
+        }
+
+        // Lunar calendar with detail keywords → full info
+        if hasLunar && containsAny(text, ["万年历", "详细", "全部", "所有", "complete"]) {
+            return .fullInfo
+        }
+
+        // General lunar calendar query
+        if hasLunar {
+            return .today
+        }
+
+        // "今天什么日子" could trigger lunar calendar
+        if containsAny(text, ["什么日子"]) && containsAny(text, ["今天", "today"]) {
+            return .fullInfo
+        }
+
+        return nil
+    }
+
     private static func parseGreeting(_ trimmed: String) -> GreetingType? {
         // Only match short messages (≤15 chars) to avoid false positives
         guard trimmed.count <= 15 else { return nil }

@@ -143,7 +143,7 @@ final class ChatViewModel: ObservableObject {
                 } catch {
                     // GPT unavailable — fall back to local UnknownSkill for a graceful response
                     await MainActor.run {
-                        engine.respond(to: text, preResolvedIntent: .unknown) { [weak self] localResponse in
+                        self.engine.respond(to: text, preResolvedIntent: .unknown) { [weak self] localResponse in
                             guard let self else { return }
                             let aiMsg = ChatMessage(content: localResponse, isUser: false)
                             self.append(message: aiMsg)
@@ -248,6 +248,8 @@ final class ChatViewModel: ObservableObject {
             return ["再做一次呼吸练习", "查看睡眠建议", "今天心情如何？"]
         case .personalStats:
             return ["帮我总结这周", "查看健康数据", "查看待办清单"]
+        case .lunarCalendar:
+            return ["今年属什么生肖？", "下一个节气是什么？", "农历万年历"]
         case .search:
             return ["帮我搜索记录", "查看时间线", "帮我总结今天"]
         case .textTool:

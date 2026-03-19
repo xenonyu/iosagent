@@ -57,7 +57,14 @@ struct LocationSkill: ClawSkill {
             sections.append(timeSection)
         }
 
-        // 5. Activity summary
+        // 5. Travel distance & activity radius
+        if records.count >= 2 {
+            if let travelSection = buildTravelAnalysis(records: records, profiles: profiles) {
+                sections.append(travelSection)
+            }
+        }
+
+        // 6. Activity summary
         let summary = buildActivitySummary(records: records, range: range)
         sections.append(summary)
 
@@ -412,6 +419,137 @@ struct LocationSkill: ClawSkill {
         }
 
         return lines.joined(separator: "\n")
+    }
+
+    // MARK: - Travel Distance & Activity Radius
+
+    /// Computes total sequential travel distance, activity radius from home/centroid,
+    /// and identifies the farthest point reached during the period.
+    private func buildTravelAnalysis(records: [LocationRecord], profiles: [PlaceProfile]) -> String? {
+        let sorted = records.sorted { $0.timestamp < $1.timestamp }
+        guard sorted.count >= 2 else { return nil }
+
+        // 1. Total sequential travel distance (sum of hops between consecutive records)
+        var totalDistanceM: Double = 0
+        for i in 0..<(sorted.count - 1) {
+            let a = sorted[i]
+            let b = sorted[i + 1]
+            totalDistanceM += haversine(lat1: a.latitude, lon1: a.longitude,
+                                        lat2: b.latitude, lon2: b.longitude)
+        }
+
+        // 2. Determine anchor point (home if detected, otherwise centroid)
+        let anchorLat: Double
+        let anchorLon: Double
+        let anchorLabel: String
+
+        if let homeIdx = detectHome(profiles: profiles), homeIdx < profiles.count {
+            // Use home cluster's average position
+            let homeRecords = findRecordsForProfile(profiles[homeIdx], in: sorted)
+            if !homeRecords.isEmpty {
+                anchorLat = homeRecords.reduce(0.0) { $0 + $1.latitude } / Double(homeRecords.count)
+                anchorLon = homeRecords.reduce(0.0) { $0 + $1.longitude } / Double(homeRecords.count)
+                anchorLabel = "家"
+            } else {
+                // Fallback to centroid
+                anchorLat = sorted.reduce(0.0) { $0 + $1.latitude } / Double(sorted.count)
+                anchorLon = sorted.reduce(0.0) { $0 + $1.longitude } / Double(sorted.count)
+                anchorLabel = "中心"
+            }
+        } else {
+            anchorLat = sorted.reduce(0.0) { $0 + $1.latitude } / Double(sorted.count)
+            anchorLon = sorted.reduce(0.0) { $0 + $1.longitude } / Double(sorted.count)
+            anchorLabel = "中心"
+        }
+
+        // 3. Activity radius & farthest point
+        var maxDistM: Double = 0
+        var farthestRecord: LocationRecord?
+
+        for r in sorted {
+            let dist = haversine(lat1: anchorLat, lon1: anchorLon,
+                                 lat2: r.latitude, lon2: r.longitude)
+            if dist > maxDistM {
+                maxDistM = dist
+                farthestRecord = r
+            }
+        }
+
+        // Only show if there's meaningful movement (> 500m total travel)
+        guard totalDistanceM > 500 else { return nil }
+
+        var lines: [String] = ["🧭 出行分析："]
+
+        // Total travel distance
+        let totalKm = totalDistanceM / 1000.0
+        if totalKm >= 1.0 {
+            lines.append("  总移动距离：\(String(format: "%.1f", totalKm)) 公里")
+        } else {
+            lines.append("  总移动距离：\(Int(totalDistanceM)) 米")
+        }
+
+        // Activity radius
+        let radiusKm = maxDistM / 1000.0
+        if radiusKm >= 1.0 {
+            let radiusDesc: String
+            if radiusKm < 5 {
+                radiusDesc = "活动范围较集中，基本在附近区域"
+            } else if radiusKm < 20 {
+                radiusDesc = "活动范围适中，覆盖城市多个区域"
+            } else if radiusKm < 100 {
+                radiusDesc = "活动范围较广，跨区出行"
+            } else {
+                radiusDesc = "活动范围很大，可能有长途出行"
+            }
+            lines.append("  活动半径：距\(anchorLabel)最远 \(String(format: "%.1f", radiusKm)) 公里")
+            lines.append("  💡 \(radiusDesc)")
+        }
+
+        // Farthest point
+        if let farthest = farthestRecord, maxDistM > 1000 {
+            let placeName = farthest.displayName
+            if !placeName.isEmpty && placeName != "未知地点" {
+                lines.append("  📌 最远到达：\(placeName)")
+            }
+        }
+
+        // Daily average travel (if multi-day)
+        let cal = Calendar.current
+        let dayFmt = DateFormatter()
+        dayFmt.dateFormat = "yyyy-MM-dd"
+        let uniqueDays = Set(sorted.map { dayFmt.string(from: $0.timestamp) }).count
+        if uniqueDays >= 3 {
+            let avgKm = totalKm / Double(uniqueDays)
+            lines.append("  日均移动：\(String(format: "%.1f", avgKm)) 公里")
+        }
+
+        return lines.joined(separator: "\n")
+    }
+
+    /// Finds the original records that belong to a given profile's place cluster.
+    /// Matches by display name since profiles are built from clusters.
+    private func findRecordsForProfile(_ profile: PlaceProfile, in records: [LocationRecord]) -> [LocationRecord] {
+        // Cluster by proximity to any record matching this profile's name
+        let nameMatches = records.filter { $0.displayName == profile.name }
+        guard let anchor = nameMatches.first else { return nameMatches }
+
+        // Include all records within 200m of the anchor (same clustering logic)
+        return records.filter {
+            haversine(lat1: anchor.latitude, lon1: anchor.longitude,
+                      lat2: $0.latitude, lon2: $0.longitude) <= 200
+        }
+    }
+
+    /// Haversine distance in meters (instance-level helper for travel analysis).
+    private func haversine(lat1: Double, lon1: Double, lat2: Double, lon2: Double) -> Double {
+        let R = 6371000.0
+        let dLat = (lat2 - lat1) * .pi / 180
+        let dLon = (lon2 - lon1) * .pi / 180
+        let a = sin(dLat / 2) * sin(dLat / 2) +
+                cos(lat1 * .pi / 180) * cos(lat2 * .pi / 180) *
+                sin(dLon / 2) * sin(dLon / 2)
+        let c = 2 * atan2(sqrt(a), sqrt(1 - a))
+        return R * c
     }
 
     // MARK: - Activity Summary

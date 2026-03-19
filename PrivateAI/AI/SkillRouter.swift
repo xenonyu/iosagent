@@ -293,8 +293,11 @@ struct SkillRouter {
                                 "出门", "外出", "逛了", "逛街", "路过", "出去了",
                                 "去了哪", "跑哪", "溜达", "遛弯", "到了哪",
                                 "哪儿", "哪些地方", "什么地方",
+                                "活动范围", "出行距离", "走了多远", "跑了多远",
+                                "移动距离", "出行分析", "活动半径", "行动范围",
                                 "where", "place", "location", "visit", "went to", "been to",
-                                "footprint", "places", "traveled", "visited"]) {
+                                "footprint", "places", "traveled", "visited",
+                                "travel distance", "activity radius", "how far"]) {
             return .location(range: range)
         }
 

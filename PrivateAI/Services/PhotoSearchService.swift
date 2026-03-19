@@ -165,7 +165,7 @@ final class PhotoSearchService {
         }
 
         // --- Scenes ---
-        if containsAny(lower, ["海边", "沙滩", "海滩", "beach"]) {
+        if containsAny(lower, ["海边", "沙滩", "海滩", "beach", "大海", "海洋"]) {
             q.keywords.append(contentsOf: ["beach", "ocean", "sea", "coast"])
         }
         if containsAny(lower, ["山", "mountain", "爬山", "登山"]) {
@@ -177,27 +177,76 @@ final class PhotoSearchService {
         if containsAny(lower, ["日落", "sunset", "夕阳"]) {
             q.keywords.append(contentsOf: ["sunset", "sky"])
         }
+        if containsAny(lower, ["日出", "sunrise", "朝霞"]) {
+            q.keywords.append(contentsOf: ["sunrise", "sky", "morning"])
+        }
+        if containsAny(lower, ["风景", "景色", "scenery", "landscape", "美景"]) {
+            q.keywords.append(contentsOf: ["landscape", "scenery", "nature", "outdoor"])
+        }
+        if containsAny(lower, ["夜景", "夜晚", "night", "夜色", "灯光"]) {
+            q.keywords.append(contentsOf: ["night", "city", "light"])
+        }
+        if containsAny(lower, ["建筑", "大楼", "building", "architecture", "楼"]) {
+            q.keywords.append(contentsOf: ["building", "architecture", "city"])
+        }
+        if containsAny(lower, ["天空", "云", "sky", "cloud", "蓝天", "白云"]) {
+            q.keywords.append(contentsOf: ["sky", "cloud"])
+        }
+        if containsAny(lower, ["湖", "lake", "河", "river", "溪", "水"]) {
+            q.keywords.append(contentsOf: ["lake", "river", "water"])
+        }
+        if containsAny(lower, ["树", "forest", "森林", "tree", "林"]) {
+            q.keywords.append(contentsOf: ["tree", "forest", "nature"])
+        }
+        if containsAny(lower, ["城市", "city", "街", "street", "街道", "街拍"]) {
+            q.keywords.append(contentsOf: ["city", "street", "urban"])
+        }
+        if containsAny(lower, ["鸟", "bird", "飞鸟"]) {
+            q.keywords.append(contentsOf: ["bird", "animal"])
+        }
 
         // --- Food ---
-        if containsAny(lower, ["食物", "美食", "吃", "food", "餐", "饭"]) {
+        if containsAny(lower, ["食物", "美食", "吃", "food", "餐", "饭", "甜品", "蛋糕", "咖啡", "coffee"]) {
             q.keywords.append(contentsOf: ["food", "meal", "restaurant"])
         }
 
         // --- Known locations → geocode ---
         let knownLocations: [(keywords: [String], lat: Double, lon: Double, name: String)] = [
-            (["大峡谷", "grand canyon"], 36.1069, -112.1129, "Grand Canyon"),
-            (["纽约", "new york", "曼哈顿"], 40.7128, -74.0060, "New York"),
-            (["东京", "tokyo"], 35.6762, 139.6503, "Tokyo"),
-            (["巴黎", "paris", "埃菲尔"], 48.8566, 2.3522, "Paris"),
-            (["伦敦", "london"], 51.5074, -0.1278, "London"),
-            (["悉尼", "sydney"], -33.8688, 151.2093, "Sydney"),
-            (["北京", "天安门", "故宫"], 39.9042, 116.4074, "Beijing"),
-            (["上海", "外滩"], 31.2304, 121.4737, "Shanghai"),
-            (["洛杉矶", "los angeles", "好莱坞"], 34.0522, -118.2437, "Los Angeles"),
-            (["旧金山", "san francisco", "金门大桥"], 37.7749, -122.4194, "San Francisco"),
-            (["黄山"], 30.1314, 118.1661, "Huangshan"),
-            (["富士山", "fuji"], 35.3606, 138.7274, "Mt. Fuji"),
-            (["长城", "great wall"], 40.4319, 116.5704, "Great Wall"),
+            // China
+            (["北京", "天安门", "故宫"], 39.9042, 116.4074, "北京"),
+            (["上海", "外滩", "陆家嘴"], 31.2304, 121.4737, "上海"),
+            (["广州", "珠江"], 23.1291, 113.2644, "广州"),
+            (["深圳"], 22.5431, 114.0579, "深圳"),
+            (["杭州", "西湖"], 30.2741, 120.1551, "杭州"),
+            (["成都", "春熙路", "太古里"], 30.5728, 104.0668, "成都"),
+            (["西安", "兵马俑"], 34.3416, 108.9398, "西安"),
+            (["南京", "夫子庙", "中山陵"], 32.0603, 118.7969, "南京"),
+            (["重庆", "洪崖洞"], 29.5630, 106.5516, "重庆"),
+            (["武汉", "黄鹤楼"], 30.5928, 114.3055, "武汉"),
+            (["厦门", "鼓浪屿"], 24.4798, 118.0894, "厦门"),
+            (["三亚", "亚龙湾"], 18.2528, 109.5120, "三亚"),
+            (["丽江", "大理"], 26.8721, 100.2299, "丽江"),
+            (["黄山"], 30.1314, 118.1661, "黄山"),
+            (["青岛"], 36.0671, 120.3826, "青岛"),
+            (["苏州", "拙政园"], 31.2990, 120.5853, "苏州"),
+            (["长城", "great wall"], 40.4319, 116.5704, "长城"),
+            (["香港"], 22.3193, 114.1694, "香港"),
+            (["台北"], 25.0330, 121.5654, "台北"),
+            // International
+            (["东京", "tokyo"], 35.6762, 139.6503, "东京"),
+            (["大阪", "osaka"], 34.6937, 135.5023, "大阪"),
+            (["京都", "kyoto"], 35.0116, 135.7681, "京都"),
+            (["首尔", "seoul"], 37.5665, 126.9780, "首尔"),
+            (["曼谷", "bangkok"], 13.7563, 100.5018, "曼谷"),
+            (["新加坡", "singapore"], 1.3521, 103.8198, "新加坡"),
+            (["纽约", "new york", "曼哈顿"], 40.7128, -74.0060, "纽约"),
+            (["旧金山", "san francisco", "金门大桥"], 37.7749, -122.4194, "旧金山"),
+            (["洛杉矶", "los angeles", "好莱坞"], 34.0522, -118.2437, "洛杉矶"),
+            (["巴黎", "paris", "埃菲尔"], 48.8566, 2.3522, "巴黎"),
+            (["伦敦", "london"], 51.5074, -0.1278, "伦敦"),
+            (["悉尼", "sydney"], -33.8688, 151.2093, "悉尼"),
+            (["大峡谷", "grand canyon"], 36.1069, -112.1129, "大峡谷"),
+            (["富士山", "fuji"], 35.3606, 138.7274, "富士山"),
         ]
 
         for loc in knownLocations {

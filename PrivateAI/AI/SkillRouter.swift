@@ -522,7 +522,10 @@ struct SkillRouter {
         if containsAny(lower, ["照片", "拍的", "photo"]) &&
            containsAny(lower, ["在北京", "在上海", "在广州", "在深圳", "在杭州", "在成都",
                                 "在南京", "在西安", "在重庆", "在武汉", "在厦门", "在三亚",
-                                "在东京", "在巴黎", "在纽约", "在伦敦", "海边", "山上",
+                                "在东京", "在大阪", "在京都", "在首尔", "在曼谷", "在新加坡",
+                                "在巴黎", "在纽约", "在伦敦", "在旧金山", "在洛杉矶", "在悉尼",
+                                "在苏州", "在青岛", "在丽江", "在大理", "在黄山", "在香港", "在台北",
+                                "海边", "山上", "湖边",
                                 "收藏", "喜欢", "最爱"]) {
             return .photoSearch(query: text)
         }
@@ -530,13 +533,29 @@ struct SkillRouter {
         // --- Photo Search (content keyword + photo context) ---
         // Queries like "猫的照片", "美食的图片", "海边的自拍", "日落照片"
         // These contain a Vision-searchable content keyword + photo noun — route to search, not stats.
-        let photoContentKeywords = ["猫", "狗", "cat", "dog", "宠物", "动物",
-                                     "海边", "沙滩", "海滩", "beach", "山", "mountain",
-                                     "雪", "snow", "日落", "sunset", "夕阳",
-                                     "美食", "食物", "food",
-                                     "花", "flower", "植物",
-                                     "户外", "outdoor", "室内", "indoor",
-                                     "合照", "合影", "自拍", "selfie", "单人"]
+        let photoContentKeywords = [
+            // Animals
+            "猫", "狗", "cat", "dog", "宠物", "动物", "鸟", "bird",
+            // Nature scenes
+            "海边", "沙滩", "海滩", "beach", "大海", "海洋",
+            "山", "mountain", "爬山", "登山",
+            "雪", "snow", "滑雪",
+            "日落", "sunset", "夕阳", "日出", "sunrise", "朝霞",
+            "风景", "景色", "scenery", "landscape", "美景",
+            "天空", "云", "sky", "cloud", "蓝天",
+            "湖", "lake", "河", "river", "水",
+            "树", "forest", "森林",
+            // Urban scenes
+            "夜景", "night", "夜色", "灯光",
+            "建筑", "大楼", "building", "architecture",
+            "城市", "city", "街", "street", "街拍",
+            // Food & drink
+            "美食", "食物", "food", "甜品", "蛋糕", "咖啡",
+            // Flora & objects
+            "花", "flower", "植物",
+            "户外", "outdoor", "室内", "indoor",
+            // People
+            "合照", "合影", "自拍", "selfie", "单人"]
         if containsAny(lower, ["照片", "图片", "photo", "pic", "拍的"]) &&
            containsAny(lower, photoContentKeywords) {
             return .photoSearch(query: text)

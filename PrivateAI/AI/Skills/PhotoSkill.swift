@@ -248,15 +248,30 @@ struct PhotoSkill: ClawSkill {
 
     /// Content keywords that should trigger Vision-based CDPhotoIndex search.
     private static let contentKeywords: [String] = [
+        // People
         "自拍", "selfie", "合照", "合影", "group",
-        "猫", "cat", "狗", "dog", "动物", "animal", "宠物", "pet",
-        "海边", "沙滩", "海滩", "beach", "山", "mountain", "爬山",
-        "雪", "snow", "日落", "sunset", "夕阳",
-        "食物", "美食", "吃", "food", "餐",
+        "人", "人物", "face", "单人", "一个人",
+        // Animals
+        "猫", "cat", "狗", "dog", "动物", "animal", "宠物", "pet", "鸟", "bird",
+        // Nature scenes
+        "海边", "沙滩", "海滩", "beach", "大海", "海洋",
+        "山", "mountain", "爬山", "登山",
+        "雪", "snow", "滑雪",
+        "日落", "sunset", "夕阳", "日出", "sunrise", "朝霞",
+        "风景", "景色", "scenery", "landscape", "美景",
+        "天空", "云", "sky", "cloud", "蓝天", "白云",
+        "湖", "lake", "河", "river", "水",
+        "树", "forest", "森林",
+        // Urban scenes
+        "夜景", "night", "夜色", "灯光",
+        "建筑", "大楼", "building", "architecture",
+        "城市", "city", "街", "street", "街拍",
+        // Food & drink
+        "食物", "美食", "吃", "food", "餐", "甜品", "蛋糕", "咖啡",
+        // Flora & objects
         "花", "flower", "植物", "plant",
         "车", "car", "汽车",
         "户外", "outdoor", "室内", "indoor",
-        "人", "人物", "face", "单人", "一个人",
     ]
 
     private struct VisionSearchResult {
@@ -313,11 +328,20 @@ struct PhotoSkill: ClawSkill {
         let mapping: [(tags: Set<String>, label: String)] = [
             (["cat", "animal", "kitten"], "猫咪"),
             (["dog", "animal", "puppy"], "狗狗"),
+            (["bird", "animal"], "鸟"),
             (["animal"], "动物"),
             (["beach", "ocean", "sea", "coast"], "海边"),
             (["mountain", "hill", "hiking"], "山景"),
             (["snow", "winter", "skiing"], "雪景"),
             (["sunset", "sky"], "日落"),
+            (["sunrise", "morning"], "日出"),
+            (["landscape", "scenery", "nature"], "风景"),
+            (["night", "light"], "夜景"),
+            (["building", "architecture"], "建筑"),
+            (["city", "street", "urban"], "城市"),
+            (["sky", "cloud"], "天空"),
+            (["lake", "river", "water"], "水景"),
+            (["tree", "forest"], "树林"),
             (["food", "meal", "restaurant"], "美食"),
             (["flower", "plant", "garden"], "花草"),
             (["car", "vehicle"], "车辆"),
@@ -491,9 +515,11 @@ struct PhotoSkill: ClawSkill {
         · 「上周拍的照片」— 按时间搜索
         · 「我收藏的照片」— 查看收藏
         · 「找自拍照片」— 人脸识别搜索
-        · 「海边的照片」— AI 场景识别
-        · 「美食照片」— AI 内容分类
-        · 「找猫的照片」— AI 物体识别
+        · 「海边的照片」— 场景搜索
+        · 「风景照片」「夜景照片」— 场景类型
+        · 「美食照片」「咖啡照片」— 内容分类
+        · 「找猫的照片」「鸟的照片」— 物体识别
+        · 「建筑照片」「街拍」— 城市场景
 
         💡 我可以根据时间、地点、内容和人脸帮你找到照片。
         需要先在「设置」中完成照片索引才能使用 AI 内容搜索。

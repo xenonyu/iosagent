@@ -69,12 +69,17 @@ struct LocationSkill: ClawSkill {
             sections.append(commuteSection)
         }
 
-        // 7. Period-over-period comparison (only for multi-day ranges)
+        // 7. Calendar-location correlation: explain WHY you visited each place
+        if let calendarSection = buildCalendarLocationDiary(records: records, profiles: profiles, range: range, context: context) {
+            sections.append(calendarSection)
+        }
+
+        // 8. Period-over-period comparison (only for multi-day ranges)
         if let comparison = buildPeriodComparison(currentRecords: records, currentProfiles: profiles, range: range, context: context) {
             sections.append(comparison)
         }
 
-        // 8. Activity summary
+        // 9. Activity summary
         let summary = buildActivitySummary(records: records, range: range)
         sections.append(summary)
 
@@ -861,6 +866,135 @@ struct LocationSkill: ClawSkill {
         case 7: return "周六"
         default: return ""
         }
+    }
+
+    // MARK: - Calendar-Location Correlation
+
+    /// Cross-references location visits with calendar events to explain WHY the user
+    /// was at each place. Matches location records to events by time overlap (within 30 min buffer).
+    /// Produces a "足迹日记" that tells the story behind each visit.
+    private func buildCalendarLocationDiary(
+        records: [LocationRecord],
+        profiles: [PlaceProfile],
+        range: QueryTimeRange,
+        context: SkillContext
+    ) -> String? {
+        let interval = range.interval
+        let calendarEvents = context.calendarService.fetchEvents(from: interval.start, to: interval.end)
+
+        // Only timed events — all-day events don't correlate meaningfully with location
+        let timedEvents = calendarEvents.filter { !$0.isAllDay && !$0.title.isEmpty }
+        guard !timedEvents.isEmpty else { return nil }
+
+        let cal = Calendar.current
+        let timeFmt = DateFormatter()
+        timeFmt.dateFormat = "HH:mm"
+        let dateFmt = DateFormatter()
+        dateFmt.dateFormat = "M月d日"
+        dateFmt.locale = Locale(identifier: "zh_CN")
+
+        // Buffer: a location record within 30 min before event start or during event matches
+        let bufferSeconds: TimeInterval = 30 * 60
+
+        // For each place profile, find matching calendar events
+        struct PlaceEventMatch {
+            let placeName: String
+            var events: [(event: CalendarEventItem, locationTime: Date)] = []
+        }
+
+        var matches: [PlaceEventMatch] = []
+
+        for profile in profiles {
+            // Get all records belonging to this place
+            let placeRecords = findRecordsForProfile(profile, in: records)
+            guard !placeRecords.isEmpty else { continue }
+
+            var matched: [(CalendarEventItem, Date)] = []
+            var matchedEventIds = Set<String>()
+
+            for record in placeRecords {
+                for event in timedEvents {
+                    guard !matchedEventIds.contains(event.id) else { continue }
+
+                    // Check time overlap: record time falls within [event.start - buffer, event.end + buffer]
+                    let eventWindowStart = event.startDate.addingTimeInterval(-bufferSeconds)
+                    let eventWindowEnd = event.endDate.addingTimeInterval(bufferSeconds)
+
+                    if record.timestamp >= eventWindowStart && record.timestamp <= eventWindowEnd {
+                        matched.append((event, record.timestamp))
+                        matchedEventIds.insert(event.id)
+                    }
+                }
+            }
+
+            if !matched.isEmpty {
+                var pm = PlaceEventMatch(placeName: profile.name)
+                pm.events = matched.sorted { $0.1 < $1.1 }
+                matches.append(pm)
+            }
+        }
+
+        guard !matches.isEmpty else { return nil }
+
+        // Build the diary section
+        var lines: [String] = ["📖 足迹日记"]
+
+        let isSingleDay = (range == .today || range == .yesterday)
+        var totalShown = 0
+        let maxPlaces = 5
+        let maxEventsPerPlace = 3
+
+        for match in matches.prefix(maxPlaces) {
+            let placeHeader: String
+            if match.events.count == 1 {
+                placeHeader = "📍 \(match.placeName)"
+            } else {
+                placeHeader = "📍 \(match.placeName)（\(match.events.count) 个日程）"
+            }
+            lines.append(placeHeader)
+
+            for (event, locTime) in match.events.prefix(maxEventsPerPlace) {
+                let timeStr = "\(timeFmt.string(from: event.startDate))–\(timeFmt.string(from: event.endDate))"
+                let datePrefix = isSingleDay ? "" : "\(dateFmt.string(from: event.startDate)) "
+
+                var eventLine = "  \(datePrefix)\(timeStr) \(event.title)"
+
+                // Add event location if it exists and differs from the place name
+                if !event.location.isEmpty && !match.placeName.contains(event.location)
+                    && !event.location.contains(match.placeName) {
+                    eventLine += "（\(event.location)）"
+                }
+
+                lines.append(eventLine)
+                totalShown += 1
+            }
+
+            if match.events.count > maxEventsPerPlace {
+                lines.append("  …还有 \(match.events.count - maxEventsPerPlace) 个日程")
+            }
+        }
+
+        // Skip section if too few correlations (might be noise)
+        guard totalShown >= 1 else { return nil }
+
+        // Add insight based on correlation patterns
+        let totalEventsMatched = matches.reduce(0) { $0 + $1.events.count }
+        let totalTimedEvents = timedEvents.count
+        let correlationRate = totalTimedEvents > 0 ? Double(totalEventsMatched) / Double(totalTimedEvents) : 0
+
+        if correlationRate >= 0.5 && totalEventsMatched >= 3 {
+            lines.append("")
+            lines.append("💡 你的日程和出行高度关联，\(Int(correlationRate * 100))% 的日程都有对应的位置记录")
+        } else if matches.count >= 2 {
+            // Find the place with most calendar events — it's likely a meeting hub
+            if let busiest = matches.max(by: { $0.events.count < $1.events.count }),
+               busiest.events.count >= 2 {
+                lines.append("")
+                lines.append("💡 \(busiest.placeName)是你最主要的日程集中地")
+            }
+        }
+
+        return lines.joined(separator: "\n")
     }
 
     // MARK: - Period-over-Period Comparison

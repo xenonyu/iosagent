@@ -252,8 +252,15 @@ struct LocationSkill: ClawSkill {
         } else if cal.isDateInYesterday(date) {
             return "  昨天"
         }
-        // For older dates, show nothing to keep it clean
-        return ""
+        // For older dates, show the actual date so weekly/monthly queries are useful
+        let days = cal.dateComponents([.day], from: date, to: Date()).day ?? 0
+        if days <= 7 {
+            return "  \(days)天前"
+        }
+        let fmt = DateFormatter()
+        fmt.dateFormat = "M月d日"
+        fmt.locale = Locale(identifier: "zh_CN")
+        return "  \(fmt.string(from: date))"
     }
 }
 

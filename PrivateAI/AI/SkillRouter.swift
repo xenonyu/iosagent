@@ -275,15 +275,21 @@ struct SkillRouter {
 
         // --- Exercise / Fitness ---
         if containsAny(lower, ["运动", "锻炼", "健身", "跑步", "步数", "走路", "步行",
-                                "exercise", "workout", "steps", "run", "walk", "fitness", "calories"]) {
+                                "运动量", "活动量", "消耗", "有氧", "骑车", "骑行",
+                                "游泳", "爬山", "瑜伽", "打球", "散步", "徒步", "登山",
+                                "跳绳", "举铁", "撸铁", "拉伸", "仰卧起坐", "俯卧撑",
+                                "exercise", "workout", "steps", "run", "walk", "fitness",
+                                "calories", "hiking", "swim", "cycling", "yoga"]) {
             return .exercise(range: range)
         }
 
         // --- Location / Places ---
         if containsAny(lower, ["去过", "去哪", "哪里", "地点", "位置", "地方", "在哪",
                                 "足迹", "轨迹", "常去", "经常去", "出没", "到过", "待过",
+                                "出门", "外出", "逛了", "逛街", "路过", "出去了",
+                                "去了哪", "跑哪", "溜达", "遛弯",
                                 "where", "place", "location", "visit", "went to", "been to",
-                                "footprint", "places", "traveled"]) {
+                                "footprint", "places", "traveled", "visited"]) {
             return .location(range: range)
         }
 
@@ -302,13 +308,17 @@ struct SkillRouter {
 
         // --- Summary ---
         if containsAny(lower, ["总结", "回顾", "概括", "做了什么", "发生了什么",
-                                "summary", "recap", "review", "what happened", "what did i"]) {
+                                "过得怎么样", "过得如何", "怎么过的", "生活怎么样",
+                                "一天过得", "这段时间", "近况",
+                                "summary", "recap", "review", "what happened", "what did i",
+                                "how was my", "how have i been"]) {
             return .summary(range: range)
         }
 
         // --- Health Metrics ---
-        if containsAny(lower, ["睡眠", "睡了", "心率", "血压", "卡路里",
-                                "sleep", "heart rate", "calories", "health"]) {
+        if containsAny(lower, ["睡眠", "睡了", "睡得", "睡觉", "入睡", "失眠", "熬夜", "早睡", "晚睡",
+                                "心率", "血压", "卡路里", "健康", "血氧", "脉搏",
+                                "sleep", "heart rate", "calories", "health", "slept"]) {
             let metric = extractHealthMetric(from: lower)
             return .health(metric: metric, range: range)
         }
@@ -319,7 +329,8 @@ struct SkillRouter {
         }
 
         // --- Weekly Insight ---
-        if containsAny(lower, ["本周总结", "这周怎么样", "周报", "weekly", "本周情况", "这周总结"]) {
+        if containsAny(lower, ["本周总结", "这周怎么样", "周报", "weekly", "本周情况", "这周总结",
+                                "这周过得", "本周回顾", "这礼拜", "weekly review"]) {
             return .weeklyInsight
         }
 
@@ -398,15 +409,17 @@ struct SkillRouter {
         // --- Calendar ---
         if containsAny(lower, ["日历", "行程", "日程", "计划", "会议", "约会", "活动",
                                 "忙不忙", "忙吗", "有空", "空闲", "空不空", "安排", "待办",
+                                "有啥事", "啥安排", "什么安排", "有没有会", "开会",
                                 "calendar", "schedule", "meeting", "event", "appointment",
-                                "busy", "free time", "available"]) {
+                                "busy", "free time", "available", "agenda"]) {
             return .calendar(range: range)
         }
 
         // --- Calendar: future day + generic question → calendar intent ---
         // e.g. "明天有什么事", "后天干嘛", "后天有什么"
         if range.isFuture && containsAny(lower, ["有什么", "干嘛", "干什么", "做什么",
-                                                   "什么事", "有事", "有没有",
+                                                   "什么事", "有事", "有没有", "啥事",
+                                                   "有啥", "怎么安排",
                                                    "what's on", "what do i have"]) {
             return .calendar(range: range)
         }
@@ -435,7 +448,8 @@ struct SkillRouter {
 
         // --- Photos (stats) ---
         if containsAny(lower, ["照片", "拍了", "拍过", "图片", "相册", "记录了几张",
-                                "photo", "picture", "shot", "camera", "image"]) {
+                                "拍照", "自拍", "截图", "相机",
+                                "photo", "picture", "shot", "camera", "image", "selfie"]) {
             return .photos(range: range)
         }
 
@@ -500,8 +514,8 @@ struct SkillRouter {
     // MARK: - Health Metric
 
     private static func extractHealthMetric(from text: String) -> String {
-        if containsAny(text, ["睡眠", "睡了", "sleep"]) { return "sleep" }
-        if containsAny(text, ["心率", "heart rate"]) { return "heartRate" }
+        if containsAny(text, ["睡眠", "睡了", "睡得", "睡觉", "入睡", "失眠", "熬夜", "早睡", "晚睡", "sleep", "slept"]) { return "sleep" }
+        if containsAny(text, ["心率", "脉搏", "heart rate"]) { return "heartRate" }
         if containsAny(text, ["步数", "走路", "步行", "steps", "walk"]) { return "steps" }
         if containsAny(text, ["卡路里", "热量", "calories"]) { return "calories" }
         return "general"

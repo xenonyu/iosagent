@@ -13,7 +13,29 @@ struct CalendarSkill: ClawSkill {
 
     func execute(intent: QueryIntent, context: SkillContext, completion: @escaping (String) -> Void) {
         guard case .calendar(let range) = intent else { return }
-        completion(buildResponse(range: range, context: context))
+
+        // For today's schedule, enrich with health context (sleep + activity readiness)
+        let cal = Calendar.current
+        let isTodayQuery = (range == .today)
+        if isTodayQuery && context.healthService.isHealthDataAvailable {
+            let yesterday = cal.date(byAdding: .day, value: -1, to: Date()) ?? Date()
+            context.healthService.fetchDailySummary(for: yesterday) { sleepSummary in
+                context.healthService.fetchDailySummary(for: Date()) { todaySummary in
+                    var response = self.buildResponse(range: range, context: context)
+                    let healthContext = self.buildHealthReadiness(
+                        lastNightSleep: sleepSummary,
+                        todayActivity: todaySummary,
+                        events: context.calendarService.todayEvents()
+                    )
+                    if !healthContext.isEmpty {
+                        response += "\n\n" + healthContext
+                    }
+                    completion(response)
+                }
+            }
+        } else {
+            completion(buildResponse(range: range, context: context))
+        }
     }
 
     // MARK: - Time-of-Day Filter
@@ -913,5 +935,94 @@ struct CalendarSkill: ClawSkill {
         let singleLine = trimmed.components(separatedBy: .newlines).joined(separator: " ")
         if singleLine.count <= 50 { return singleLine }
         return String(singleLine.prefix(47)) + "..."
+    }
+
+    // MARK: - Health Readiness (Cross-Data Insight)
+
+    /// Builds a brief health readiness note for today's calendar view.
+    /// Connects last night's sleep and today's activity with schedule density
+    /// to provide a holistic "how ready am I" insight.
+    private func buildHealthReadiness(
+        lastNightSleep: HealthSummary,
+        todayActivity: HealthSummary,
+        events: [CalendarEventItem]
+    ) -> String {
+        let sleepHours = lastNightSleep.sleepHours
+        let steps = todayActivity.steps
+        let exerciseMin = todayActivity.exerciseMinutes
+
+        // Need at least some health data to show this section
+        guard sleepHours > 0 || steps > 100 || exerciseMin > 0 else { return "" }
+
+        var lines: [String] = []
+        lines.append("💪 今日状态速览：")
+
+        // --- Sleep quality assessment ---
+        if sleepHours > 0 {
+            let sleepEmoji: String
+            let sleepVerdict: String
+            if sleepHours >= 7.5 {
+                sleepEmoji = "🟢"
+                sleepVerdict = "充足"
+            } else if sleepHours >= 6.0 {
+                sleepEmoji = "🟡"
+                sleepVerdict = "尚可"
+            } else {
+                sleepEmoji = "🔴"
+                sleepVerdict = "不足"
+            }
+            var sleepLine = "  \(sleepEmoji) 昨晚睡眠 \(String(format: "%.1f", sleepHours)) 小时（\(sleepVerdict)）"
+
+            // Add phase detail if available
+            let deep = lastNightSleep.sleepDeepHours
+            let rem = lastNightSleep.sleepREMHours
+            if deep > 0 || rem > 0 {
+                var phases: [String] = []
+                if deep > 0 { phases.append("深睡 \(String(format: "%.1f", deep))h") }
+                if rem > 0 { phases.append("REM \(String(format: "%.1f", rem))h") }
+                sleepLine += "  " + phases.joined(separator: " · ")
+            }
+            lines.append(sleepLine)
+        }
+
+        // --- Today's activity progress ---
+        if steps > 100 || exerciseMin > 0 {
+            var actParts: [String] = []
+            if steps > 100 {
+                actParts.append("👟 \(Int(steps).formatted()) 步")
+            }
+            if exerciseMin > 0 {
+                actParts.append("🏃 \(Int(exerciseMin)) 分钟运动")
+            }
+            lines.append("  " + actParts.joined(separator: "  "))
+        }
+
+        // --- Cross-data insight: health × schedule density ---
+        let timedEvents = events.filter { !$0.isAllDay }
+        let meetingCount = timedEvents.count
+        let totalMeetingMin = timedEvents.reduce(0.0) { $0 + $1.duration } / 60.0
+        let isBusyDay = meetingCount >= 4 || totalMeetingMin >= 300
+
+        if isBusyDay && sleepHours > 0 && sleepHours < 6.0 {
+            lines.append("  ⚡ 今天有 \(meetingCount) 个安排但昨晚睡眠偏少，记得安排小憩和补充水分")
+        } else if isBusyDay && sleepHours >= 7.5 {
+            lines.append("  ✅ 睡眠充足，精力应该够应对今天的 \(meetingCount) 个安排")
+        } else if !isBusyDay && sleepHours > 0 && sleepHours < 6.0 {
+            lines.append("  💡 昨晚睡得少，好在今天不太忙，可以找时间补个午休")
+        } else if meetingCount == 0 && sleepHours >= 7.0 {
+            lines.append("  🌟 精力充沛又没有会议，适合做需要专注的事")
+        }
+
+        // --- Resting heart rate insight (if abnormally high, may indicate fatigue) ---
+        let rhr = todayActivity.restingHeartRate
+        if rhr > 0 {
+            if rhr > 80 {
+                lines.append("  ❤️ 静息心率偏高（\(Int(rhr)) bpm），身体可能需要更多休息")
+            } else if rhr > 0 && rhr <= 55 {
+                lines.append("  ❤️ 静息心率 \(Int(rhr)) bpm，心肺状态很好")
+            }
+        }
+
+        return lines.joined(separator: "\n")
     }
 }

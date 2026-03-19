@@ -191,6 +191,7 @@ final class ContextMemory {
         switch intent {
         case .exercise(let r, _): return r
         case .location(let r):   return r
+        case .locationPlace(_, let r): return r
         case .mood(let r):       return r
         case .summary(let r):    return r
         case .events(let r):     return r
@@ -208,6 +209,7 @@ final class ContextMemory {
         switch intent {
         case .exercise(_, let f): return .exercise(range: range, workoutFilter: f)
         case .location:          return .location(range: range)
+        case .locationPlace(let n, _): return .locationPlace(name: n, range: range)
         case .mood:              return .mood(range: range)
         case .summary:           return .summary(range: range)
         case .events:            return .events(range: range)
@@ -223,6 +225,7 @@ final class ContextMemory {
         switch intent {
         case .exercise(_, let f): return .exercise(range: range, workoutFilter: f)
         case .location:         return .location(range: range)
+        case .locationPlace(let n, _): return .locationPlace(name: n, range: range)
         case .mood:             return .mood(range: range)
         case .summary:          return .summary(range: range)
         case .events:           return .events(range: range)

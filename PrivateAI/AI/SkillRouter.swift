@@ -6,6 +6,7 @@ enum QueryIntent {
     case exercise(range: QueryTimeRange, workoutFilter: String?)
     case exerciseLastOccurrence(workoutFilter: String?)
     case location(range: QueryTimeRange)
+    case locationPlace(name: String, range: QueryTimeRange)
     case mood(range: QueryTimeRange)
     case recommendation(topic: String)
     case summary(range: QueryTimeRange)
@@ -330,6 +331,12 @@ struct SkillRouter {
             // intuitively mean today, not last week. Same pattern as calendar (line 578).
             let exRange = hasExplicitTimeReference(lower) ? range : .today
             return .exercise(range: exRange, workoutFilter: filter)
+        }
+
+        // --- Place-specific location query (must come before generic location) ---
+        // Detects queries about a specific place: "去过星巴克几次", "上次去公司", "多久没去医院了"
+        if let placeName = extractPlaceName(from: lower) {
+            return .locationPlace(name: placeName, range: range)
         }
 
         // --- Location / Places ---
@@ -1126,6 +1133,57 @@ struct SkillRouter {
         case "taiChi":      return [73]
         default:            return []
         }
+    }
+
+    // MARK: - Place Name Extraction
+
+    /// Extracts a specific place name from queries like "去过星巴克几次", "上次去公司是什么时候",
+    /// "多久没去医院了", "在咖啡店待了多久". Returns nil for generic location queries
+    /// (e.g. "去了哪些地方") which should fall through to the normal .location handler.
+    private static func extractPlaceName(from text: String) -> String? {
+        // Regex patterns that capture a place name (named group "place").
+        // Order: most specific patterns first to avoid false positives.
+        let patterns: [(regex: String, group: Int)] = [
+            // "去过X几次" / "去了X几次" / "去X几次了"
+            (#"去(?:过|了)?(.{1,12}?)几次"#, 1),
+            // "上次去X是" / "上次去X" / "最后一次去X"
+            (#"(?:上次|上一次|最后一次)去(.{1,12}?)(?:是|$)"#, 1),
+            // "多久没去X了" / "多长时间没去X"
+            (#"(?:多久|多长时间)没去(.{1,12}?)了?"#, 1),
+            // "常去X吗" / "经常去X吗"
+            (#"(?:常|经常)去(.{1,12}?)(?:吗|嘛|么|$)"#, 1),
+            // "在X待了多久" / "在X呆了多久"
+            (#"在(.{1,12}?)(?:待|呆)了"#, 1),
+            // "去过X吗" / "去过X没"
+            (#"去过(.{1,12}?)(?:吗|没|嘛|么)"#, 1),
+            // "X去过吗" / "X去了吗" — place at the beginning
+            (#"^(.{2,8}?)去(?:过|了)(?:吗|没|嘛|几次)"#, 1),
+        ]
+
+        for (pattern, group) in patterns {
+            guard let regex = try? NSRegularExpression(pattern: pattern, options: []),
+                  let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+                  match.numberOfRanges > group,
+                  let nameRange = Range(match.range(at: group), in: text) else { continue }
+
+            let candidate = String(text[nameRange])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                // Remove common particles and time words that aren't part of a place name
+                .replacingOccurrences(of: "了", with: "")
+                .replacingOccurrences(of: "过", with: "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+
+            // Validate: must be 1-10 chars, not a generic location word
+            let genericWords: Set<String> = [
+                "哪", "哪里", "哪些", "哪儿", "什么", "那里",
+                "地方", "地点", "这里", "那边", "外面", ""
+            ]
+            if candidate.count >= 1 && candidate.count <= 10 && !genericWords.contains(candidate) {
+                return candidate
+            }
+        }
+
+        return nil
     }
 
     // MARK: - Health Metric

@@ -8,22 +8,30 @@ struct LocationSkill: ClawSkill {
     let id = "location"
 
     func canHandle(intent: QueryIntent) -> Bool {
-        if case .location = intent { return true }
-        return false
+        switch intent {
+        case .location, .locationPlace: return true
+        default: return false
+        }
     }
 
     func execute(intent: QueryIntent, context: SkillContext, completion: @escaping (String) -> Void) {
-        guard case .location(let range) = intent else { return }
-        let interval = range.interval
-        let records = CDLocationRecord.fetch(from: interval.start, to: interval.end, in: context.coreDataContext)
+        switch intent {
+        case .locationPlace(let name, let range):
+            respondPlaceSearch(name: name, range: range, context: context, completion: completion)
+        case .location(let range):
+            let interval = range.interval
+            let records = CDLocationRecord.fetch(from: interval.start, to: interval.end, in: context.coreDataContext)
 
-        if records.isEmpty {
-            completion(buildEmptyLocationResponse(range: range, context: context))
-            return
+            if records.isEmpty {
+                completion(buildEmptyLocationResponse(range: range, context: context))
+                return
+            }
+
+            let response = buildInsightfulResponse(records: records, range: range, context: context)
+            completion(response)
+        default:
+            break
         }
-
-        let response = buildInsightfulResponse(records: records, range: range, context: context)
-        completion(response)
     }
 
     // MARK: - Empty State
@@ -99,6 +107,187 @@ struct LocationSkill: ClawSkill {
         @unknown default:
             return "📍 \(range.label)暂无位置记录。\n请前往「设置 → iosclaw → 位置」确认权限已开启。"
         }
+    }
+
+    // MARK: - Place-Specific Search
+
+    /// Responds to queries about a specific place: "去过星巴克几次", "上次去公司是什么时候", etc.
+    /// Searches all location records for matching place names and builds a focused profile.
+    private func respondPlaceSearch(name: String, range: QueryTimeRange, context: SkillContext, completion: @escaping (String) -> Void) {
+        // Search a wide window (up to 180 days) regardless of the parsed time range,
+        // so we can answer "上次去X" even if no explicit time reference was given.
+        let cal = Calendar.current
+        let searchStart = cal.date(byAdding: .day, value: -180, to: Date()) ?? Date()
+        let allRecords = CDLocationRecord.fetch(from: searchStart, to: Date(), in: context.coreDataContext)
+
+        // Fuzzy match: record's displayName contains the search term, or vice versa
+        let matches = allRecords.filter { record in
+            let display = record.displayName.lowercased()
+            let query = name.lowercased()
+            return display.contains(query) || query.contains(display)
+        }.sorted { $0.timestamp > $1.timestamp } // newest first
+
+        if matches.isEmpty {
+            var msg = "📍 在最近 180 天的位置记录中，没有找到「\(name)」相关的地点。\n"
+            msg += "\n可能的原因："
+            msg += "\n• 该地点名称和记录中的不完全一致（试试更短的关键词）"
+            msg += "\n• 去的时候 iosclaw 没有在后台运行"
+            msg += "\n• 短距离移动可能未被记录（iosclaw 使用省电模式追踪）"
+
+            if !allRecords.isEmpty {
+                // Suggest similar places
+                let allNames = Set(allRecords.map { $0.displayName })
+                    .filter { $0 != "未知地点" && !$0.isEmpty }
+                let similar = allNames.filter { placeName in
+                    // Check if any character overlap (crude similarity)
+                    let query = name.lowercased()
+                    let place = placeName.lowercased()
+                    return query.contains(String(place.prefix(2))) || place.contains(String(query.prefix(2)))
+                }.prefix(3)
+
+                if !similar.isEmpty {
+                    msg += "\n\n💡 你是不是想找："
+                    for s in similar {
+                        msg += "\n  • \(s)"
+                    }
+                }
+            }
+            completion(msg)
+            return
+        }
+
+        // Build the place report
+        var lines: [String] = []
+        let totalVisits = matches.count
+        let uniqueDays = Set(matches.map { cal.startOfDay(for: $0.timestamp) })
+        let displayName = mostCommonName(in: matches)
+
+        // Header
+        lines.append("📍 关于「\(displayName)」的位置记录\n")
+
+        // Visit count
+        lines.append("📊 共到访 **\(totalVisits) 次**，涉及 \(uniqueDays.count) 天")
+
+        // Time span
+        let dateFmt = DateFormatter()
+        dateFmt.dateFormat = "M月d日"
+        dateFmt.locale = Locale(identifier: "zh_CN")
+        if let first = matches.last, let last = matches.first {
+            if cal.isDate(first.timestamp, inSameDayAs: last.timestamp) {
+                lines.append("📅 记录日期：\(dateFmt.string(from: first.timestamp))")
+            } else {
+                lines.append("📅 首次到访：\(dateFmt.string(from: first.timestamp))")
+                lines.append("📅 最近一次：\(dateFmt.string(from: last.timestamp))")
+            }
+        }
+
+        // Days since last visit
+        if let lastVisit = matches.first {
+            let daysSince = cal.dateComponents([.day], from: cal.startOfDay(for: lastVisit.timestamp), to: cal.startOfDay(for: Date())).day ?? 0
+            if daysSince == 0 {
+                lines.append("⏰ 今天去过")
+            } else if daysSince == 1 {
+                lines.append("⏰ 昨天去过")
+            } else if daysSince <= 7 {
+                lines.append("⏰ \(daysSince) 天前去过")
+            } else if daysSince <= 30 {
+                lines.append("⏰ \(daysSince / 7) 周前去过")
+            } else {
+                lines.append("⏰ 已经 \(daysSince) 天没去了")
+            }
+        }
+
+        // Visit frequency pattern (only if enough data)
+        if uniqueDays.count >= 3 {
+            let sortedDays = uniqueDays.sorted()
+            var gaps: [Int] = []
+            for i in 0..<(sortedDays.count - 1) {
+                let gap = cal.dateComponents([.day], from: sortedDays[i], to: sortedDays[i + 1]).day ?? 0
+                if gap > 0 { gaps.append(gap) }
+            }
+            if !gaps.isEmpty {
+                let avgGap = gaps.reduce(0, +) / gaps.count
+                let freqDesc: String
+                if avgGap <= 1 {
+                    freqDesc = "几乎每天"
+                } else if avgGap <= 3 {
+                    freqDesc = "每隔 \(avgGap) 天左右"
+                } else if avgGap <= 8 {
+                    freqDesc = "大约每周 \(max(1, 7 / avgGap)) 次"
+                } else if avgGap <= 16 {
+                    freqDesc = "大约两周一次"
+                } else if avgGap <= 35 {
+                    freqDesc = "大约每月一次"
+                } else {
+                    freqDesc = "偶尔去一次"
+                }
+                lines.append("🔄 到访频率：\(freqDesc)")
+            }
+        }
+
+        // Time-of-day pattern
+        var morningCount = 0, afternoonCount = 0, eveningCount = 0, nightCount = 0
+        for r in matches {
+            let hour = cal.component(.hour, from: r.timestamp)
+            switch hour {
+            case 6..<12:  morningCount += 1
+            case 12..<18: afternoonCount += 1
+            case 18..<22: eveningCount += 1
+            default:      nightCount += 1
+            }
+        }
+        if matches.count >= 3 {
+            let periods: [(String, Int)] = [
+                ("上午", morningCount), ("下午", afternoonCount),
+                ("傍晚", eveningCount), ("夜间", nightCount)
+            ].filter { $0.1 > 0 }.sorted { $0.1 > $1.1 }
+
+            if let top = periods.first, Double(top.1) / Double(matches.count) >= 0.4 {
+                lines.append("🕐 通常在\(top.0)到访")
+            }
+        }
+
+        // Day-of-week pattern
+        if uniqueDays.count >= 5 {
+            var weekdayVisits = 0, weekendVisits = 0
+            for day in uniqueDays {
+                let wd = cal.component(.weekday, from: day)
+                if wd == 1 || wd == 7 { weekendVisits += 1 } else { weekdayVisits += 1 }
+            }
+            let total = weekdayVisits + weekendVisits
+            if total >= 3 {
+                let weekendRatio = Double(weekendVisits) / Double(total)
+                if weekendRatio >= 0.6 {
+                    lines.append("📆 以周末到访为主")
+                } else if weekendRatio <= 0.2 && weekdayVisits >= 3 {
+                    lines.append("📆 以工作日到访为主")
+                }
+            }
+        }
+
+        // Recent visit timeline (last 5 visits)
+        let recentVisits = Array(matches.prefix(5))
+        if recentVisits.count >= 2 {
+            lines.append("\n🕰️ 最近到访记录：")
+            let timeFmt = DateFormatter()
+            timeFmt.dateFormat = "M月d日（E）HH:mm"
+            timeFmt.locale = Locale(identifier: "zh_CN")
+            for r in recentVisits {
+                lines.append("  • \(timeFmt.string(from: r.timestamp))")
+            }
+            if matches.count > 5 {
+                lines.append("  …还有 \(matches.count - 5) 条更早的记录")
+            }
+        }
+
+        completion(lines.joined(separator: "\n"))
+    }
+
+    /// Returns the most common displayName among a set of records.
+    private func mostCommonName(in records: [LocationRecord]) -> String {
+        var counts: [String: Int] = [:]
+        for r in records { counts[r.displayName, default: 0] += 1 }
+        return counts.max(by: { $0.value < $1.value })?.key ?? records.first?.displayName ?? "未知"
     }
 
     // MARK: - Response Builder

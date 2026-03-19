@@ -228,8 +228,8 @@ final class ChatViewModel: ObservableObject {
         switch intent {
         case .exercise, .health:
             return ["今天走了多少步？", "这周运动了多少？", "帮我记录一次跑步"]
-        case .location:
-            return ["这周去了哪些地方？", "帮我总结今天的行程"]
+        case .location, .locationPlace:
+            return ["这周去了哪些地方？", "去过星巴克几次？", "帮我总结今天的行程"]
         case .mood:
             return ["帮我记录今天心情", "这周心情怎么样？", "给我一句鼓励"]
         case .calendar:

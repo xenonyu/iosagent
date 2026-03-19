@@ -16,6 +16,19 @@ struct MessageBubble: View {
         }
     }
 
+    // MARK: - Markdown Rendering
+
+    /// Renders text with Markdown support (bold, italic, etc.).
+    /// Falls back to plain text if Markdown parsing fails.
+    private func markdownText(_ content: String, foregroundColor: Color = .primary) -> Text {
+        // AttributedString(markdown:) supports **bold**, *italic*, ~strikethrough~, `code`
+        if let attributed = try? AttributedString(markdown: content,
+                                                   options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)) {
+            return Text(attributed)
+        }
+        return Text(content)
+    }
+
     // MARK: - User Bubble
 
     private var userBubble: some View {
@@ -63,7 +76,7 @@ struct MessageBubble: View {
                 }
 
             VStack(alignment: .leading, spacing: 4) {
-                Text(message.content)
+                markdownText(message.content)
                     .font(.body)
                     .foregroundColor(.primary)
                     .padding(.horizontal, 14)

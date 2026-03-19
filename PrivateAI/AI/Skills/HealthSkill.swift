@@ -435,6 +435,89 @@ struct HealthSkill: ClawSkill {
             }
         }
 
+        // --- Cross-metric: Sleep ↔ Recovery Correlation ---
+        // Correlate sleep quality with HRV and resting heart rate to show
+        // how sleep physically affects the body's recovery state.
+        if sleepDays.count >= 3 {
+            let pairedHRV = summaries.filter { $0.sleepHours > 0 && $0.hrv > 0 }
+            let pairedRHR = summaries.filter { $0.sleepHours > 0 && $0.restingHeartRate > 0 }
+
+            var correlationInsights: [String] = []
+
+            // HRV vs sleep: split into good-sleep (≥7h) and poor-sleep (<7h) nights
+            if pairedHRV.count >= 3 {
+                let medianSleep = pairedHRV.map(\.sleepHours).sorted()[pairedHRV.count / 2]
+                let wellSlept = pairedHRV.filter { $0.sleepHours >= medianSleep }
+                let poorSlept = pairedHRV.filter { $0.sleepHours < medianSleep }
+
+                if !wellSlept.isEmpty && !poorSlept.isEmpty {
+                    let hrvOnGood = wellSlept.reduce(0) { $0 + $1.hrv } / Double(wellSlept.count)
+                    let hrvOnPoor = poorSlept.reduce(0) { $0 + $1.hrv } / Double(poorSlept.count)
+                    let diff = hrvOnGood - hrvOnPoor
+
+                    if abs(diff) >= 3 {
+                        if diff > 0 {
+                            correlationInsights.append("📳 睡够的夜晚 HRV 平均高 \(Int(diff)) ms — 充足睡眠显著提升了你的自主神经恢复能力。")
+                        } else {
+                            correlationInsights.append("📳 睡得少的夜晚 HRV 反而高 \(Int(-diff)) ms — 可能与运动疲劳导致的深度补偿性恢复有关。")
+                        }
+                    }
+                }
+            }
+
+            // Resting HR vs sleep: lower resting HR on well-rested days = better recovery
+            if pairedRHR.count >= 3 {
+                let medianSleep = pairedRHR.map(\.sleepHours).sorted()[pairedRHR.count / 2]
+                let wellSlept = pairedRHR.filter { $0.sleepHours >= medianSleep }
+                let poorSlept = pairedRHR.filter { $0.sleepHours < medianSleep }
+
+                if !wellSlept.isEmpty && !poorSlept.isEmpty {
+                    let rhrOnGood = wellSlept.reduce(0) { $0 + $1.restingHeartRate } / Double(wellSlept.count)
+                    let rhrOnPoor = poorSlept.reduce(0) { $0 + $1.restingHeartRate } / Double(poorSlept.count)
+                    let diff = rhrOnPoor - rhrOnGood // positive means poor sleep → higher RHR
+
+                    if abs(diff) >= 2 {
+                        if diff > 0 {
+                            correlationInsights.append("🫀 睡眠不足时静息心率平均高 \(Int(diff)) BPM — 睡不好时心脏负担更重。")
+                        } else {
+                            correlationInsights.append("🫀 睡眠充足时静息心率反而偏高 \(Int(-diff)) BPM — 可能与运动日睡更久有关。")
+                        }
+                    }
+                }
+            }
+
+            // Deep sleep phase vs HRV: deep sleep is the primary physical recovery window
+            let pairedDeepHRV = summaries.filter { $0.hasSleepPhases && $0.hrv > 0 }
+            if pairedDeepHRV.count >= 3 {
+                let medianDeep = pairedDeepHRV.map(\.sleepDeepHours).sorted()[pairedDeepHRV.count / 2]
+                let highDeep = pairedDeepHRV.filter { $0.sleepDeepHours >= medianDeep }
+                let lowDeep = pairedDeepHRV.filter { $0.sleepDeepHours < medianDeep }
+
+                if !highDeep.isEmpty && !lowDeep.isEmpty {
+                    let hrvHighDeep = highDeep.reduce(0) { $0 + $1.hrv } / Double(highDeep.count)
+                    let hrvLowDeep = lowDeep.reduce(0) { $0 + $1.hrv } / Double(lowDeep.count)
+                    let diff = hrvHighDeep - hrvLowDeep
+
+                    if diff >= 4 {
+                        correlationInsights.append("🟣 深睡眠充足时 HRV 高 \(Int(diff)) ms — 深睡眠是身体物理修复的关键窗口。")
+                    }
+                }
+            }
+
+            if !correlationInsights.isEmpty {
+                lines.append("")
+                lines.append("🔗 睡眠与身体恢复的关联")
+                lines.append(contentsOf: correlationInsights)
+
+                // Actionable summary based on findings
+                let hasPositiveCorrelation = correlationInsights.contains { $0.contains("显著提升") || $0.contains("心脏负担更重") || $0.contains("物理修复") }
+                if hasPositiveCorrelation {
+                    lines.append("")
+                    lines.append("💡 你的身体数据证实：睡眠质量直接影响恢复状态。优先保障睡眠比多练一次效果更大。")
+                }
+            }
+        }
+
         completion(lines.joined(separator: "\n"))
     }
 

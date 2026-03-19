@@ -39,7 +39,11 @@ struct SummarySkill: ClawSkill {
         let events = CDLifeEvent.fetch(from: interval.start, to: interval.end, in: context.coreDataContext)
         let locations = CDLocationRecord.fetch(from: interval.start, to: interval.end, in: context.coreDataContext)
 
-        context.healthService.fetchWeeklySummaries { summaries in
+        // Calculate fetch days to cover the full requested range
+        let fetchDays = max(Calendar.current.dateComponents([.day], from: interval.start, to: Date()).day ?? 7, 1) + 1
+        context.healthService.fetchSummaries(days: fetchDays) { allSummaries in
+            // Filter health summaries to the requested interval
+            let summaries = allSummaries.filter { interval.contains($0.date) }
             var lines: [String] = ["📋 \(range.label)的生活总结：\n"]
             var hasAnyData = false
 

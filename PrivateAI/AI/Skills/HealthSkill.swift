@@ -30,6 +30,19 @@ struct HealthSkill: ClawSkill {
         }
     }
 
+    // MARK: - Fetch Days Calculation
+
+    /// Calculates the number of days to fetch from HealthKit to fully cover the given time range.
+    /// `fetchSummaries(days:)` counts backwards from today, so we need enough days
+    /// to reach back to the start of the requested interval.
+    private func fetchDaysNeeded(for range: QueryTimeRange) -> Int {
+        let interval = range.interval
+        let cal = Calendar.current
+        let daysBack = cal.dateComponents([.day], from: interval.start, to: Date()).day ?? 7
+        // Add 1 to include both start and end days, minimum 1
+        return max(daysBack + 1, 1)
+    }
+
     // MARK: - Exercise
 
     private func respondExercise(range: QueryTimeRange, context: SkillContext, completion: @escaping (String) -> Void) {
@@ -37,7 +50,8 @@ struct HealthSkill: ClawSkill {
         let events = CDLifeEvent.fetch(from: interval.start, to: interval.end, in: context.coreDataContext)
             .filter { $0.category == .health }
 
-        context.healthService.fetchSummaries(days: 14) { allSummaries in
+        let fetchDays = fetchDaysNeeded(for: range)
+        context.healthService.fetchSummaries(days: fetchDays) { allSummaries in
             let filtered = allSummaries.filter { interval.contains($0.date) }
             var lines: [String] = ["🏃 \(range.label)的运动数据\n"]
 
@@ -211,7 +225,8 @@ struct HealthSkill: ClawSkill {
     // MARK: - Health Metric
 
     private func respondHealth(metric: String, range: QueryTimeRange, context: SkillContext, completion: @escaping (String) -> Void) {
-        context.healthService.fetchSummaries(days: 14) { allSummaries in
+        let fetchDays = fetchDaysNeeded(for: range)
+        context.healthService.fetchSummaries(days: fetchDays) { allSummaries in
             let interval = range.interval
             let filtered = allSummaries.filter { interval.contains($0.date) }
             let withData = filtered.filter { $0.hasData }

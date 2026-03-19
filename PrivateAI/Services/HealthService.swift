@@ -81,10 +81,13 @@ final class HealthService: ObservableObject {
             group.leave()
         }
 
-        // Sleep
+        // Sleep (with phase breakdown)
         group.enter()
-        fetchSleepHours(start: start, end: end) { hours in
-            summary.sleepHours = hours
+        fetchSleepPhases(start: start, end: end) { total, deep, rem, core in
+            summary.sleepHours = total
+            summary.sleepDeepHours = deep
+            summary.sleepREMHours = rem
+            summary.sleepCoreHours = core
             group.leave()
         }
 
@@ -169,20 +172,39 @@ final class HealthService: ObservableObject {
         store.execute(query)
     }
 
-    private func fetchSleepHours(start: Date, end: Date, completion: @escaping (Double) -> Void) {
+    /// Fetches sleep data with phase breakdown (deep, REM, core).
+    /// Returns (totalHours, deepHours, remHours, coreHours).
+    private func fetchSleepPhases(start: Date, end: Date,
+                                  completion: @escaping (Double, Double, Double, Double) -> Void) {
         guard let type = HKObjectType.categoryType(forIdentifier: .sleepAnalysis) else {
-            completion(0); return
+            completion(0, 0, 0, 0); return
         }
         let predicate = HKQuery.predicateForSamples(withStart: start, end: end)
-        let query = HKSampleQuery(sampleType: type, predicate: predicate, limit: HKObjectQueryNoLimit, sortDescriptors: nil) { _, samples, _ in
-            let total = (samples as? [HKCategorySample])?.reduce(0.0) { acc, s in
-                guard s.value == HKCategoryValueSleepAnalysis.asleepUnspecified.rawValue ||
-                      s.value == HKCategoryValueSleepAnalysis.asleepCore.rawValue ||
-                      s.value == HKCategoryValueSleepAnalysis.asleepDeep.rawValue ||
-                      s.value == HKCategoryValueSleepAnalysis.asleepREM.rawValue else { return acc }
-                return acc + s.endDate.timeIntervalSince(s.startDate) / 3600
-            } ?? 0
-            completion(total)
+        let query = HKSampleQuery(sampleType: type, predicate: predicate,
+                                  limit: HKObjectQueryNoLimit, sortDescriptors: nil) { _, samples, _ in
+            var deep: Double = 0
+            var rem: Double = 0
+            var core: Double = 0
+            var unspecified: Double = 0
+
+            (samples as? [HKCategorySample])?.forEach { s in
+                let hours = s.endDate.timeIntervalSince(s.startDate) / 3600
+                switch s.value {
+                case HKCategoryValueSleepAnalysis.asleepDeep.rawValue:
+                    deep += hours
+                case HKCategoryValueSleepAnalysis.asleepREM.rawValue:
+                    rem += hours
+                case HKCategoryValueSleepAnalysis.asleepCore.rawValue:
+                    core += hours
+                case HKCategoryValueSleepAnalysis.asleepUnspecified.rawValue:
+                    unspecified += hours
+                default:
+                    break // skip inBed, awake, etc.
+                }
+            }
+
+            let total = deep + rem + core + unspecified
+            completion(total, deep, rem, core)
         }
         store.execute(query)
     }

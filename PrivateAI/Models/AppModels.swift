@@ -188,10 +188,21 @@ struct HealthSummary {
     var activeCalories: Double = 0
     var exerciseMinutes: Double = 0
     var sleepHours: Double = 0
+    /// Deep sleep (N3 stage) — most restorative phase
+    var sleepDeepHours: Double = 0
+    /// REM sleep — important for memory and learning
+    var sleepREMHours: Double = 0
+    /// Core/light sleep (N1+N2 stages)
+    var sleepCoreHours: Double = 0
     var heartRate: Double = 0
     var distanceKm: Double = 0
     var flightsClimbed: Double = 0
     var date: Date = Date()
+
+    /// True if sleep phase data is available (requires Apple Watch)
+    var hasSleepPhases: Bool {
+        sleepDeepHours > 0 || sleepREMHours > 0 || sleepCoreHours > 0
+    }
 
     /// True if this day has any recorded data at all.
     var hasData: Bool {

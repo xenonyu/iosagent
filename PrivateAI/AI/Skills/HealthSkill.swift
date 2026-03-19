@@ -165,19 +165,61 @@ struct HealthSkill: ClawSkill {
             lines.append("⏰ 睡最少：\(fmt.string(from: minSleep.date))（\(String(format: "%.1f", minSleep.sleepHours))h）")
         }
 
-        // Personalized insight based on actual data
+        // Sleep phase breakdown (requires Apple Watch data)
+        let phaseDays = sleepDays.filter { $0.hasSleepPhases }
+        if !phaseDays.isEmpty {
+            let avgDeep = phaseDays.reduce(0) { $0 + $1.sleepDeepHours } / Double(phaseDays.count)
+            let avgREM = phaseDays.reduce(0) { $0 + $1.sleepREMHours } / Double(phaseDays.count)
+            let avgCore = phaseDays.reduce(0) { $0 + $1.sleepCoreHours } / Double(phaseDays.count)
+            let avgPhaseTotal = avgDeep + avgREM + avgCore
+
+            lines.append("\n🧠 睡眠阶段分析")
+
+            // Show phase durations with percentage bars
+            if avgPhaseTotal > 0 {
+                let deepPct = avgDeep / avgPhaseTotal * 100
+                let remPct = avgREM / avgPhaseTotal * 100
+                let corePct = avgCore / avgPhaseTotal * 100
+
+                lines.append("🟣 深睡眠：\(String(format: "%.1f", avgDeep))h（\(Int(deepPct))%）\(phaseBar(pct: deepPct))")
+                lines.append("🔵 REM 睡眠：\(String(format: "%.1f", avgREM))h（\(Int(remPct))%）\(phaseBar(pct: remPct))")
+                lines.append("⚪ 核心睡眠：\(String(format: "%.1f", avgCore))h（\(Int(corePct))%）\(phaseBar(pct: corePct))")
+
+                // Sleep quality insights based on phase ratios
+                lines.append("")
+                lines.append(contentsOf: sleepPhaseInsights(deepPct: deepPct, remPct: remPct, avgDeep: avgDeep, avgREM: avgREM))
+            }
+
+            // Phase consistency across days (only if multiple days)
+            if phaseDays.count >= 3 {
+                let deepValues = phaseDays.map { $0.sleepDeepHours }
+                let deepVariation = coefficient(of: deepValues)
+                if deepVariation > 0.4 {
+                    lines.append("📉 深睡眠波动较大，尽量保持固定的睡眠时间有助于稳定。")
+                } else if deepVariation < 0.2 {
+                    lines.append("📊 深睡眠非常稳定，说明你的睡眠节律很好。")
+                }
+            }
+        }
+
+        // Personalized insight based on total duration
         let goodDays = sleepDays.filter { $0.sleepHours >= 7 && $0.sleepHours <= 9 }.count
         let goodRate = Double(goodDays) / Double(sleepDays.count) * 100
 
+        if phaseDays.isEmpty {
+            // No phase data — give duration-based insight only
+            lines.append("")
+        }
+
         if goodRate >= 80 {
-            lines.append("\n✅ 睡眠质量很棒！\(Int(goodRate))% 的夜晚都在 7-9 小时的健康范围内。")
+            lines.append("✅ \(Int(goodRate))% 的夜晚在 7-9 小时的健康范围内，睡眠习惯很棒！")
         } else if goodRate >= 50 {
-            lines.append("\n💡 \(Int(goodRate))% 的夜晚在健康范围（7-9h），还有提升空间。")
+            lines.append("💡 \(Int(goodRate))% 的夜晚在健康范围（7-9h），还有提升空间。")
             if avg < 7 {
                 lines.append("建议尝试提前 \(Int((7 - avg) * 60)) 分钟上床。")
             }
         } else {
-            lines.append("\n⚠️ 仅 \(Int(goodRate))% 的夜晚在健康范围内。")
+            lines.append("⚠️ 仅 \(Int(goodRate))% 的夜晚在健康范围内。")
             if avg < 6 {
                 lines.append("长期睡眠不足 6 小时会影响注意力和免疫力，试着调整作息吧。")
             } else if avg > 9 {
@@ -186,6 +228,53 @@ struct HealthSkill: ClawSkill {
         }
 
         completion(lines.joined(separator: "\n"))
+    }
+
+    /// Builds a mini bar chart for sleep phase percentage (max 10 blocks).
+    private func phaseBar(pct: Double) -> String {
+        let blocks = max(1, Int(pct / 10))
+        return String(repeating: "▓", count: blocks) + String(repeating: "░", count: 10 - blocks)
+    }
+
+    /// Returns personalized insights based on sleep phase ratios.
+    /// Healthy adults: ~15-25% deep, ~20-25% REM.
+    private func sleepPhaseInsights(deepPct: Double, remPct: Double, avgDeep: Double, avgREM: Double) -> [String] {
+        var insights: [String] = []
+
+        // Deep sleep analysis (healthy: 15-25%, or ~1.5-2h for 8h sleep)
+        if deepPct >= 15 && deepPct <= 25 {
+            insights.append("✅ 深睡眠比例健康，身体恢复充分。")
+        } else if deepPct < 15 {
+            insights.append("💡 深睡眠偏少（理想为 15-25%），这是身体修复的关键阶段。")
+            if avgDeep < 1.0 {
+                insights.append("   避免睡前饮酒和大量咖啡因，有助于增加深睡眠。")
+            }
+        } else {
+            insights.append("💤 深睡眠比例较高，可能与近期运动量大或身体疲劳有关。")
+        }
+
+        // REM sleep analysis (healthy: 20-25%, important for memory)
+        if remPct >= 20 && remPct <= 25 {
+            insights.append("✅ REM 睡眠充足，有利于记忆巩固和情绪调节。")
+        } else if remPct < 20 {
+            insights.append("💡 REM 偏少（理想为 20-25%），REM 对学习和记忆力很重要。")
+            if avgREM < 1.0 {
+                insights.append("   规律作息和减少睡前屏幕时间有助于改善 REM。")
+            }
+        } else {
+            insights.append("🔵 REM 比例较高，可能与近期压力或活跃的梦境有关。")
+        }
+
+        return insights
+    }
+
+    /// Coefficient of variation: stddev / mean. Lower = more consistent.
+    private func coefficient(of values: [Double]) -> Double {
+        guard values.count >= 2 else { return 0 }
+        let mean = values.reduce(0, +) / Double(values.count)
+        guard mean > 0 else { return 0 }
+        let variance = values.reduce(0) { $0 + ($1 - mean) * ($1 - mean) } / Double(values.count)
+        return (variance.squareRoot()) / mean
     }
 
     private func respondHeartRate(summaries: [HealthSummary], range: QueryTimeRange, completion: @escaping (String) -> Void) {
@@ -280,7 +369,15 @@ struct HealthSkill: ClawSkill {
         if totalSteps > 0 { lines.append("👟 日均 \(Int(totalSteps / dayCount).formatted()) 步") }
         if totalDistance > 0.1 { lines.append("📏 累计 \(String(format: "%.1f", totalDistance)) 公里") }
         if totalExercise > 0 { lines.append("⏱ 日均运动 \(Int(totalExercise / dayCount)) 分钟") }
-        if avgSleep > 0 { lines.append("😴 均睡 \(String(format: "%.1f", avgSleep)) 小时") }
+        if avgSleep > 0 {
+            lines.append("😴 均睡 \(String(format: "%.1f", avgSleep)) 小时")
+            // Show sleep quality hint if phase data available
+            let phaseDays = summaries.filter { $0.hasSleepPhases }
+            if !phaseDays.isEmpty {
+                let avgDeep = phaseDays.reduce(0) { $0 + $1.sleepDeepHours } / Double(phaseDays.count)
+                lines.append("   🟣 深睡眠 \(String(format: "%.1f", avgDeep))h · 查看「睡眠」获取详细分析")
+            }
+        }
         if avgHR > 0 { lines.append("❤️ 均心率 \(Int(avgHR)) BPM") }
 
         // Quick verdict

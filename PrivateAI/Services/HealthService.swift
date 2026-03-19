@@ -103,13 +103,14 @@ final class HealthService: ObservableObject {
             group.leave()
         }
 
-        // Sleep (with phase breakdown)
+        // Sleep (with phase breakdown + in-bed time)
         group.enter()
-        fetchSleepPhases(start: start, end: end) { total, deep, rem, core in
+        fetchSleepPhases(start: start, end: end) { total, deep, rem, core, inBed in
             summary.sleepHours = total
             summary.sleepDeepHours = deep
             summary.sleepREMHours = rem
             summary.sleepCoreHours = core
+            summary.inBedHours = inBed
             group.leave()
         }
 
@@ -227,10 +228,10 @@ final class HealthService: ObservableObject {
         store.execute(query)
     }
 
-    /// Fetches sleep data with phase breakdown (deep, REM, core).
-    /// Returns (totalHours, deepHours, remHours, coreHours).
+    /// Fetches sleep data with phase breakdown (deep, REM, core) and in-bed time.
+    /// Returns (totalHours, deepHours, remHours, coreHours, inBedHours).
     private func fetchSleepPhases(start: Date, end: Date,
-                                  completion: @escaping (Double, Double, Double, Double) -> Void) {
+                                  completion: @escaping (Double, Double, Double, Double, Double) -> Void) {
         guard let type = HKObjectType.categoryType(forIdentifier: .sleepAnalysis) else {
             completion(0, 0, 0, 0); return
         }
@@ -241,6 +242,7 @@ final class HealthService: ObservableObject {
             var rem: Double = 0
             var core: Double = 0
             var unspecified: Double = 0
+            var inBed: Double = 0
 
             (samples as? [HKCategorySample])?.forEach { s in
                 let hours = s.endDate.timeIntervalSince(s.startDate) / 3600
@@ -253,13 +255,15 @@ final class HealthService: ObservableObject {
                     core += hours
                 case HKCategoryValueSleepAnalysis.asleepUnspecified.rawValue:
                     unspecified += hours
+                case HKCategoryValueSleepAnalysis.inBed.rawValue:
+                    inBed += hours
                 default:
-                    break // skip inBed, awake, etc.
+                    break // skip awake, etc.
                 }
             }
 
             let total = deep + rem + core + unspecified
-            completion(total, deep, rem, core)
+            completion(total, deep, rem, core, inBed)
         }
         store.execute(query)
     }

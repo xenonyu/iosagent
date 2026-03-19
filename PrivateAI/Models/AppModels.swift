@@ -275,6 +275,8 @@ struct HealthSummary {
     var sleepREMHours: Double = 0
     /// Core/light sleep (N1+N2 stages)
     var sleepCoreHours: Double = 0
+    /// Time spent in bed (includes awake time) — used to compute sleep efficiency
+    var inBedHours: Double = 0
     var heartRate: Double = 0
     /// Resting heart rate — key cardiovascular fitness indicator (lower = fitter)
     var restingHeartRate: Double = 0

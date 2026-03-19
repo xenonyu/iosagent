@@ -267,6 +267,17 @@ struct HealthSkill: ClawSkill {
         let maxSleep = sleepDays.max(by: { $0.sleepHours < $1.sleepHours })!
         let minSleep = sleepDays.min(by: { $0.sleepHours < $1.sleepHours })!
 
+        // --- Sleep Quality Score (composite 0-100) ---
+        let qualityScore = computeSleepQualityScore(sleepDays: sleepDays, avgHours: avg)
+        let scoreEmoji: String
+        if qualityScore >= 85 { scoreEmoji = "🌟" }
+        else if qualityScore >= 70 { scoreEmoji = "✅" }
+        else if qualityScore >= 50 { scoreEmoji = "💡" }
+        else { scoreEmoji = "⚠️" }
+        lines.append("\(scoreEmoji) 睡眠质量评分：\(qualityScore) / 100")
+        lines.append(sleepScoreBreakdown(qualityScore))
+        lines.append("")
+
         lines.append("💤 平均睡眠：\(String(format: "%.1f", avg)) 小时")
         lines.append("📊 波动范围：\(String(format: "%.1f", minSleep.sleepHours))~\(String(format: "%.1f", maxSleep.sleepHours)) 小时")
 
@@ -276,6 +287,63 @@ struct HealthSkill: ClawSkill {
             fmt.locale = Locale(identifier: "zh_CN")
             lines.append("🌙 睡最久：\(fmt.string(from: maxSleep.date))（\(String(format: "%.1f", maxSleep.sleepHours))h）")
             lines.append("⏰ 睡最少：\(fmt.string(from: minSleep.date))（\(String(format: "%.1f", minSleep.sleepHours))h）")
+        }
+
+        // --- Sleep Efficiency (time asleep / time in bed) ---
+        let bedDays = sleepDays.filter { $0.inBedHours > 0 }
+        if !bedDays.isEmpty {
+            let avgInBed = bedDays.reduce(0) { $0 + $1.inBedHours } / Double(bedDays.count)
+            let avgAsleep = bedDays.reduce(0) { $0 + $1.sleepHours } / Double(bedDays.count)
+            let totalBedTime = avgInBed + avgAsleep // inBed is the awake-in-bed portion
+            if totalBedTime > 0 {
+                let efficiency = (avgAsleep / totalBedTime) * 100
+                lines.append("")
+                lines.append("🛏️ 睡眠效率：\(Int(efficiency))%")
+                lines.append("   在床时间 \(String(format: "%.1f", totalBedTime))h → 实际入睡 \(String(format: "%.1f", avgAsleep))h")
+                if efficiency >= 90 {
+                    lines.append("   ✅ 优秀！几乎躺下就能入睡。")
+                } else if efficiency >= 85 {
+                    lines.append("   ✅ 良好，入睡效率正常。")
+                } else if efficiency >= 75 {
+                    lines.append("   💡 效率偏低，平均需 \(Int((totalBedTime - avgAsleep) * 60)) 分钟才入睡或有夜间清醒。")
+                    lines.append("   建议：困了再上床，避免在床上看手机。")
+                } else {
+                    lines.append("   ⚠️ 效率较低，在床上有较多清醒时间。")
+                    lines.append("   这可能与入睡困难或夜间频繁醒来有关。")
+                    lines.append("   建议：固定起床时间、睡前 1 小时避免蓝光。")
+                }
+            }
+        }
+
+        // --- Sleep Consistency (standard deviation) ---
+        if sleepDays.count >= 3 {
+            let sleepValues = sleepDays.map { $0.sleepHours }
+            let stdDev = standardDeviation(of: sleepValues)
+            lines.append("")
+            lines.append("📐 睡眠规律性")
+            if stdDev < 0.5 {
+                lines.append("   ✅ 非常规律（波动 ±\(Int(stdDev * 60)) 分钟），生物钟很稳定。")
+            } else if stdDev < 1.0 {
+                lines.append("   💡 较规律（波动 ±\(Int(stdDev * 60)) 分钟），可以更稳定。")
+            } else {
+                lines.append("   ⚠️ 波动较大（±\(String(format: "%.1f", stdDev))h），睡眠时间不太规律。")
+                lines.append("   不规律的作息比睡眠不足更伤身体，试着固定上床和起床时间。")
+            }
+        }
+
+        // --- Day-by-Day Trend Chart ---
+        if sleepDays.count >= 3 {
+            let sorted = sleepDays.sorted { $0.date < $1.date }
+            lines.append("")
+            lines.append("📈 逐日趋势")
+            let dayFmt = DateFormatter()
+            dayFmt.dateFormat = "E"
+            dayFmt.locale = Locale(identifier: "zh_CN")
+            for day in sorted {
+                let bar = sleepTrendBar(hours: day.sleepHours)
+                let label = dayFmt.string(from: day.date)
+                lines.append("   \(label) \(bar) \(String(format: "%.1f", day.sleepHours))h")
+            }
         }
 
         // Sleep phase breakdown (requires Apple Watch data)
@@ -315,15 +383,28 @@ struct HealthSkill: ClawSkill {
             }
         }
 
+        // --- Sleep Debt ---
+        if sleepDays.count >= 3 {
+            let targetHours = 7.5 // midpoint of healthy 7-9h range
+            let totalDebt = sleepDays.reduce(0.0) { $0 + max(0, targetHours - $1.sleepHours) }
+            if totalDebt >= 2 {
+                lines.append("")
+                lines.append("💸 睡眠债务：累计欠 \(String(format: "%.1f", totalDebt)) 小时")
+                if totalDebt >= 7 {
+                    lines.append("   相当于欠了一整晚！周末补觉效果有限，建议每晚多睡 30 分钟逐渐偿还。")
+                } else if totalDebt >= 3 {
+                    lines.append("   连续几天多睡 30 分钟就能补回来。")
+                } else {
+                    lines.append("   轻微不足，今晚早睡一点就好。")
+                }
+            }
+        }
+
         // Personalized insight based on total duration
         let goodDays = sleepDays.filter { $0.sleepHours >= 7 && $0.sleepHours <= 9 }.count
         let goodRate = Double(goodDays) / Double(sleepDays.count) * 100
 
-        if phaseDays.isEmpty {
-            // No phase data — give duration-based insight only
-            lines.append("")
-        }
-
+        lines.append("")
         if goodRate >= 80 {
             lines.append("✅ \(Int(goodRate))% 的夜晚在 7-9 小时的健康范围内，睡眠习惯很棒！")
         } else if goodRate >= 50 {
@@ -341,6 +422,112 @@ struct HealthSkill: ClawSkill {
         }
 
         completion(lines.joined(separator: "\n"))
+    }
+
+    // MARK: - Sleep Quality Score
+
+    /// Computes a composite sleep quality score (0-100) from multiple dimensions:
+    /// - Duration adequacy (30 pts): how close to the 7-9h ideal
+    /// - Phase quality (25 pts): deep + REM ratios within healthy ranges
+    /// - Consistency (25 pts): low variance in sleep duration across days
+    /// - Efficiency (20 pts): time asleep vs time in bed
+    private func computeSleepQualityScore(sleepDays: [HealthSummary], avgHours: Double) -> Int {
+        var score: Double = 0
+
+        // 1. Duration adequacy (30 pts) — peak at 7.5-8h
+        if avgHours >= 7 && avgHours <= 9 {
+            score += 30
+        } else if avgHours >= 6 && avgHours < 7 {
+            score += 30 * (avgHours - 5) / 2   // 5h=0, 7h=30
+        } else if avgHours > 9 && avgHours <= 10 {
+            score += 30 * (10 - avgHours)       // 9h=30, 10h=0
+        } else if avgHours >= 5 {
+            score += 10
+        }
+        // below 5h or above 10h = 0 pts
+
+        // 2. Phase quality (25 pts)
+        let phaseDays = sleepDays.filter { $0.hasSleepPhases }
+        if !phaseDays.isEmpty {
+            let avgDeep = phaseDays.reduce(0) { $0 + $1.sleepDeepHours } / Double(phaseDays.count)
+            let avgREM = phaseDays.reduce(0) { $0 + $1.sleepREMHours } / Double(phaseDays.count)
+            let avgCore = phaseDays.reduce(0) { $0 + $1.sleepCoreHours } / Double(phaseDays.count)
+            let total = avgDeep + avgREM + avgCore
+            if total > 0 {
+                let deepPct = avgDeep / total * 100
+                let remPct = avgREM / total * 100
+                // Deep: ideal 15-25%, REM: ideal 20-25%
+                let deepScore = deepPct >= 15 && deepPct <= 25 ? 12.5 : max(0, 12.5 - abs(deepPct - 20) * 0.8)
+                let remScore = remPct >= 20 && remPct <= 25 ? 12.5 : max(0, 12.5 - abs(remPct - 22.5) * 0.8)
+                score += deepScore + remScore
+            }
+        } else {
+            // No phase data — give neutral mid-range score
+            score += 12.5
+        }
+
+        // 3. Consistency (25 pts) — low standard deviation = high score
+        if sleepDays.count >= 3 {
+            let stdDev = standardDeviation(of: sleepDays.map { $0.sleepHours })
+            if stdDev < 0.3 { score += 25 }
+            else if stdDev < 0.5 { score += 22 }
+            else if stdDev < 1.0 { score += 15 }
+            else if stdDev < 1.5 { score += 8 }
+            else { score += 3 }
+        } else {
+            score += 15 // not enough data to judge consistency
+        }
+
+        // 4. Efficiency (20 pts)
+        let bedDays = sleepDays.filter { $0.inBedHours > 0 }
+        if !bedDays.isEmpty {
+            let avgInBed = bedDays.reduce(0) { $0 + $1.inBedHours } / Double(bedDays.count)
+            let avgAsleep = bedDays.reduce(0) { $0 + $1.sleepHours } / Double(bedDays.count)
+            let totalBed = avgInBed + avgAsleep
+            if totalBed > 0 {
+                let eff = avgAsleep / totalBed
+                if eff >= 0.9 { score += 20 }
+                else if eff >= 0.85 { score += 16 }
+                else if eff >= 0.75 { score += 10 }
+                else { score += 5 }
+            }
+        } else {
+            score += 12 // no in-bed data, neutral score
+        }
+
+        return min(100, max(0, Int(score)))
+    }
+
+    /// Short text explanation for the quality score range.
+    private func sleepScoreBreakdown(_ score: Int) -> String {
+        if score >= 85 {
+            return "   睡眠质量优秀 — 时长充足、节律稳定、入睡高效"
+        } else if score >= 70 {
+            return "   睡眠质量良好 — 整体不错，部分维度还有优化空间"
+        } else if score >= 50 {
+            return "   睡眠质量一般 — 可能存在时长不足、节律不规律或入睡困难"
+        } else {
+            return "   睡眠质量需要关注 — 建议从固定作息时间开始改善"
+        }
+    }
+
+    /// Day-by-day sleep bar (scaled to max 12h, using 8 blocks).
+    private func sleepTrendBar(hours: Double) -> String {
+        let maxH = 10.0
+        let blocks = max(1, min(8, Int((hours / maxH) * 8)))
+        let bar = String(repeating: "▓", count: blocks) + String(repeating: "░", count: 8 - blocks)
+        // Color indicator
+        if hours >= 7 && hours <= 9 { return "🟢 \(bar)" }
+        if hours >= 6 { return "🟡 \(bar)" }
+        return "🔴 \(bar)"
+    }
+
+    /// Standard deviation of an array of Doubles.
+    private func standardDeviation(of values: [Double]) -> Double {
+        guard values.count >= 2 else { return 0 }
+        let mean = values.reduce(0, +) / Double(values.count)
+        let variance = values.reduce(0) { $0 + ($1 - mean) * ($1 - mean) } / Double(values.count)
+        return variance.squareRoot()
     }
 
     /// Builds a mini bar chart for sleep phase percentage (max 10 blocks).

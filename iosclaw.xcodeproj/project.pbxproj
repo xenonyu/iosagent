@@ -25,6 +25,7 @@
 		418AC465E1B3DBED2C1B5BC4 /* HealthSkill.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C1BB503360544C933017A41 /* HealthSkill.swift */; };
 		53F1B2B9286DB0DF74C9ED13 /* ClawEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 21F123D2B27E6BFA0F919E5F /* ClawEngine.swift */; };
 		55165A62308D1533D99EE38F /* AppState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 29EDF0AABD473CD3FEAE585C /* AppState.swift */; };
+		5548A4F9F8B9B9B3780BC82E /* MathSkill.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D0677EAD4A98FD7B4BB601E /* MathSkill.swift */; };
 		59E9D92FFAA8322E750ECBC5 /* CalendarSkill.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42167BD1FB1325E7A4A9B494 /* CalendarSkill.swift */; };
 		5EE02A196A3FC5981B0A0C83 /* RawGPTService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 69B00A54F7A85E6D41104B35 /* RawGPTService.swift */; };
 		5F55F004A36BA18AD2F8F2B4 /* RecordSkill.swift in Sources */ = {isa = PBXBuildFile; fileRef = 749BA5F94BA2252D4E0744BB /* RecordSkill.swift */; };
@@ -37,6 +38,7 @@
 		6DD3A7EEF424C809B15CFB30 /* SharedDefaults.swift in Sources */ = {isa = PBXBuildFile; fileRef = 99AF9DD82D5100CDCE39CA58 /* SharedDefaults.swift */; };
 		71F709C5BB09A038E435AE40 /* HealthService.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4EAD2565F4E6FF7A9A9C208 /* HealthService.swift */; };
 		7270F3188B86BD0BFF71BE12 /* AppModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE255D68FA924DCE7659C147 /* AppModels.swift */; };
+		7598BBBE24400747733968CE /* DateTimeSkill.swift in Sources */ = {isa = PBXBuildFile; fileRef = E6E2C9D2C7E48ECFC1C286F5 /* DateTimeSkill.swift */; };
 		77FBFEC1EB5D3A324A6569BC /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 93C207D5B2435BDFD049E66C /* SettingsView.swift */; };
 		7856E40D88C449A411CE64AA /* PhotoSkill.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9866A64E357AEC07B359C569 /* PhotoSkill.swift */; };
 		7B85E497604C703863346C02 /* SkillRegistry.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE8A09E7AA4990FD0BA33713 /* SkillRegistry.swift */; };
@@ -51,6 +53,7 @@
 		B0683EAAD910381FFC541E15 /* SharedDefaults.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33F073B1A5167046D56AB53B /* SharedDefaults.swift */; };
 		C02261E3D1741A5AB5880365 /* PhotoSearchResultView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2F045ECFCEB6EB556B60C35 /* PhotoSearchResultView.swift */; };
 		C2E4B7A8A8C318438910C623 /* UnknownSkill.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE946ED94A94BD4EC76A955D /* UnknownSkill.swift */; };
+		C5464F52399B2A24B1E691EE /* RandomDecisionSkill.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0D30AC57225B6B7E6E63177 /* RandomDecisionSkill.swift */; };
 		C6EE0A77CF47DF827278DE18 /* MainTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 492C101596804A43682EF680 /* MainTabView.swift */; };
 		D0F682968363DF65DCE52908 /* NotificationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 73F65F3E181B65302631AF67 /* NotificationService.swift */; };
 		D2469AB1F7960C5CE67E4510 /* Photos.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 929313B795273BE89B85C738 /* Photos.framework */; };
@@ -94,6 +97,7 @@
 		521E0A5E81B31CB156CA8448 /* HabitSkill.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HabitSkill.swift; sourceTree = "<group>"; };
 		56B2FE7E27D4FAA1D6E8940E /* PhotoSearchService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotoSearchService.swift; sourceTree = "<group>"; };
 		56EFC4A5014C197FD4D053A8 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		5D0677EAD4A98FD7B4BB601E /* MathSkill.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MathSkill.swift; sourceTree = "<group>"; };
 		5D806134713EBA25781AD08B /* SettingsViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsViewModel.swift; sourceTree = "<group>"; };
 		666F826153CDFB7991D2EADB /* ContextMemory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContextMemory.swift; sourceTree = "<group>"; };
 		69B00A54F7A85E6D41104B35 /* RawGPTService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RawGPTService.swift; sourceTree = "<group>"; };
@@ -127,7 +131,9 @@
 		D0B926EC1FB57993C9B123D9 /* PrivateAI.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = PrivateAI.entitlements; sourceTree = "<group>"; };
 		D70950983F14E3559A579087 /* ClawSkill.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClawSkill.swift; sourceTree = "<group>"; };
 		DA3B8D219A80B9369AC4349C /* StatsViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatsViewModel.swift; sourceTree = "<group>"; };
+		E0D30AC57225B6B7E6E63177 /* RandomDecisionSkill.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RandomDecisionSkill.swift; sourceTree = "<group>"; };
 		E2F045ECFCEB6EB556B60C35 /* PhotoSearchResultView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotoSearchResultView.swift; sourceTree = "<group>"; };
+		E6E2C9D2C7E48ECFC1C286F5 /* DateTimeSkill.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DateTimeSkill.swift; sourceTree = "<group>"; };
 		EE255D68FA924DCE7659C147 /* AppModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModels.swift; sourceTree = "<group>"; };
 		EE946ED94A94BD4EC76A955D /* UnknownSkill.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UnknownSkill.swift; sourceTree = "<group>"; };
 		F1558EA8A85298EA80C91F20 /* TimelineViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimelineViewModel.swift; sourceTree = "<group>"; };
@@ -198,13 +204,16 @@
 			children = (
 				42167BD1FB1325E7A4A9B494 /* CalendarSkill.swift */,
 				A70FF8187392AC19ACF2C265 /* CountdownSkill.swift */,
+				E6E2C9D2C7E48ECFC1C286F5 /* DateTimeSkill.swift */,
 				FACC25FE9941AA10BA6893EA /* GreetingSkill.swift */,
 				521E0A5E81B31CB156CA8448 /* HabitSkill.swift */,
 				1C1BB503360544C933017A41 /* HealthSkill.swift */,
 				0ACE818BAD02C2D8CBA59243 /* LocationSkill.swift */,
+				5D0677EAD4A98FD7B4BB601E /* MathSkill.swift */,
 				7DC0818F57D4D75FB86E927F /* MoodSkill.swift */,
 				9866A64E357AEC07B359C569 /* PhotoSkill.swift */,
 				492BC549B0855C78CEA7D1E7 /* ProfileSkill.swift */,
+				E0D30AC57225B6B7E6E63177 /* RandomDecisionSkill.swift */,
 				A0E0CB3253163E40232B6BB4 /* RecommendationSkill.swift */,
 				749BA5F94BA2252D4E0744BB /* RecordSkill.swift */,
 				85E0695CE3DE415DB52E76A0 /* SummarySkill.swift */,
@@ -523,6 +532,7 @@
 				9E3ED1AFB416BF0BFDDEAA93 /* ContextMemory.swift in Sources */,
 				FB9010CD507564F884C9E8C5 /* CoreDataExtensions.swift in Sources */,
 				3E2E018A27AFE72A51667884 /* CountdownSkill.swift in Sources */,
+				7598BBBE24400747733968CE /* DateTimeSkill.swift in Sources */,
 				91132942AAAC12535741AAB5 /* GreetingSkill.swift in Sources */,
 				3C56D125E9C220F924B1E0B4 /* HabitSkill.swift in Sources */,
 				71F709C5BB09A038E435AE40 /* HealthService.swift in Sources */,
@@ -531,6 +541,7 @@
 				88BF0113CDE5D81000730AD6 /* LocationService.swift in Sources */,
 				D4C5DBC76AB359E124BC3776 /* LocationSkill.swift in Sources */,
 				C6EE0A77CF47DF827278DE18 /* MainTabView.swift in Sources */,
+				5548A4F9F8B9B9B3780BC82E /* MathSkill.swift in Sources */,
 				DA591A730D53CF3079AF1F88 /* MessageBubble.swift in Sources */,
 				D582284312622B63296DC0C5 /* MoodSkill.swift in Sources */,
 				D0F682968363DF65DCE52908 /* NotificationService.swift in Sources */,
@@ -546,6 +557,7 @@
 				69E4BACBF718B97BAD5E3428 /* ProfileView.swift in Sources */,
 				E81CDB4DE8DFE9297B1AE31B /* ProfileViewModel.swift in Sources */,
 				668EC27CA3E0CC1ACBDB0D94 /* QuickRecordView.swift in Sources */,
+				C5464F52399B2A24B1E691EE /* RandomDecisionSkill.swift in Sources */,
 				5EE02A196A3FC5981B0A0C83 /* RawGPTService.swift in Sources */,
 				0570EE17ED17F727A06A3B0D /* RecommendationSkill.swift in Sources */,
 				5F55F004A36BA18AD2F8F2B4 /* RecordSkill.swift in Sources */,

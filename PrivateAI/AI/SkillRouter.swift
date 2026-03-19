@@ -23,7 +23,18 @@ enum QueryIntent {
     case habit(action: HabitAction, content: String)
     case greeting(type: GreetingType)
     case randomDecision(action: RandomDecisionAction)
+    case dateTime(query: DateTimeQuery)
     case unknown
+}
+
+// MARK: - Date Time Query
+
+enum DateTimeQuery {
+    case currentTime    // 几点了, what time
+    case currentDate    // 今天几号, what date
+    case dayOfWeek      // 星期几, what day
+    case weekNumber     // 第几周, week number
+    case fullInfo       // 现在什么时间, general time/date
 }
 
 // MARK: - Random Decision Action
@@ -59,6 +70,11 @@ struct SkillRouter {
         let lower = text.lowercased()
         let trimmed = lower.trimmingCharacters(in: .whitespacesAndNewlines)
         let range = extractTimeRange(from: lower)
+
+        // --- Date / Time ---
+        if let dtQuery = parseDateTimeQuery(lower) {
+            return .dateTime(query: dtQuery)
+        }
 
         // --- Greeting / Conversational ---
         // Only match short utterances to avoid false positives on longer queries
@@ -531,6 +547,33 @@ struct SkillRouter {
             }
         }
         return (1, 100) // default range
+    }
+
+    // MARK: - Date/Time Parsing
+
+    private static func parseDateTimeQuery(_ text: String) -> DateTimeQuery? {
+        // Week number
+        if containsAny(text, ["第几周", "周数", "week number", "哪一周", "今年第几周"]) {
+            return .weekNumber
+        }
+        // Day of week
+        if containsAny(text, ["星期几", "周几", "礼拜几", "what day"]) {
+            return .dayOfWeek
+        }
+        // Current time
+        if containsAny(text, ["几点", "什么时间", "几时", "what time", "现在时间", "时间是"]) {
+            return .currentTime
+        }
+        // Current date
+        if containsAny(text, ["几号", "几月几号", "什么日期", "today's date", "今天日期", "哪一天"]) {
+            return .currentDate
+        }
+        // General "now" queries
+        if containsAny(text, ["现在", "此刻"]) &&
+           containsAny(text, ["时间", "日期", "多少号", "time", "date"]) {
+            return .fullInfo
+        }
+        return nil
     }
 
     // MARK: - Helpers

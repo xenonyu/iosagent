@@ -56,7 +56,10 @@ struct HealthSkill: ClawSkill {
         let events = CDLifeEvent.fetch(from: interval.start, to: interval.end, in: context.coreDataContext)
             .filter { $0.category == .health }
 
-        let fetchDays = fetchDaysNeeded(for: range)
+        // When range is .today, fetch 2 days so we can show yesterday as comparison context.
+        // This makes "步数多少" useful even early in the day when today's data is sparse.
+        let baseFetchDays = fetchDaysNeeded(for: range)
+        let fetchDays = range == .today ? max(baseFetchDays, 2) : baseFetchDays
         context.healthService.fetchSummaries(days: fetchDays) { allSummaries in
             let filtered = allSummaries.filter { interval.contains($0.date) }
             var lines: [String] = ["🏃 \(range.label)的运动数据\n"]
@@ -75,7 +78,22 @@ struct HealthSkill: ClawSkill {
             guard !daysWithData.isEmpty else {
                 var emptyMsg = "\(range.label)暂无运动数据记录。"
                 if range == .today {
-                    emptyMsg += "\n今天可能还没有足够的活动。试试问我「昨天运动了多少」？"
+                    // Instead of just suggesting "ask about yesterday", show yesterday's data directly
+                    let cal = Calendar.current
+                    let yesterdayStart = cal.startOfDay(for: cal.date(byAdding: .day, value: -1, to: Date()) ?? Date())
+                    let yesterdayEnd = cal.date(byAdding: .day, value: 1, to: yesterdayStart) ?? yesterdayStart
+                    let yesterdayData = allSummaries.filter {
+                        $0.date >= yesterdayStart && $0.date < yesterdayEnd && $0.hasData
+                    }
+                    if let yd = yesterdayData.first, yd.steps > 0 || yd.exerciseMinutes > 0 {
+                        emptyMsg += "\n今天还没有足够的活动数据。\n"
+                        emptyMsg += "\n📋 昨天的运动回顾："
+                        if yd.steps > 0 { emptyMsg += "\n   👟 \(Int(yd.steps).formatted()) 步" }
+                        if yd.exerciseMinutes > 0 { emptyMsg += "\n   ⏱ 运动 \(Int(yd.exerciseMinutes)) 分钟" }
+                        if yd.activeCalories > 0 { emptyMsg += "\n   🔥 消耗 \(Int(yd.activeCalories).formatted()) 千卡" }
+                    } else {
+                        emptyMsg += "\n今天可能还没有足够的活动。试试问我「昨天运动了多少」？"
+                    }
                 } else if range == .yesterday || range.interval.duration < 86400 * 2 {
                     emptyMsg += "\n试试扩大范围：「这周运动了多少」？"
                 }
@@ -106,6 +124,60 @@ struct HealthSkill: ClawSkill {
             let totalFlights = filtered.reduce(0) { $0 + $1.flightsClimbed }
             if totalFlights > 0 {
                 lines.append("🏢 爬楼：\(Int(totalFlights)) 层")
+            }
+
+            // --- Today's progress context: compare with yesterday + pace projection ---
+            // When the user asks about today's exercise data, the day isn't over yet.
+            // Show yesterday as a reference point and project today's final numbers
+            // so the data is always actionable, even at 8am with just 500 steps.
+            if range == .today {
+                let cal = Calendar.current
+                let hour = cal.component(.hour, from: Date())
+                let yesterdayStart = cal.startOfDay(for: cal.date(byAdding: .day, value: -1, to: Date()) ?? Date())
+                let yesterdayEnd = cal.date(byAdding: .day, value: 1, to: yesterdayStart) ?? yesterdayStart
+                let yesterdayData = allSummaries.filter {
+                    $0.date >= yesterdayStart && $0.date < yesterdayEnd && $0.hasData
+                }
+
+                if let yd = yesterdayData.first, (yd.steps > 0 || yd.exerciseMinutes > 0) {
+                    lines.append("")
+
+                    // Yesterday comparison
+                    var vsLines: [String] = ["📋 对比昨天全天："]
+                    if yd.steps > 0 && totalSteps > 0 {
+                        let pct = Int((totalSteps / yd.steps) * 100)
+                        vsLines.append("   👟 昨天 \(Int(yd.steps).formatted()) 步 → 今天已 \(pct)%")
+                    }
+                    if yd.exerciseMinutes > 0 && totalExercise > 0 {
+                        vsLines.append("   ⏱ 昨天 \(Int(yd.exerciseMinutes)) 分钟 → 今天已 \(Int(totalExercise)) 分钟")
+                    }
+                    if yd.activeCalories > 0 && totalCalories > 0 {
+                        let pct = Int((totalCalories / yd.activeCalories) * 100)
+                        vsLines.append("   🔥 昨天 \(Int(yd.activeCalories).formatted()) 千卡 → 今天已 \(pct)%")
+                    }
+                    if vsLines.count > 1 {
+                        lines.append(contentsOf: vsLines)
+                    }
+
+                    // Pace projection: only meaningful before evening (6-22 hour range)
+                    if hour >= 6 && hour < 22 && totalSteps > 100 {
+                        let elapsed = Double(hour) + Double(cal.component(.minute, from: Date())) / 60.0
+                        // Assume active hours are ~6am-11pm (17 hours)
+                        let activeHoursTotal = 17.0
+                        let activeHoursElapsed = max(elapsed - 6.0, 0.5)
+                        let projectedSteps = totalSteps / activeHoursElapsed * activeHoursTotal
+
+                        lines.append("")
+                        if projectedSteps >= yd.steps * 1.1 {
+                            lines.append("📈 按当前节奏，今天预计 ~\(Int(projectedSteps).formatted()) 步，有望超过昨天！")
+                        } else if projectedSteps >= yd.steps * 0.8 {
+                            lines.append("📊 按当前节奏，今天预计 ~\(Int(projectedSteps).formatted()) 步，和昨天差不多。")
+                        } else {
+                            let gap = Int(yd.steps - projectedSteps)
+                            lines.append("💡 按当前节奏，今天预计 ~\(Int(projectedSteps).formatted()) 步。多走 \(gap.formatted()) 步可追上昨天。")
+                        }
+                    }
+                }
             }
 
             // Workout type breakdown (from HKWorkout sessions)

@@ -102,7 +102,11 @@ struct ChatView: View {
                         viewModel.sendMessage()
                         inputFocused = false
                     },
-                    onVoice: viewModel.toggleVoiceInput
+                    onVoice: viewModel.toggleVoiceInput,
+                    onQuickAction: { command in
+                        viewModel.inputText = command
+                        viewModel.sendMessage()
+                    }
                 )
             }
             .navigationTitle("AI 助理")
@@ -261,6 +265,84 @@ struct ScrollToBottomButton: View {
     }
 }
 
+// MARK: - Quick Action Menu
+
+struct QuickActionMenu: View {
+    let onSelect: (String) -> Void
+
+    private struct QuickAction: Identifiable {
+        let id = UUID()
+        let icon: String
+        let label: String
+        let command: String
+        let color: Color
+    }
+
+    private let actions: [[QuickAction]] = [
+        [
+            QuickAction(icon: "note.text", label: "记笔记", command: "帮我记个笔记", color: .orange),
+            QuickAction(icon: "checklist", label: "待办", command: "查看待办清单", color: .blue),
+            QuickAction(icon: "timer", label: "番茄钟", command: "开始一个25分钟番茄钟", color: .red),
+            QuickAction(icon: "drop.fill", label: "喝水", command: "记录喝了500ml水", color: .cyan),
+        ],
+        [
+            QuickAction(icon: "heart.fill", label: "健康", command: "今天的健康数据", color: .pink),
+            QuickAction(icon: "face.smiling", label: "心情", command: "帮我记录今天心情", color: .yellow),
+            QuickAction(icon: "calendar", label: "日程", command: "今天有什么安排？", color: .purple),
+            QuickAction(icon: "text.quote", label: "名言", command: "给我一句名言", color: .green),
+        ],
+        [
+            QuickAction(icon: "function", label: "计算", command: "帮我算", color: .indigo),
+            QuickAction(icon: "wind", label: "呼吸", command: "做一次呼吸练习", color: .teal),
+            QuickAction(icon: "bell.fill", label: "提醒", command: "设一个提醒", color: .orange),
+            QuickAction(icon: "yensign.circle", label: "记账", command: "记一笔支出", color: .mint),
+        ],
+    ]
+
+    var body: some View {
+        VStack(spacing: 12) {
+            // Header
+            HStack {
+                Text("快捷操作")
+                    .font(.footnote)
+                    .fontWeight(.semibold)
+                    .foregroundColor(.secondary)
+                Spacer()
+            }
+            .padding(.horizontal, 4)
+
+            // Action grid
+            ForEach(Array(actions.enumerated()), id: \.offset) { _, row in
+                HStack(spacing: 10) {
+                    ForEach(row) { action in
+                        Button {
+                            onSelect(action.command)
+                        } label: {
+                            VStack(spacing: 6) {
+                                Image(systemName: action.icon)
+                                    .font(.system(size: 20))
+                                    .foregroundColor(action.color)
+                                    .frame(width: 44, height: 44)
+                                    .background(action.color.opacity(0.12))
+                                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+
+                                Text(action.label)
+                                    .font(.caption2)
+                                    .foregroundColor(.primary)
+                            }
+                            .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+        .background(.ultraThinMaterial)
+    }
+}
+
 // MARK: - Input Bar
 
 struct InputBar: View {
@@ -269,47 +351,86 @@ struct InputBar: View {
     var isFocused: FocusState<Bool>.Binding
     let onSend: () -> Void
     let onVoice: () -> Void
+    var onQuickAction: ((String) -> Void)?
     @State private var micScale: CGFloat = 1.0
+    @State private var showQuickActions: Bool = false
 
     var body: some View {
-        HStack(spacing: 10) {
-            // Voice button
-            Button(action: onVoice) {
-                Image(systemName: isListening ? "waveform.circle.fill" : "mic.circle.fill")
-                    .font(.title2)
-                    .foregroundColor(isListening ? .red : Color("AccentPrimary"))
-                    .scaleEffect(micScale)
-                    .animation(
-                        isListening
-                            ? .easeInOut(duration: 0.7).repeatForever(autoreverses: true)
-                            : .default,
-                        value: micScale
-                    )
-            }
-            .onChange(of: isListening) { listening in
-                micScale = listening ? 1.2 : 1.0
+        VStack(spacing: 0) {
+            // Quick action panel (above input bar)
+            if showQuickActions {
+                QuickActionMenu { command in
+                    withAnimation(.easeOut(duration: 0.2)) {
+                        showQuickActions = false
+                    }
+                    onQuickAction?(command)
+                }
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+
+                Divider()
             }
 
-            // Text field
-            TextField(isListening ? "正在聆听..." : "问我任何事...", text: $text, axis: .vertical)
-                .lineLimit(1...5)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(Color(.systemGray6))
-                .clipShape(RoundedRectangle(cornerRadius: 20))
-                .focused(isFocused)
-                .onSubmit { onSend() }
+            HStack(spacing: 10) {
+                // Quick action toggle button
+                Button {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                        showQuickActions.toggle()
+                        if showQuickActions {
+                            isFocused.wrappedValue = false
+                        }
+                    }
+                } label: {
+                    Image(systemName: showQuickActions ? "xmark.circle.fill" : "plus.circle.fill")
+                        .font(.title2)
+                        .foregroundColor(showQuickActions ? .secondary : Color("AccentPrimary"))
+                        .rotationEffect(.degrees(showQuickActions ? 90 : 0))
+                }
 
-            // Send button
-            Button(action: onSend) {
-                Image(systemName: "arrow.up.circle.fill")
-                    .font(.title2)
-                    .foregroundColor(text.isEmpty ? .secondary : Color("AccentPrimary"))
+                // Voice button
+                Button(action: onVoice) {
+                    Image(systemName: isListening ? "waveform.circle.fill" : "mic.circle.fill")
+                        .font(.title2)
+                        .foregroundColor(isListening ? .red : Color("AccentPrimary"))
+                        .scaleEffect(micScale)
+                        .animation(
+                            isListening
+                                ? .easeInOut(duration: 0.7).repeatForever(autoreverses: true)
+                                : .default,
+                            value: micScale
+                        )
+                }
+                .onChange(of: isListening) { listening in
+                    micScale = listening ? 1.2 : 1.0
+                }
+
+                // Text field
+                TextField(isListening ? "正在聆听..." : "问我任何事...", text: $text, axis: .vertical)
+                    .lineLimit(1...5)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(Color(.systemGray6))
+                    .clipShape(RoundedRectangle(cornerRadius: 20))
+                    .focused(isFocused)
+                    .onSubmit { onSend() }
+                    .onTapGesture {
+                        if showQuickActions {
+                            withAnimation(.easeOut(duration: 0.2)) {
+                                showQuickActions = false
+                            }
+                        }
+                    }
+
+                // Send button
+                Button(action: onSend) {
+                    Image(systemName: "arrow.up.circle.fill")
+                        .font(.title2)
+                        .foregroundColor(text.isEmpty ? .secondary : Color("AccentPrimary"))
+                }
+                .disabled(text.isEmpty)
             }
-            .disabled(text.isEmpty)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .background(.ultraThinMaterial)
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
-        .background(.ultraThinMaterial)
     }
 }

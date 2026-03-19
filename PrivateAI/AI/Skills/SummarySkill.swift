@@ -145,6 +145,23 @@ struct SummarySkill: ClawSkill {
                     lines.append(exLine)
                 }
 
+                // Workout type breakdown for the period
+                let allWorkouts = withData.flatMap { $0.workouts }
+                if !allWorkouts.isEmpty {
+                    var typeStats: [String: (emoji: String, count: Int, totalMin: Double)] = [:]
+                    for w in allWorkouts {
+                        var stat = typeStats[w.typeName] ?? (emoji: w.typeEmoji, count: 0, totalMin: 0)
+                        stat.count += 1
+                        stat.totalMin += w.duration / 60.0
+                        typeStats[w.typeName] = stat
+                    }
+                    let sortedTypes = typeStats.sorted { $0.value.totalMin > $1.value.totalMin }
+                    let summary = sortedTypes.prefix(4).map { t in
+                        "\(t.value.emoji)\(t.key)×\(t.value.count)"
+                    }.joined(separator: "  ")
+                    lines.append("  🗂️ 运动类型：\(summary)")
+                }
+
                 // Calories
                 if totalCalories > 0 {
                     lines.append("  🔥 累计消耗 \(Int(totalCalories).formatted()) 千卡")
@@ -420,6 +437,28 @@ struct SummarySkill: ClawSkill {
                             let arrow = diff > 0 ? "↑" : "↓"
                             lines.append("     较近 7 日均值 \(arrow)\(abs(Int(diff)))%")
                         }
+                    }
+                }
+
+                // Today's workout details — show what the user actually did, not just minutes
+                if !health.workouts.isEmpty {
+                    let sorted = health.workouts.sorted { $0.startDate < $1.startDate }
+                    if sorted.count <= 3 {
+                        // Few workouts: show each with detail
+                        for w in sorted {
+                            var detail = "     \(w.typeEmoji) \(w.typeName) \(w.durationFormatted)"
+                            if w.totalCalories > 0 { detail += "·\(Int(w.totalCalories))kcal" }
+                            if w.totalDistance > 500 {
+                                let km = w.totalDistance / 1000
+                                detail += "·\(String(format: "%.1f", km))km"
+                            }
+                            lines.append(detail)
+                        }
+                    } else {
+                        // Many workouts: compact one-liner per workout
+                        let compact = sorted.map { "\($0.typeEmoji)\($0.typeName) \($0.durationFormatted)" }
+                            .joined(separator: "  ")
+                        lines.append("     \(compact)")
                     }
                 }
 
@@ -788,6 +827,54 @@ struct SummarySkill: ClawSkill {
                     }
                     lines.append(exLine)
                 }
+
+                // Weekly workout type breakdown — what did the user actually do this week?
+                let allWorkouts = withData.flatMap { $0.workouts }
+                if !allWorkouts.isEmpty {
+                    // Group by type
+                    var typeStats: [String: (emoji: String, count: Int, totalMin: Double, totalCal: Double)] = [:]
+                    for w in allWorkouts {
+                        let key = w.typeName
+                        var stat = typeStats[key] ?? (emoji: w.typeEmoji, count: 0, totalMin: 0, totalCal: 0)
+                        stat.count += 1
+                        stat.totalMin += w.duration / 60.0
+                        stat.totalCal += w.totalCalories
+                        typeStats[key] = stat
+                    }
+                    let sortedTypes = typeStats.sorted { $0.value.totalMin > $1.value.totalMin }
+
+                    if sortedTypes.count == 1 {
+                        let t = sortedTypes[0]
+                        lines.append("  \(t.value.emoji) 本周 \(t.value.count) 次\(t.key)，共 \(Int(t.value.totalMin)) 分钟")
+                    } else {
+                        let summary = sortedTypes.prefix(4).map { t in
+                            "\(t.value.emoji)\(t.key)×\(t.value.count)"
+                        }.joined(separator: "  ")
+                        lines.append("  🗂️ 运动组合：\(summary)")
+
+                        // Highlight dominant workout type
+                        if let top = sortedTypes.first {
+                            let topPct = Int(top.value.totalMin / allWorkouts.reduce(0) { $0 + $1.duration / 60.0 } * 100)
+                            if topPct >= 50 && sortedTypes.count >= 2 {
+                                lines.append("     \(top.key)占比 \(topPct)%，是本周主力运动")
+                            }
+                        }
+                    }
+
+                    // Week-over-week workout variety comparison
+                    if hasLastWeek {
+                        let lwWorkouts = lastWeekWithData.flatMap { $0.workouts }
+                        if !lwWorkouts.isEmpty {
+                            let thisTypes = Set(allWorkouts.map { $0.typeName })
+                            let lastTypes = Set(lwWorkouts.map { $0.typeName })
+                            let newTypes = thisTypes.subtracting(lastTypes)
+                            if !newTypes.isEmpty {
+                                lines.append("     🆕 新尝试：\(newTypes.joined(separator: "、"))")
+                            }
+                        }
+                    }
+                }
+
                 if totalCalories > 0 {
                     var calLine = "  🔥 累计消耗 \(Int(totalCalories).formatted()) 千卡"
                     if lwTotalCalories > 0 {

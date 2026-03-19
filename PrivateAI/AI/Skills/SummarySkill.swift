@@ -19,7 +19,7 @@ struct SummarySkill: ClawSkill {
         switch intent {
         case .summary(let range):
             let lower = context.originalQuery.lowercased()
-            if range == .today && SkillRouter.containsAny(lower, ["回顾", "今天", "总结"]) {
+            if range == .today && SkillRouter.containsAny(lower, ["回顾", "今天", "总结", "日报", "早报", "晚报", "晨报", "汇报", "盘点"]) {
                 respondDailyReview(context: context, completion: completion)
             } else {
                 respondSummary(range: range, context: context, completion: completion)

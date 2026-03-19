@@ -430,6 +430,7 @@ struct SkillRouter {
         // Weekly insight provides richer cross-data analysis than basic summary.
         if containsAny(lower, ["本周总结", "这周总结", "本周回顾", "这周回顾",
                                 "这周怎么样", "这周怎样", "这周过得", "本周情况", "这周情况",
+                                "这周咋样", "本周咋样", "这周如何", "本周如何",
                                 "周报", "这礼拜", "一周总结", "一周回顾",
                                 "本周表现", "这周表现", "这周分析", "本周分析",
                                 "这周好不好", "本周好不好", "这礼拜怎",
@@ -438,24 +439,37 @@ struct SkillRouter {
             return .weeklyInsight
         }
 
+        // --- Summary: daily briefing keywords (inherently today-scoped) ---
+        // "日报", "早报", "晚报" mean today's report regardless of time extraction.
+        // Must be checked before the general summary block to apply the .today default.
+        let briefingKeywords = ["日报", "早报", "晚报", "晨报"]
+        if containsAny(lower, briefingKeywords) {
+            let briefingRange = hasExplicitTimeReference(lower) ? range : .today
+            return .summary(range: briefingRange)
+        }
+
         // --- Summary ---
         // Covers explicit summary words ("总结") AND natural status inquiries.
-        // Important: include both "怎么样" and "怎样" variants — Chinese users
-        // use them interchangeably ("过得怎么样" ≈ "过得怎样").
+        // Important: include "怎么样", "怎样", and colloquial "咋样" variants —
+        // Chinese users use them interchangeably ("过得怎么样" ≈ "过得怎样" ≈ "过得咋样").
         if containsAny(lower, ["总结", "回顾", "概括", "做了什么", "发生了什么",
-                                "过得怎么样", "过得怎样", "过得如何", "过得好",
-                                "怎么过的", "生活怎么样", "生活怎样", "生活如何",
+                                "过得怎么样", "过得怎样", "过得咋样", "过得如何", "过得好",
+                                "怎么过的", "咋过的",
+                                "生活怎么样", "生活怎样", "生活咋样", "生活如何",
                                 "一天过得", "这段时间", "近况", "这阵子", "近来如何",
                                 // Broad "how am I doing" patterns with time context
-                                // "最近怎" catches "最近怎么样"/"最近怎样"
-                                "最近怎", "最近好", "最近过得",
+                                // "最近怎" catches "最近怎么样"/"最近怎样"/"最近咋样"
+                                "最近怎", "最近好", "最近过得", "最近咋",
                                 // Natural state/condition inquiries
-                                "状态怎", "状态如何", "状态好不好",
-                                "情况怎", "情况如何",
+                                "状态怎", "状态如何", "状态咋样", "状态好不好",
+                                "情况怎", "情况如何", "情况咋样",
+                                "啥情况", "什么情况",
                                 "我的状态", "我的情况", "我的近况",
-                                "表现怎", "表现如何",
+                                "表现怎", "表现如何", "表现咋样",
                                 // General "how am I" patterns
-                                "日子过得", "日子怎",
+                                "日子过得", "日子怎", "日子咋",
+                                // Review synonyms
+                                "汇报", "盘点",
                                 // Analysis requests (general, no specific topic)
                                 "帮我分析", "分析一下",
                                 "summary", "recap", "review", "what happened", "what did i",
@@ -676,9 +690,9 @@ struct SkillRouter {
 
         // --- Calendar: today/future + generic question → calendar intent ---
         // e.g. "今天有什么事", "明天干嘛", "后天有什么"
-        if (range == .today || range.isFuture) && containsAny(lower, ["有什么", "干嘛", "干什么", "做什么",
+        if (range == .today || range.isFuture) && containsAny(lower, ["有什么", "干嘛", "干什么", "干啥", "做什么",
                                                    "什么事", "有事", "有没有", "啥事",
-                                                   "有啥", "怎么安排",
+                                                   "有啥", "怎么安排", "咋安排",
                                                    "what's on", "what do i have"]) {
             return .calendar(range: range)
         }

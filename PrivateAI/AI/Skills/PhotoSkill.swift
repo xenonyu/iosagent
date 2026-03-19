@@ -140,7 +140,161 @@ struct PhotoSkill: ClawSkill {
             lines.append("\n📍 \(withLocation) 张照片有位置信息")
         }
 
+        // Content analysis from Vision-indexed tags (CDPhotoIndex)
+        let contentSection = buildContentAnalysis(
+            photoIds: photos.map { $0.id },
+            interval: interval,
+            totalCount: photos.count,
+            context: context
+        )
+        if !contentSection.isEmpty {
+            lines.append("")
+            lines.append(contentsOf: contentSection)
+        }
+
         return lines.joined(separator: "\n")
+    }
+
+    // MARK: - Content Analysis (Vision Tags)
+
+    /// Semantic categories used to classify Vision tags into human-readable themes.
+    private static let tagCategories: [(label: String, emoji: String, tags: Set<String>)] = [
+        ("自拍",   "🤳", ["selfie", "portrait", "face"]),
+        ("合照",   "👥", ["group", "people", "crowd"]),
+        ("美食",   "🍜", ["food", "meal", "restaurant", "dish", "dessert", "cake", "coffee", "drink", "fruit"]),
+        ("风景",   "🏞️", ["landscape", "scenery", "nature", "mountain", "hill", "valley", "field"]),
+        ("海边",   "🏖️", ["beach", "ocean", "sea", "coast", "wave"]),
+        ("天空",   "🌤️", ["sky", "cloud", "sunset", "sunrise"]),
+        ("水景",   "💧", ["lake", "river", "water", "waterfall"]),
+        ("花草",   "🌸", ["flower", "plant", "garden", "tree", "forest"]),
+        ("动物",   "🐾", ["animal", "cat", "dog", "bird", "pet", "kitten", "puppy", "fish"]),
+        ("建筑",   "🏛️", ["building", "architecture", "house", "tower", "bridge", "church"]),
+        ("城市",   "🏙️", ["city", "street", "urban", "road", "traffic"]),
+        ("夜景",   "🌃", ["night", "light", "neon"]),
+        ("车辆",   "🚗", ["car", "vehicle", "bus", "train", "transport"]),
+        ("室内",   "🏠", ["indoor", "room", "interior"]),
+        ("户外",   "⛰️", ["outdoor", "hiking", "camping", "park"]),
+        ("雪景",   "❄️", ["snow", "winter", "skiing", "ice"]),
+    ]
+
+    /// Queries CDPhotoIndex for photos in the given date interval, classifies their
+    /// Vision tags into semantic categories, and returns a content breakdown section.
+    private func buildContentAnalysis(photoIds: [String], interval: DateInterval,
+                                      totalCount: Int, context: SkillContext) -> [String] {
+        let request = NSFetchRequest<CDPhotoIndex>(entityName: "CDPhotoIndex")
+        request.predicate = NSPredicate(
+            format: "creationDate >= %@ AND creationDate <= %@",
+            interval.start as NSDate, interval.end as NSDate
+        )
+
+        guard let indexed = try? context.coreDataContext.fetch(request),
+              !indexed.isEmpty else {
+            return []
+        }
+
+        // --- Categorize each indexed photo ---
+        var categoryCounts: [String: Int] = [:]   // label → count
+        var selfieCount = 0
+        var groupCount = 0
+        var soloFaceCount = 0
+
+        for entry in indexed {
+            let entryTags = (entry.tags ?? "")
+                .split(separator: ",")
+                .map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
+            let tagSet = Set(entryTags)
+
+            // Face-based classification
+            let faces = Int(entry.faceCount)
+            if faces == 1 {
+                soloFaceCount += 1
+                if entry.isFrontCamera {
+                    selfieCount += 1
+                }
+            } else if faces >= 2 {
+                groupCount += 1
+            }
+
+            // Tag-based classification — a photo can match multiple categories,
+            // but we only count the first (most specific) match to avoid inflation.
+            var matched = false
+            for category in Self.tagCategories {
+                if !tagSet.isDisjoint(with: category.tags) {
+                    categoryCounts[category.label, default: 0] += 1
+                    matched = true
+                    break  // one category per photo
+                }
+            }
+
+            // If no tag match but has faces, already counted above
+            _ = matched
+        }
+
+        // Add face-based categories
+        if selfieCount > 0 { categoryCounts["自拍", default: 0] += selfieCount }
+        if groupCount > 0 { categoryCounts["合照", default: 0] += groupCount }
+
+        // --- Build output ---
+        let indexedRatio = Double(indexed.count) / Double(max(1, totalCount))
+
+        // Need meaningful data to show content section
+        guard !categoryCounts.isEmpty else { return [] }
+
+        // Sort categories by count (descending), take top entries
+        let sorted = categoryCounts.sorted { $0.value > $1.value }
+        let topCategories = sorted.prefix(6)
+
+        var lines: [String] = []
+        lines.append("🏷️ **照片内容分析**:")
+
+        // Bar chart visualization
+        let maxCount = topCategories.first?.value ?? 1
+        for (label, count) in topCategories {
+            let emoji = Self.tagCategories.first { $0.label == label }?.emoji ?? "📷"
+            let barLen = max(1, Int(Double(count) / Double(maxCount) * 8))
+            let bar = String(repeating: "▓", count: barLen) + String(repeating: "░", count: max(0, 8 - barLen))
+            let pct = indexed.count > 0 ? Int(Double(count) / Double(indexed.count) * 100) : 0
+            lines.append("  \(emoji) \(label) [\(bar)] \(count)张（\(pct)%）")
+        }
+
+        // Top content insight
+        if let top = topCategories.first, top.value >= 3 {
+            let topEmoji = Self.tagCategories.first { $0.label == top.key }?.emoji ?? "📷"
+            let personality = contentPersonality(topCategory: top.key, count: top.value, total: indexed.count)
+            if !personality.isEmpty {
+                lines.append("\n💡 \(personality)")
+            }
+        }
+
+        // Coverage note if not all photos are indexed
+        if indexedRatio < 0.8 && indexed.count < totalCount {
+            let indexedPct = Int(indexedRatio * 100)
+            lines.append("  ℹ️ 已索引 \(indexed.count)/\(totalCount) 张（\(indexedPct)%），在「设置」中可索引更多")
+        }
+
+        return lines
+    }
+
+    /// Generates a fun, personalized one-liner based on the dominant photo category.
+    private func contentPersonality(topCategory: String, count: Int, total: Int) -> String {
+        let pct = total > 0 ? Int(Double(count) / Double(total) * 100) : 0
+        guard pct >= 25 else { return "" }
+
+        switch topCategory {
+        case "美食": return "这段时间你是个十足的美食记录者 🍽️"
+        case "风景": return "风景照占比最高，你一直在用镜头捕捉美好"
+        case "自拍": return "自拍最多，记录自己的每个精彩瞬间 ✨"
+        case "合照": return "合照不少，看来这段时间社交很丰富"
+        case "动物": return "萌宠出镜率最高，是个爱动物的人 🐱"
+        case "海边": return "海边照片最多，是一段海风与阳光的记忆 🌊"
+        case "天空": return "你总是抬头看天，捕捉天空的变化"
+        case "花草": return "花花草草入镜最多，生活充满自然气息 🌿"
+        case "建筑": return "建筑照片最多，对城市空间有独特的审美"
+        case "城市": return "街头巷尾的城市记录者 📸"
+        case "夜景": return "夜色中的光影猎手 🌃"
+        case "雪景": return "冰天雪地里的探险家 ❄️"
+        default: return ""
+        }
     }
 
     // MARK: - Photo Search

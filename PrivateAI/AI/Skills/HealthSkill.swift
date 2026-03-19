@@ -720,7 +720,11 @@ struct HealthSkill: ClawSkill {
     // MARK: - Health Metric
 
     private func respondHealth(metric: String, range: QueryTimeRange, context: SkillContext, completion: @escaping (String) -> Void) {
-        let fetchDays = fetchDaysNeeded(for: range)
+        let baseFetchDays = fetchDaysNeeded(for: range)
+        // For the general overview, fetch 2x the range to provide previous-period comparison
+        let isOverview = (metric == "general")
+        let spanDays = max(1, Calendar.current.dateComponents([.day], from: range.interval.start, to: range.interval.end).day ?? 1)
+        let fetchDays = isOverview ? baseFetchDays + spanDays : baseFetchDays
         context.healthService.fetchSummaries(days: fetchDays) { allSummaries in
             let interval = range.interval
             let filtered = allSummaries.filter { interval.contains($0.date) }
@@ -747,27 +751,28 @@ struct HealthSkill: ClawSkill {
 
             switch metric {
             case "sleep":
-                respondSleep(summaries: withData, range: range, context: context, completion: completion)
+                self.respondSleep(summaries: withData, range: range, context: context, completion: completion)
             case "heartRate":
-                respondHeartRate(summaries: withData, range: range, completion: completion)
+                self.respondHeartRate(summaries: withData, range: range, completion: completion)
             case "steps":
-                respondSteps(summaries: withData, range: range, completion: completion)
+                self.respondSteps(summaries: withData, range: range, completion: completion)
             case "flights":
-                respondFlights(summaries: withData, range: range, completion: completion)
+                self.respondFlights(summaries: withData, range: range, completion: completion)
             case "distance":
-                respondDistance(summaries: withData, range: range, completion: completion)
+                self.respondDistance(summaries: withData, range: range, completion: completion)
             case "calories":
-                respondCalories(summaries: withData, range: range, completion: completion)
+                self.respondCalories(summaries: withData, range: range, completion: completion)
             case "weight":
-                respondWeight(summaries: withData, range: range, context: context, completion: completion)
+                self.respondWeight(summaries: withData, range: range, context: context, completion: completion)
             case "recovery":
-                respondRecovery(summaries: allSummaries, todaySummaries: withData, range: range, context: context, completion: completion)
+                self.respondRecovery(summaries: allSummaries, todaySummaries: withData, range: range, context: context, completion: completion)
             case "bloodOxygen":
                 self.respondBloodOxygen(summaries: withData, range: range, completion: completion)
             case "vo2max":
                 self.respondVO2Max(summaries: withData, range: range, completion: completion)
             default:
-                respondOverview(summaries: withData, range: range, context: context, completion: completion)
+                // Overview: pass all fetched summaries so we can compute previous-period comparison
+                self.respondOverview(summaries: withData, allSummaries: allSummaries, range: range, context: context, completion: completion)
             }
         }
     }
@@ -2947,7 +2952,7 @@ struct HealthSkill: ClawSkill {
         completion(lines.joined(separator: "\n"))
     }
 
-    private func respondOverview(summaries: [HealthSummary], range: QueryTimeRange, context: SkillContext, completion: @escaping (String) -> Void) {
+    private func respondOverview(summaries: [HealthSummary], allSummaries: [HealthSummary]? = nil, range: QueryTimeRange, context: SkillContext, completion: @escaping (String) -> Void) {
         var lines: [String] = []
         let dayCount = Double(max(summaries.count, 1))
         let cal = Calendar.current
@@ -2975,6 +2980,25 @@ struct HealthSkill: ClawSkill {
                 lines.append("  \(dim.emoji) \(dim.name) [\(bar)] \(pct)%\(dim.note.isEmpty ? "" : "  \(dim.note)")")
             }
             lines.append("")
+        }
+
+        // --- Previous-period quick comparison ---
+        // Shows brief trend arrows (↑/↓/→) vs the previous equal-length period
+        // so the user immediately sees whether they're improving or declining.
+        if let allData = allSummaries {
+            let interval = range.interval
+            let spanDays = max(1, cal.dateComponents([.day], from: interval.start, to: interval.end).day ?? 1)
+            let prevEnd = interval.start
+            let prevStart = cal.date(byAdding: .day, value: -spanDays, to: prevEnd) ?? prevEnd
+            let prevSummaries = allData.filter { $0.date >= prevStart && $0.date < prevEnd && $0.hasData }
+
+            if !prevSummaries.isEmpty {
+                let compLines = buildQuickComparison(current: summaries, previous: prevSummaries)
+                if !compLines.isEmpty {
+                    lines.append(contentsOf: compLines)
+                    lines.append("")
+                }
+            }
         }
 
         // --- Core metrics ---
@@ -3393,6 +3417,109 @@ struct HealthSkill: ClawSkill {
     }
 
     /// Verdict text for the holistic health score.
+    /// Builds a compact "vs previous period" comparison for the health overview.
+    /// Returns lines like: "📈 vs 上个同期：步数 ↑12%  运动 ↑25%  睡眠 →持平  心率 ↓3%"
+    private func buildQuickComparison(current: [HealthSummary], previous: [HealthSummary]) -> [String] {
+        let curDays = Double(max(current.count, 1))
+        let prevDays = Double(max(previous.count, 1))
+
+        struct MetricDelta {
+            let label: String
+            let emoji: String
+            let curAvg: Double
+            let prevAvg: Double
+            /// Whether lower is better (e.g. resting heart rate)
+            let lowerIsBetter: Bool
+
+            var pctChange: Double {
+                guard prevAvg > 0 else { return 0 }
+                return (curAvg - prevAvg) / prevAvg * 100
+            }
+
+            var arrow: String {
+                let pct = pctChange
+                if abs(pct) < 5 { return "→" }
+                let isUp = pct > 0
+                if lowerIsBetter { return isUp ? "↑" : "↓" }
+                return isUp ? "↑" : "↓"
+            }
+
+            /// Green = improving, red = declining, gray = stable
+            var trendEmoji: String {
+                let pct = pctChange
+                if abs(pct) < 5 { return "" }
+                let isUp = pct > 0
+                let improving = lowerIsBetter ? !isUp : isUp
+                return improving ? "🟢" : "🔴"
+            }
+
+            var display: String? {
+                guard prevAvg > 0 && curAvg > 0 else { return nil }
+                let pct = pctChange
+                if abs(pct) < 2 { return "\(emoji)\(label) →持平" }
+                let sign = pct > 0 ? "+" : ""
+                return "\(emoji)\(label) \(arrow)\(sign)\(Int(pct))%"
+            }
+        }
+
+        // Compute averages for current and previous periods
+        let curAvgSteps = current.reduce(0) { $0 + $1.steps } / curDays
+        let prevAvgSteps = previous.reduce(0) { $0 + $1.steps } / prevDays
+
+        let curAvgExercise = current.reduce(0) { $0 + $1.exerciseMinutes } / curDays
+        let prevAvgExercise = previous.reduce(0) { $0 + $1.exerciseMinutes } / prevDays
+
+        let curSleepDays = current.filter { $0.sleepHours > 0 }
+        let prevSleepDays = previous.filter { $0.sleepHours > 0 }
+        let curAvgSleep = curSleepDays.isEmpty ? 0 : curSleepDays.reduce(0) { $0 + $1.sleepHours } / Double(curSleepDays.count)
+        let prevAvgSleep = prevSleepDays.isEmpty ? 0 : prevSleepDays.reduce(0) { $0 + $1.sleepHours } / Double(prevSleepDays.count)
+
+        let curHRDays = current.filter { $0.restingHeartRate > 0 }
+        let prevHRDays = previous.filter { $0.restingHeartRate > 0 }
+        let curAvgRHR = curHRDays.isEmpty ? 0 : curHRDays.reduce(0) { $0 + $1.restingHeartRate } / Double(curHRDays.count)
+        let prevAvgRHR = prevHRDays.isEmpty ? 0 : prevHRDays.reduce(0) { $0 + $1.restingHeartRate } / Double(prevHRDays.count)
+
+        let curAvgCal = current.reduce(0) { $0 + $1.activeCalories } / curDays
+        let prevAvgCal = previous.reduce(0) { $0 + $1.activeCalories } / prevDays
+
+        let deltas: [MetricDelta] = [
+            MetricDelta(label: "步数", emoji: "👟", curAvg: curAvgSteps, prevAvg: prevAvgSteps, lowerIsBetter: false),
+            MetricDelta(label: "运动", emoji: "⏱", curAvg: curAvgExercise, prevAvg: prevAvgExercise, lowerIsBetter: false),
+            MetricDelta(label: "睡眠", emoji: "😴", curAvg: curAvgSleep, prevAvg: prevAvgSleep, lowerIsBetter: false),
+            MetricDelta(label: "消耗", emoji: "🔥", curAvg: curAvgCal, prevAvg: prevAvgCal, lowerIsBetter: false),
+            MetricDelta(label: "静息心率", emoji: "🫀", curAvg: curAvgRHR, prevAvg: prevAvgRHR, lowerIsBetter: true),
+        ]
+
+        let displayParts = deltas.compactMap { $0.display }
+        guard !displayParts.isEmpty else { return [] }
+
+        // Count improving vs declining metrics for a one-line verdict
+        let improving = deltas.filter { $0.prevAvg > 0 && $0.curAvg > 0 }.filter { d in
+            let pct = d.pctChange
+            if abs(pct) < 5 { return false }
+            return d.lowerIsBetter ? pct < 0 : pct > 0
+        }.count
+        let declining = deltas.filter { $0.prevAvg > 0 && $0.curAvg > 0 }.filter { d in
+            let pct = d.pctChange
+            if abs(pct) < 5 { return false }
+            return d.lowerIsBetter ? pct > 0 : pct < 0
+        }.count
+
+        var lines: [String] = []
+        let trendVerdict: String
+        if improving > declining && improving >= 2 {
+            trendVerdict = "整体在变好 📈"
+        } else if declining > improving && declining >= 2 {
+            trendVerdict = "部分指标下滑 📉"
+        } else {
+            trendVerdict = "基本持平"
+        }
+        lines.append("🔄 **vs 上个同期**（\(trendVerdict)）")
+        lines.append("  \(displayParts.joined(separator: "  "))")
+
+        return lines
+    }
+
     private func healthScoreVerdict(_ result: HealthScoreResult) -> String {
         let s = result.total
         if s >= 85 {

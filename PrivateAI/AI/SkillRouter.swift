@@ -36,6 +36,7 @@ enum QueryIntent {
     case reminder(action: ReminderAction)
     case search(keyword: String)
     case note(action: NoteAction, content: String)
+    case textTool(action: TextToolAction, content: String)
     case unknown
 
     /// Whether this intent could not be matched to any known skill.
@@ -43,6 +44,18 @@ enum QueryIntent {
         if case .unknown = self { return true }
         return false
     }
+}
+
+// MARK: - Text Tool Action
+
+enum TextToolAction {
+    case wordCount        // 字数统计
+    case toUppercase      // 转大写
+    case toLowercase      // 转小写
+    case reverse          // 反转文本
+    case removeSpaces     // 去除多余空格
+    case charFrequency    // 字符频率统计
+    case help             // 显示文本工具列表
 }
 
 // MARK: - Note Action
@@ -197,6 +210,11 @@ struct SkillRouter {
         // --- Password Generator ---
         if let pwdType = parsePasswordGen(lower) {
             return .passwordGen(type: pwdType)
+        }
+
+        // --- Text Tools ---
+        if let textToolIntent = parseTextTool(lower, original: text) {
+            return textToolIntent
         }
 
         // --- Greeting / Conversational ---
@@ -1687,6 +1705,72 @@ struct SkillRouter {
         cleaned = cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
 
         return cleaned.isEmpty ? "提醒时间到了" : cleaned
+    }
+
+    // MARK: - Text Tool Parsing
+
+    private static func parseTextTool(_ lower: String, original: String) -> QueryIntent? {
+        let textToolKeywords = ["字数", "字符数", "统计字数", "几个字", "多少字", "多少个字",
+                                "word count", "char count", "character count",
+                                "转大写", "大写", "uppercase", "to upper",
+                                "转小写", "小写", "lowercase", "to lower",
+                                "反转", "倒过来", "倒着写", "reverse",
+                                "去空格", "去除空格", "去掉空格", "remove spaces", "trim",
+                                "字符频率", "字频", "字符统计", "char frequency",
+                                "文本工具", "文字工具", "text tool"]
+
+        guard containsAny(lower, textToolKeywords) else { return nil }
+
+        // Determine the action
+        let action: TextToolAction
+        if containsAny(lower, ["字数", "字符数", "统计字数", "几个字", "多少字", "多少个字",
+                                "word count", "char count", "character count"]) {
+            action = .wordCount
+        } else if containsAny(lower, ["转大写", "大写", "uppercase", "to upper"]) {
+            action = .toUppercase
+        } else if containsAny(lower, ["转小写", "小写", "lowercase", "to lower"]) {
+            action = .toLowercase
+        } else if containsAny(lower, ["反转", "倒过来", "倒着写", "reverse"]) {
+            action = .reverse
+        } else if containsAny(lower, ["去空格", "去除空格", "去掉空格", "remove spaces", "trim"]) {
+            action = .removeSpaces
+        } else if containsAny(lower, ["字符频率", "字频", "字符统计", "char frequency"]) {
+            action = .charFrequency
+        } else {
+            action = .help
+        }
+
+        // Extract the content after the keyword trigger
+        let content = extractTextToolContent(from: original, lower: lower)
+        return .textTool(action: action, content: content)
+    }
+
+    /// Extract the text content the user wants to process.
+    /// Looks for quoted text first, then text after common delimiters.
+    private static func extractTextToolContent(from original: String, lower: String) -> String {
+        // Try quoted content first: "...", '...', 「...」, 『...』
+        let quotePatterns: [(String, String)] = [
+            ("\"", "\""), ("'", "'"), (""", """), ("'", "'"),
+            ("「", "」"), ("『", "』"), ("《", "》")
+        ]
+        for (open, close) in quotePatterns {
+            if let startRange = original.range(of: open),
+               let endRange = original.range(of: close, range: startRange.upperBound..<original.endIndex) {
+                let extracted = String(original[startRange.upperBound..<endRange.lowerBound])
+                if !extracted.isEmpty { return extracted }
+            }
+        }
+
+        // Try text after colon/comma
+        let delimiters = ["：", ":", "，", ","]
+        for d in delimiters {
+            if let range = original.range(of: d) {
+                let after = original[range.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)
+                if !after.isEmpty { return after }
+            }
+        }
+
+        return ""
     }
 
     static func containsAny(_ text: String, _ keywords: [String]) -> Bool {

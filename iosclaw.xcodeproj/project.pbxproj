@@ -14,6 +14,7 @@
 		159145056FABB8D70C098C0F /* SleepCalculatorSkill.swift in Sources */ = {isa = PBXBuildFile; fileRef = FFCEC700DEDE242713561C91 /* SleepCalculatorSkill.swift */; };
 		1629AC2683D0413511958C4D /* LocationMapView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 283CD90008D11942D3C5AE72 /* LocationMapView.swift */; };
 		195FDBF0F8436297FF05E18B /* ReminderSkill.swift in Sources */ = {isa = PBXBuildFile; fileRef = 59A94E5A1885B11F9336356B /* ReminderSkill.swift */; };
+		1ADD83C2D8D8FC9D884E1AA3 /* SearchSkill.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F98396D6FAACF13670EC44C /* SearchSkill.swift */; };
 		1CBE700BAE9C065E1DFCE259 /* PhotoIndexService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 93E7F9209DB80408CB8E91D4 /* PhotoIndexService.swift */; };
 		1F8A74106053911191D26936 /* PrivateAIWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = FDB27CEC9D33CCDF90C0F401 /* PrivateAIWidget.swift */; };
 		290271DAB96311FA34581A0C /* SwiftUI.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A28B68FF7E20E12114174A8E /* SwiftUI.framework */; };
@@ -27,6 +28,7 @@
 		4016A858DD3A5644FCCDDCF7 /* PomodoroSkill.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA627A47035AAD4125262EB4 /* PomodoroSkill.swift */; };
 		418AC465E1B3DBED2C1B5BC4 /* HealthSkill.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C1BB503360544C933017A41 /* HealthSkill.swift */; };
 		4CF7C65794A081ACC3D39695 /* BreathingSkill.swift in Sources */ = {isa = PBXBuildFile; fileRef = 185318DE001F2471C0C32502 /* BreathingSkill.swift */; };
+		51B5E50773B195CB646B834A /* NoteSkill.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2DC2346D0A12850056702ADC /* NoteSkill.swift */; };
 		53F1B2B9286DB0DF74C9ED13 /* ClawEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 21F123D2B27E6BFA0F919E5F /* ClawEngine.swift */; };
 		55165A62308D1533D99EE38F /* AppState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 29EDF0AABD473CD3FEAE585C /* AppState.swift */; };
 		5548A4F9F8B9B9B3780BC82E /* MathSkill.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D0677EAD4A98FD7B4BB601E /* MathSkill.swift */; };
@@ -54,6 +56,7 @@
 		91132942AAAC12535741AAB5 /* GreetingSkill.swift in Sources */ = {isa = PBXBuildFile; fileRef = FACC25FE9941AA10BA6893EA /* GreetingSkill.swift */; };
 		98D9FC941DE5E701DC0E557C /* PhotoSearchService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 56B2FE7E27D4FAA1D6E8940E /* PhotoSearchService.swift */; };
 		9E3ED1AFB416BF0BFDDEAA93 /* ContextMemory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 666F826153CDFB7991D2EADB /* ContextMemory.swift */; };
+		9F4B5A25FCFC30595C82FA9A /* TextToolSkill.swift in Sources */ = {isa = PBXBuildFile; fileRef = 89D3C8878A944D763C580A58 /* TextToolSkill.swift */; };
 		A3443515AA88879B78B6EF78 /* CalendarService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3DD1CBB61BD5F757E659DA7B /* CalendarService.swift */; };
 		AAFF1DD399E3D397D71E602B /* ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F8DC98337E771986CB495A63 /* ChatView.swift */; };
 		AD114F09417B656E5EC81E14 /* SettingsViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D806134713EBA25781AD08B /* SettingsViewModel.swift */; };
@@ -85,6 +88,7 @@
 		0624FDC274E59C094C592A70 /* TimelineView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimelineView.swift; sourceTree = "<group>"; };
 		0ACE818BAD02C2D8CBA59243 /* LocationSkill.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationSkill.swift; sourceTree = "<group>"; };
 		0F796E57D97A09EC743748D0 /* ExpenseSkill.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExpenseSkill.swift; sourceTree = "<group>"; };
+		0F98396D6FAACF13670EC44C /* SearchSkill.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchSkill.swift; sourceTree = "<group>"; };
 		12D2D7E53A79547B6F578CE6 /* ProfileViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProfileViewModel.swift; sourceTree = "<group>"; };
 		185318DE001F2471C0C32502 /* BreathingSkill.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BreathingSkill.swift; sourceTree = "<group>"; };
 		1B534D5CB1E9EF01490A5E41 /* ProfileView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProfileView.swift; sourceTree = "<group>"; };
@@ -95,6 +99,7 @@
 		283CD90008D11942D3C5AE72 /* LocationMapView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationMapView.swift; sourceTree = "<group>"; };
 		29EDF0AABD473CD3FEAE585C /* AppState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppState.swift; sourceTree = "<group>"; };
 		2B634088CB43399AC8FBC42F /* PrivateAIWidgetExtension.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = PrivateAIWidgetExtension.entitlements; sourceTree = "<group>"; };
+		2DC2346D0A12850056702ADC /* NoteSkill.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoteSkill.swift; sourceTree = "<group>"; };
 		3100F32ADD102580E12A1694 /* UnitConversionSkill.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UnitConversionSkill.swift; sourceTree = "<group>"; };
 		31757FD0C5225CD41F60B836 /* SpeechService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechService.swift; sourceTree = "<group>"; };
 		33F073B1A5167046D56AB53B /* SharedDefaults.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedDefaults.swift; sourceTree = "<group>"; };
@@ -122,6 +127,7 @@
 		7DC0818F57D4D75FB86E927F /* MoodSkill.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoodSkill.swift; sourceTree = "<group>"; };
 		7F959CC7228639AB0FCF4B16 /* ChatViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatViewModel.swift; sourceTree = "<group>"; };
 		85E0695CE3DE415DB52E76A0 /* SummarySkill.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SummarySkill.swift; sourceTree = "<group>"; };
+		89D3C8878A944D763C580A58 /* TextToolSkill.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TextToolSkill.swift; sourceTree = "<group>"; };
 		8B8339F6624C617E7B8DCDAC /* LocationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationService.swift; sourceTree = "<group>"; };
 		929313B795273BE89B85C738 /* Photos.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Photos.framework; path = System/Library/Frameworks/Photos.framework; sourceTree = SDKROOT; };
 		93C207D5B2435BDFD049E66C /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
@@ -232,6 +238,7 @@
 				0ACE818BAD02C2D8CBA59243 /* LocationSkill.swift */,
 				5D0677EAD4A98FD7B4BB601E /* MathSkill.swift */,
 				7DC0818F57D4D75FB86E927F /* MoodSkill.swift */,
+				2DC2346D0A12850056702ADC /* NoteSkill.swift */,
 				23F6F86CEB807580710A58C2 /* PasswordGeneratorSkill.swift */,
 				9866A64E357AEC07B359C569 /* PhotoSkill.swift */,
 				FA627A47035AAD4125262EB4 /* PomodoroSkill.swift */,
@@ -240,8 +247,10 @@
 				A0E0CB3253163E40232B6BB4 /* RecommendationSkill.swift */,
 				749BA5F94BA2252D4E0744BB /* RecordSkill.swift */,
 				59A94E5A1885B11F9336356B /* ReminderSkill.swift */,
+				0F98396D6FAACF13670EC44C /* SearchSkill.swift */,
 				FFCEC700DEDE242713561C91 /* SleepCalculatorSkill.swift */,
 				85E0695CE3DE415DB52E76A0 /* SummarySkill.swift */,
+				89D3C8878A944D763C580A58 /* TextToolSkill.swift */,
 				B85998145F0B8168C2FE2522 /* TodoSkill.swift */,
 				3100F32ADD102580E12A1694 /* UnitConversionSkill.swift */,
 				EE946ED94A94BD4EC76A955D /* UnknownSkill.swift */,
@@ -574,6 +583,7 @@
 				5548A4F9F8B9B9B3780BC82E /* MathSkill.swift in Sources */,
 				DA591A730D53CF3079AF1F88 /* MessageBubble.swift in Sources */,
 				D582284312622B63296DC0C5 /* MoodSkill.swift in Sources */,
+				51B5E50773B195CB646B834A /* NoteSkill.swift in Sources */,
 				D0F682968363DF65DCE52908 /* NotificationService.swift in Sources */,
 				6D2E2974EA9B5E60A66BCBB4 /* PasswordGeneratorSkill.swift in Sources */,
 				F4A751F258E406F00E96B0CC /* PersistenceController.swift in Sources */,
@@ -594,6 +604,7 @@
 				0570EE17ED17F727A06A3B0D /* RecommendationSkill.swift in Sources */,
 				5F55F004A36BA18AD2F8F2B4 /* RecordSkill.swift in Sources */,
 				195FDBF0F8436297FF05E18B /* ReminderSkill.swift in Sources */,
+				1ADD83C2D8D8FC9D884E1AA3 /* SearchSkill.swift in Sources */,
 				77FBFEC1EB5D3A324A6569BC /* SettingsView.swift in Sources */,
 				AD114F09417B656E5EC81E14 /* SettingsViewModel.swift in Sources */,
 				6DD3A7EEF424C809B15CFB30 /* SharedDefaults.swift in Sources */,
@@ -604,6 +615,7 @@
 				6A41110D3B4B797554B49B38 /* StatsView.swift in Sources */,
 				37CEB8CFA6B43087E51D14BA /* StatsViewModel.swift in Sources */,
 				6AEDC1267F87115071627444 /* SummarySkill.swift in Sources */,
+				9F4B5A25FCFC30595C82FA9A /* TextToolSkill.swift in Sources */,
 				3F7172537283DC3F88EC22D3 /* TimelineView.swift in Sources */,
 				7C2D5D42ED35AE82C6289768 /* TimelineViewModel.swift in Sources */,
 				000C45E062EE846A6DC3E6E1 /* TodoSkill.swift in Sources */,

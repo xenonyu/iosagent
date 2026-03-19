@@ -782,6 +782,45 @@ struct SummarySkill: ClawSkill {
                         }
                     }
                     lines.append(sleepLine)
+
+                    // Sleep consistency — standard deviation of nightly sleep hours
+                    if sleepDays.count >= 3 {
+                        let sleepValues = sleepDays.map { $0.sleepHours }
+                        let mean = sleepValues.reduce(0, +) / Double(sleepValues.count)
+                        let variance = sleepValues.reduce(0) { $0 + ($1 - mean) * ($1 - mean) } / Double(sleepValues.count)
+                        let stdDev = sqrt(variance)
+                        if stdDev < 0.5 {
+                            lines.append("  🟢 作息规律：波动仅 ±\(String(format: "%.1f", stdDev))h，生物钟很稳定")
+                        } else if stdDev < 1.0 {
+                            lines.append("  🟡 作息尚可：波动 ±\(String(format: "%.1f", stdDev))h，可以更规律")
+                        } else {
+                            lines.append("  🟠 作息波动大：±\(String(format: "%.1f", stdDev))h —— 规律作息有助于提升睡眠质量")
+                        }
+                    }
+
+                    // Sleep phase quality summary when Apple Watch data available
+                    let phaseDays = sleepDays.filter { $0.hasSleepPhases }
+                    if phaseDays.count >= 2 {
+                        let avgDeep = phaseDays.reduce(0) { $0 + $1.sleepDeepHours } / Double(phaseDays.count)
+                        let avgREM = phaseDays.reduce(0) { $0 + $1.sleepREMHours } / Double(phaseDays.count)
+                        let avgCore = phaseDays.reduce(0) { $0 + $1.sleepCoreHours } / Double(phaseDays.count)
+                        let deepPct = avgSleep > 0 ? Int(avgDeep / avgSleep * 100) : 0
+                        let remPct = avgSleep > 0 ? Int(avgREM / avgSleep * 100) : 0
+
+                        var phaseDesc = "  🧠 睡眠结构：深睡 \(String(format: "%.1f", avgDeep))h（\(deepPct)%）"
+                        phaseDesc += "｜REM \(String(format: "%.1f", avgREM))h（\(remPct)%）"
+                        phaseDesc += "｜浅睡 \(String(format: "%.1f", avgCore))h"
+                        lines.append(phaseDesc)
+
+                        // Interpret sleep quality based on phase distribution
+                        if deepPct >= 15 && remPct >= 20 {
+                            lines.append("     ✅ 深睡+REM 占比健康，恢复效率不错")
+                        } else if deepPct < 10 {
+                            lines.append("     💡 深睡占比偏低（理想≥15%），试试睡前避免屏幕和咖啡因")
+                        } else if remPct < 15 {
+                            lines.append("     💡 REM 偏少（理想≥20%），可能与压力或酒精有关")
+                        }
+                    }
                 }
 
                 // Best and worst day for steps
@@ -1198,7 +1237,53 @@ struct SummarySkill: ClawSkill {
             }
         }
 
-        return Array(insights.prefix(2))
+        // --- Insight 4: Calendar density vs sleep quality ---
+        let sleepDays = withData.filter { $0.sleepHours > 0 }
+        if !calendarEvents.isEmpty && sleepDays.count >= 3 {
+            let timedEvts = calendarEvents.filter { !$0.isAllDay }
+            var meetingsPerDay: [Date: Int] = [:]
+            for e in timedEvts {
+                meetingsPerDay[cal.startOfDay(for: e.startDate), default: 0] += 1
+            }
+
+            var busyDaySleep: [Double] = []
+            var lightDaySleep: [Double] = []
+            for h in sleepDays {
+                let day = cal.startOfDay(for: h.date)
+                let meetings = meetingsPerDay[day] ?? 0
+                if meetings >= 3 { busyDaySleep.append(h.sleepHours) }
+                else if meetings <= 1 { lightDaySleep.append(h.sleepHours) }
+            }
+
+            if busyDaySleep.count >= 1 && lightDaySleep.count >= 1 {
+                let busyAvg = busyDaySleep.reduce(0, +) / Double(busyDaySleep.count)
+                let lightAvg = lightDaySleep.reduce(0, +) / Double(lightDaySleep.count)
+                let diff = lightAvg - busyAvg
+                if diff >= 0.5 {
+                    insights.append("📅↔️😴 会议多的晚上平均少睡 \(String(format: "%.1f", diff))h —— 忙碌日留意放松入睡")
+                } else if diff <= -0.5 {
+                    insights.append("📅↔️😴 忙碌日反而睡得更好，可能是白天消耗帮助入睡")
+                }
+            }
+        }
+
+        // --- Insight 5: Exercise vs same-night sleep quality ---
+        if sleepDays.count >= 4 {
+            let exerciseDays = sleepDays.filter { $0.exerciseMinutes >= 30 }
+            let restDays = sleepDays.filter { $0.exerciseMinutes < 15 }
+            if exerciseDays.count >= 2 && restDays.count >= 1 {
+                let sleepOnEx = exerciseDays.reduce(0) { $0 + $1.sleepHours } / Double(exerciseDays.count)
+                let sleepOnRest = restDays.reduce(0) { $0 + $1.sleepHours } / Double(restDays.count)
+                let diff = sleepOnEx - sleepOnRest
+                if diff >= 0.5 {
+                    insights.append("🏃↔️😴 运动日比休息日多睡 \(String(format: "%.1f", diff))h —— 运动助眠效果明显")
+                } else if diff <= -0.5 {
+                    insights.append("🏃↔️😴 运动日反而少睡 \(String(format: "%.1f", -diff))h —— 试试把运动提前到更早")
+                }
+            }
+        }
+
+        return Array(insights.prefix(3))
     }
 
     /// Discovers cross-data patterns for arbitrary time periods (used by respondSummary).

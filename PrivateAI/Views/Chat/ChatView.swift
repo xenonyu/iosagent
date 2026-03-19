@@ -17,6 +17,11 @@ struct ChatView: View {
                     ScrollView {
                         LazyVStack(spacing: 12) {
                             ForEach(Array(viewModel.messages.enumerated()), id: \.element.id) { index, message in
+                                // Date separator when the day changes between messages
+                                if shouldShowDateSeparator(at: index, in: viewModel.messages) {
+                                    DateSeparator(date: message.timestamp)
+                                }
+
                                 MessageBubble(message: message, animated: index >= previousMessageCount)
                                     .id(message.id)
                             }
@@ -140,6 +145,64 @@ struct ChatView: View {
             .sheet(isPresented: $viewModel.showPhotoResults) {
                 PhotoSearchResultView(assetIDs: viewModel.photoSearchResults)
             }
+        }
+    }
+
+    // MARK: - Date Separator Logic
+
+    /// Returns true if a date separator should be shown before the message at the given index.
+    /// Shows a separator for the first message and whenever the calendar day changes.
+    private func shouldShowDateSeparator(at index: Int, in messages: [ChatMessage]) -> Bool {
+        guard index < messages.count else { return false }
+        // Always show separator before the very first message
+        if index == 0 { return true }
+        let cal = Calendar.current
+        let prev = messages[index - 1].timestamp
+        let curr = messages[index].timestamp
+        return !cal.isDate(prev, inSameDayAs: curr)
+    }
+}
+
+// MARK: - Date Separator
+
+struct DateSeparator: View {
+    let date: Date
+
+    var body: some View {
+        HStack(spacing: 10) {
+            line
+            Text(dateLabel)
+                .font(.caption)
+                .fontWeight(.medium)
+                .foregroundColor(.secondary)
+            line
+        }
+        .padding(.vertical, 6)
+        .padding(.horizontal, 4)
+    }
+
+    private var line: some View {
+        Rectangle()
+            .fill(Color.secondary.opacity(0.2))
+            .frame(height: 0.5)
+    }
+
+    private var dateLabel: String {
+        let cal = Calendar.current
+        if cal.isDateInToday(date) {
+            return "今天"
+        } else if cal.isDateInYesterday(date) {
+            return "昨天"
+        } else {
+            let fmt = DateFormatter()
+            // Show year only when not current year
+            if cal.component(.year, from: date) == cal.component(.year, from: Date()) {
+                fmt.dateFormat = "M月d日 EEEE"
+            } else {
+                fmt.dateFormat = "yyyy年M月d日 EEEE"
+            }
+            fmt.locale = Locale(identifier: "zh_CN")
+            return fmt.string(from: date)
         }
     }
 }

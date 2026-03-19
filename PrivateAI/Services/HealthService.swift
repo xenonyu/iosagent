@@ -264,7 +264,7 @@ final class HealthService: ObservableObject {
     private func fetchSleepPhases(start: Date, end: Date,
                                   completion: @escaping (Double, Double, Double, Double, Double) -> Void) {
         guard let type = HKObjectType.categoryType(forIdentifier: .sleepAnalysis) else {
-            completion(0, 0, 0, 0); return
+            completion(0, 0, 0, 0, 0); return
         }
         let predicate = HKQuery.predicateForSamples(withStart: start, end: end)
         let query = HKSampleQuery(sampleType: type, predicate: predicate,

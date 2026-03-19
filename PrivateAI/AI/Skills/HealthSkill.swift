@@ -1213,9 +1213,22 @@ struct HealthSkill: ClawSkill {
         let avgSteps = totalSteps / dayCount
         let avgExercise = totalExercise / dayCount
 
+        let totalCalories = summaries.reduce(0) { $0 + $1.activeCalories }
+        let avgCalories = totalCalories / dayCount
+
         if totalSteps > 0 { lines.append("👟 日均 \(Int(avgSteps).formatted()) 步") }
         if totalDistance > 0.1 { lines.append("📏 累计 \(String(format: "%.1f", totalDistance)) 公里") }
         if totalExercise > 0 { lines.append("⏱ 日均运动 \(Int(avgExercise)) 分钟") }
+        if totalCalories > 0 {
+            var calLine = "🔥 日均消耗 \(Int(avgCalories).formatted()) 千卡"
+            // Show ring completion hint (default Apple Watch goal: 500 kcal)
+            if avgCalories >= 500 {
+                calLine += " ✅"
+            } else if avgCalories >= 350 {
+                calLine += "（接近合环）"
+            }
+            lines.append(calLine)
+        }
         if avgSleep > 0 {
             lines.append("😴 均睡 \(String(format: "%.1f", avgSleep)) 小时")
             let phaseDays = summaries.filter { $0.hasSleepPhases }
@@ -1246,6 +1259,24 @@ struct HealthSkill: ClawSkill {
                 }
             }
             lines.append(weightLine)
+        }
+
+        // --- Workout type summary (from HKWorkout sessions) ---
+        let allWorkouts = summaries.flatMap { $0.workouts }
+        if !allWorkouts.isEmpty {
+            var byType: [UInt: (count: Int, duration: Double)] = [:]
+            for w in allWorkouts {
+                let existing = byType[w.activityType] ?? (0, 0)
+                byType[w.activityType] = (existing.count + 1, existing.duration + w.duration)
+            }
+            // Show top 3 workout types sorted by total duration
+            let topTypes = byType.sorted { $0.value.duration > $1.value.duration }.prefix(3)
+            let typeStrs = topTypes.map { (typeID, info) -> String in
+                let sample = allWorkouts.first { $0.activityType == typeID }!
+                let mins = Int(info.duration / 60)
+                return "\(sample.typeEmoji)\(sample.typeName) \(info.count)次·\(mins)min"
+            }
+            lines.append("🏋️ 运动：\(typeStrs.joined(separator: "  "))")
         }
 
         // --- Sparkline: day-by-day step trend ---

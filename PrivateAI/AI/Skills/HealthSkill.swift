@@ -637,6 +637,8 @@ struct HealthSkill: ClawSkill {
                 respondDistance(summaries: withData, range: range, completion: completion)
             case "calories":
                 respondCalories(summaries: withData, range: range, completion: completion)
+            case "weight":
+                respondWeight(summaries: withData, range: range, context: context, completion: completion)
             case "recovery":
                 respondRecovery(summaries: allSummaries, todaySummaries: withData, range: range, context: context, completion: completion)
             case "bloodOxygen":

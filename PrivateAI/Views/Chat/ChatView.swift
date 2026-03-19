@@ -26,6 +26,19 @@ struct ChatView: View {
                                 .id("suggestions")
                             }
 
+                            // Contextual follow-up suggestions after AI response
+                            if viewModel.messages.count > 1,
+                               !viewModel.isThinking,
+                               let last = viewModel.messages.last, !last.isUser,
+                               !viewModel.followUpSuggestions.isEmpty {
+                                FollowUpChipsView(suggestions: viewModel.followUpSuggestions) { q in
+                                    viewModel.inputText = q
+                                    viewModel.sendMessage()
+                                }
+                                .id("followUps")
+                                .transition(.opacity.combined(with: .move(edge: .bottom)))
+                            }
+
                             // Photo search results strip
                             if !viewModel.photoSearchResults.isEmpty {
                                 PhotoResultsStrip(
@@ -172,6 +185,42 @@ struct SuggestionsView: View {
                 .buttonStyle(.plain)
                 .padding(.leading, 44)
             }
+        }
+    }
+}
+
+// MARK: - Follow-up Chips
+
+struct FollowUpChipsView: View {
+    let suggestions: [String]
+    let onSelect: (String) -> Void
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(suggestions, id: \.self) { suggestion in
+                    Button {
+                        onSelect(suggestion)
+                    } label: {
+                        Text(suggestion)
+                            .font(.footnote)
+                            .foregroundColor(Color("AccentPrimary"))
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                            .background(
+                                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                    .stroke(Color("AccentPrimary").opacity(0.3), lineWidth: 1)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                            .fill(Color("AccentPrimary").opacity(0.06))
+                                    )
+                            )
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.leading, 44)
+            .padding(.trailing, 16)
         }
     }
 }

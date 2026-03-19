@@ -12,6 +12,7 @@ final class ChatViewModel: ObservableObject {
     @Published var isListening: Bool = false
     @Published var photoSearchResults: [String] = []  // PHAsset IDs
     @Published var showPhotoResults: Bool = false
+    @Published private(set) var lastIntent: QueryIntent?
 
     // MARK: - Dependencies
 
@@ -101,6 +102,7 @@ final class ChatViewModel: ObservableObject {
 
         // Local-first routing: use SkillRouter to determine intent
         let intent = SkillRouter.parse(text)
+        lastIntent = intent
 
         // Photo search has dedicated UI handling
         if case .photoSearch(let query) = intent {
@@ -200,6 +202,58 @@ final class ChatViewModel: ObservableObject {
         return Array(base.prefix(4))
     }
 
+    // MARK: - Contextual Follow-up Suggestions
+
+    /// Dynamic suggestions based on the last matched intent, helping users
+    /// discover related features after each AI response.
+    var followUpSuggestions: [String] {
+        guard let intent = lastIntent else { return [] }
+        switch intent {
+        case .exercise, .health:
+            return ["今天走了多少步？", "这周运动了多少？", "帮我记录一次跑步"]
+        case .location:
+            return ["这周去了哪些地方？", "帮我总结今天的行程"]
+        case .mood:
+            return ["帮我记录今天心情", "这周心情怎么样？", "给我一句鼓励"]
+        case .calendar:
+            return ["明天有什么安排？", "这周日程总结"]
+        case .summary, .weeklyInsight:
+            return ["这周心情怎么样？", "今天运动数据", "给我一句名言"]
+        case .todo:
+            return ["查看待办清单", "添加一条新待办", "帮我总结今天"]
+        case .habit:
+            return ["查看习惯打卡", "今天喝了多少水？", "查看番茄钟记录"]
+        case .waterTrack:
+            return ["今天喝了多少水？", "设个喝水提醒", "查看健康数据"]
+        case .expense:
+            return ["今天花了多少？", "这周消费统计", "记一笔支出"]
+        case .pomodoro:
+            return ["开始一个番茄钟", "今天专注了多久？", "查看番茄钟统计"]
+        case .note:
+            return ["查看所有笔记", "记一条新笔记", "搜索笔记"]
+        case .reminder:
+            return ["查看提醒列表", "设个新提醒"]
+        case .countdown:
+            return ["查看倒计时", "添加新倒计时"]
+        case .math, .unitConversion:
+            return ["帮我算个数", "单位换算", "生成一个密码"]
+        case .dailyQuote:
+            return ["再来一句名言", "今天的运势", "帮我总结今天"]
+        case .greeting:
+            return ["今天有什么安排？", "查看健康数据", "给我一句鼓励"]
+        case .breathing:
+            return ["再做一次呼吸练习", "查看睡眠建议", "今天心情如何？"]
+        case .personalStats:
+            return ["帮我总结这周", "查看健康数据", "查看待办清单"]
+        case .search:
+            return ["帮我搜索记录", "查看时间线", "帮我总结今天"]
+        case .textTool:
+            return ["再用一次文本工具", "帮我算个数", "记一条笔记"]
+        default:
+            return ["帮我总结今天", "今天走了多少步？", "给我推荐点什么"]
+        }
+    }
+
     // MARK: - Photo Search
 
     private func handlePhotoSearch(query: String) {
@@ -252,6 +306,7 @@ final class ChatViewModel: ObservableObject {
         CDChatMessage.deleteAll(in: context)
         PersistenceController.shared.save()
         messages = []
+        lastIntent = nil
         let welcome = ChatMessage(content: buildWelcomeMessage(), isUser: false)
         messages.append(welcome)
     }

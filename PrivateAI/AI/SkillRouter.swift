@@ -441,7 +441,25 @@ struct SkillRouter {
         }
 
         // --- Comparison ---
-        if containsAny(lower, ["比上周", "对比", "compared to", "趋势", "比较", "vs"]) {
+        // Covers explicit comparison words AND natural progress/change/regression patterns.
+        // Users naturally ask "有没有进步", "身体在变好吗", "最近有什么变化" — these are
+        // core introspective queries that should show week-over-week health trends.
+        if containsAny(lower, ["比上周", "比上个月", "比上月", "比之前", "比以前", "比过去",
+                                "对比", "比较", "vs",
+                                "趋势", "走势", "变化趋势",
+                                // Progress / improvement
+                                "进步", "提升", "改善", "变好", "好转", "在变好",
+                                "有没有进", "有没有提", "有没有改",
+                                "是不是变好", "是不是在进", "是不是好了",
+                                // Regression / decline
+                                "退步", "下降了", "变差", "变糟", "在变差", "在退步",
+                                "有没有退", "有没有变差", "是不是退", "是不是变差",
+                                // General change inquiry
+                                "有变化", "有什么变化", "有没有变化", "有改变",
+                                "变了吗", "变没变", "有不同",
+                                // English
+                                "compared to", "progress", "improving", "getting better",
+                                "getting worse", "decline", "improvement", "changed"]) {
             return .comparison
         }
 

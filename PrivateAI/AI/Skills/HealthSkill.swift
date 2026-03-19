@@ -3005,6 +3005,54 @@ struct HealthSkill: ClawSkill {
                 ))
             }
 
+            // --- Recovery indicators (HRV + Resting HR) ---
+            // These are the most meaningful "am I getting healthier?" metrics.
+            // Higher HRV = better recovery; lower resting HR = better cardiovascular fitness.
+            let thisHRVDays = thisWeek.filter { $0.hrv > 0 }
+            let lastHRVDays = lastWeek.filter { $0.hrv > 0 }
+            let thisHRV = thisHRVDays.isEmpty ? 0.0 : thisHRVDays.reduce(0) { $0 + $1.hrv } / Double(thisHRVDays.count)
+            let lastHRV = lastHRVDays.isEmpty ? 0.0 : lastHRVDays.reduce(0) { $0 + $1.hrv } / Double(lastHRVDays.count)
+            if thisHRV > 0 || lastHRV > 0 {
+                // HRV: higher is better, so use inverted arrow logic for context
+                var hrvLine = buildComparisonLine(
+                    icon: "📳", label: "HRV",
+                    thisVal: thisHRV, lastVal: lastHRV,
+                    unit: "ms", formatter: { "\(Int($0))" }
+                )
+                // Add quick interpretation
+                if thisHRV > 0 && lastHRV > 0 {
+                    let diff = thisHRV - lastHRV
+                    if diff >= 5 {
+                        hrvLine += "  ✅ 恢复力提升"
+                    } else if diff <= -5 {
+                        hrvLine += "  ⚠️ 恢复力下降"
+                    }
+                }
+                lines.append(hrvLine)
+            }
+
+            let thisRHRDays = thisWeek.filter { $0.restingHeartRate > 0 }
+            let lastRHRDays = lastWeek.filter { $0.restingHeartRate > 0 }
+            let thisRHR = thisRHRDays.isEmpty ? 0.0 : thisRHRDays.reduce(0) { $0 + $1.restingHeartRate } / Double(thisRHRDays.count)
+            let lastRHR = lastRHRDays.isEmpty ? 0.0 : lastRHRDays.reduce(0) { $0 + $1.restingHeartRate } / Double(lastRHRDays.count)
+            if thisRHR > 0 || lastRHR > 0 {
+                var rhrLine = buildComparisonLine(
+                    icon: "💓", label: "静息心率",
+                    thisVal: thisRHR, lastVal: lastRHR,
+                    unit: "bpm", formatter: { "\(Int($0))" }
+                )
+                // Lower resting HR = better fitness (inverted from typical comparison)
+                if thisRHR > 0 && lastRHR > 0 {
+                    let diff = thisRHR - lastRHR
+                    if diff <= -3 {
+                        rhrLine += "  ✅ 心肺适能提升"
+                    } else if diff >= 3 {
+                        rhrLine += "  ⚠️ 可能需要更多休息"
+                    }
+                }
+                lines.append(rhrLine)
+            }
+
             // Overall verdict
             lines.append("")
             var better = 0
@@ -3012,13 +3060,35 @@ struct HealthSkill: ClawSkill {
             if thisSteps > lastSteps * 1.05 { better += 1 } else if thisSteps < lastSteps * 0.95 { worse += 1 }
             if thisExercise > lastExercise * 1.05 { better += 1 } else if thisExercise < lastExercise * 0.95 { worse += 1 }
             if thisSleep > lastSleep * 1.05 && thisSleep <= 9 { better += 1 } else if thisSleep < lastSleep * 0.95 { worse += 1 }
+            // HRV up = better; resting HR down = better
+            if thisHRV > lastHRV * 1.05 { better += 1 } else if thisHRV < lastHRV * 0.95 { worse += 1 }
+            if lastRHR > 0 && thisRHR < lastRHR * 0.95 { better += 1 } else if thisRHR > lastRHR * 1.05 { worse += 1 }
 
-            if better > worse {
-                lines.append("💪 整体趋势向好，比上周更活跃了！")
+            if better > worse + 1 {
+                lines.append("💪 整体趋势向好，你的身体在进步！")
+            } else if better > worse {
+                lines.append("💪 略有进步，保持这个势头！")
+            } else if worse > better + 1 {
+                lines.append("💡 多项指标下降，注意休息和恢复。")
             } else if worse > better {
                 lines.append("💡 这周稍有松懈，下周找回节奏吧！")
             } else {
                 lines.append("📊 和上周基本持平，保持稳定也是一种力量。")
+            }
+
+            // Personalized recovery insight when both HRV and sleep data available
+            if thisHRV > 0 && thisSleep > 0 && lastHRV > 0 && lastSleep > 0 {
+                let hrvImproved = thisHRV > lastHRV * 1.05
+                let sleepImproved = thisSleep > lastSleep && thisSleep >= 7
+                let exerciseUp = thisExercise > lastExercise * 1.1
+
+                if hrvImproved && sleepImproved {
+                    lines.append("\n🧬 睡眠改善 + HRV 提升 → 你的身体恢复状态很好，可以适当增加训练强度。")
+                } else if exerciseUp && !hrvImproved && thisHRV > 0 {
+                    lines.append("\n🧬 运动量增加但 HRV 没有跟上 → 身体还在适应，注意不要过度训练。")
+                } else if !sleepImproved && thisRHR > lastRHR + 2 {
+                    lines.append("\n🧬 睡眠不足 + 静息心率偏高 → 身体发出了需要休息的信号。")
+                }
             }
 
             completion(lines.joined(separator: "\n"))

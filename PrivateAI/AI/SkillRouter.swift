@@ -425,6 +425,9 @@ struct SkillRouter {
         }
 
         // --- Calendar ---
+        // Calendar queries are inherently present/future-oriented.
+        // When user asks "忙不忙", "有空吗", "有什么安排" without a time word,
+        // the default .lastWeek makes no sense — they mean today.
         if containsAny(lower, ["日历", "行程", "日程", "计划", "会议", "约会", "活动",
                                 "忙不忙", "忙吗", "有空", "空闲", "空不空", "安排", "待办",
                                 "有啥事", "啥安排", "什么安排", "有没有会", "开会",
@@ -432,7 +435,8 @@ struct SkillRouter {
                                 "calendar", "schedule", "meeting", "event", "appointment",
                                 "busy", "free time", "available", "agenda",
                                 "focus time", "deep work", "fragmented"]) {
-            return .calendar(range: range)
+            let calRange = hasExplicitTimeReference(lower) ? range : .today
+            return .calendar(range: calRange)
         }
 
         // --- Calendar: today/future + generic question → calendar intent ---
@@ -510,6 +514,30 @@ struct SkillRouter {
         }
 
         return .unknown
+    }
+
+    // MARK: - Explicit Time Detection
+
+    /// Checks whether the query contains an explicit time reference.
+    /// When false, the caller should apply an intent-appropriate default
+    /// instead of the generic `.lastWeek` fallback.
+    static func hasExplicitTimeReference(_ text: String) -> Bool {
+        let timeKeywords = [
+            "今天", "昨天", "前天", "大前天", "明天", "后天",
+            "这周", "本周", "上周", "上上周", "下周",
+            "这个月", "本月", "上个月", "下个月",
+            "今年", "最近", "近期",
+            "today", "yesterday", "tomorrow",
+            "this week", "last week", "next week",
+            "this month", "last month",
+            "recently", "lately"
+        ]
+        // Also check for specific weekday patterns (周一, 星期三, monday, etc.)
+        let weekdayPatterns = ["周一", "周二", "周三", "周四", "周五", "周六", "周日", "周天",
+                               "星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日", "星期天",
+                               "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+        return timeKeywords.contains(where: { text.contains($0) })
+            || weekdayPatterns.contains(where: { text.lowercased().contains($0) })
     }
 
     // MARK: - Time Range Extraction

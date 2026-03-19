@@ -32,7 +32,19 @@ enum QueryIntent {
     case sleepCalc(query: SleepCalcQuery)
     case passwordGen(type: PasswordGenType)
     case pomodoro(action: PomodoroAction)
+    case expense(action: ExpenseAction, amount: Double, category: String, note: String)
     case unknown
+}
+
+// MARK: - Expense Action
+
+enum ExpenseAction {
+    case add          // 记一笔, 花了
+    case today        // 今天花了多少
+    case week         // 本周消费
+    case month        // 本月消费
+    case list         // 消费记录
+    case delete       // 删除最近一笔
 }
 
 // MARK: - Pomodoro Action
@@ -165,6 +177,11 @@ struct SkillRouter {
         // Only match short utterances to avoid false positives on longer queries
         if let greetingType = parseGreeting(trimmed) {
             return .greeting(type: greetingType)
+        }
+
+        // --- Expense Tracking ---
+        if let expenseIntent = parseExpense(lower, original: text) {
+            return expenseIntent
         }
 
         // --- Event Recording ---
@@ -1273,6 +1290,139 @@ struct SkillRouter {
             if let n = Int(numStr), n >= 1, n <= 240 { return n }
         }
         return 25 // default pomodoro length
+    }
+
+    // MARK: - Expense Parsing
+
+    private static func parseExpense(_ lower: String, original: String) -> QueryIntent? {
+        let expenseKeywords = ["记账", "记一笔", "花了", "消费", "支出", "开销", "花费",
+                               "账单", "花销", "记笔账", "收支", "expense", "spent",
+                               "spending", "cost", "pay", "paid"]
+
+        guard containsAny(lower, expenseKeywords) else { return nil }
+
+        // Delete last entry
+        if containsAny(lower, ["删除", "撤销", "取消", "撤回", "delete", "undo", "remove"]) {
+            return .expense(action: .delete, amount: 0, category: "", note: "")
+        }
+
+        // Monthly summary
+        if containsAny(lower, ["本月", "这个月", "月消费", "月支出", "月账单", "this month", "monthly"]) {
+            return .expense(action: .month, amount: 0, category: "", note: "")
+        }
+
+        // Weekly summary
+        if containsAny(lower, ["本周", "这周", "周消费", "周支出", "this week", "weekly"]) {
+            return .expense(action: .week, amount: 0, category: "", note: "")
+        }
+
+        // Today's summary
+        if containsAny(lower, ["今天花了多少", "今天消费", "今天支出", "今天开销", "today"]) &&
+           !containsAny(lower, ["记一笔", "记账", "花了.*元", "花了.*块"]) {
+            return .expense(action: .today, amount: 0, category: "", note: "")
+        }
+
+        // List records
+        if containsAny(lower, ["消费记录", "账单记录", "消费列表", "开销列表", "查看消费",
+                                "查看账单", "查看开销", "list expense", "expense list"]) {
+            return .expense(action: .list, amount: 0, category: "", note: "")
+        }
+
+        // Add expense — extract amount, category, note
+        let amount = extractExpenseAmount(from: lower)
+        let category = extractExpenseCategory(from: lower)
+        let note = extractExpenseNote(from: original, lower: lower)
+
+        if amount > 0 {
+            return .expense(action: .add, amount: amount, category: category, note: note)
+        }
+
+        // If keywords match but no amount: show today summary
+        if containsAny(lower, ["花了多少", "消费多少", "多少钱", "how much"]) {
+            return .expense(action: .today, amount: 0, category: "", note: "")
+        }
+
+        // Default: show today's summary
+        return .expense(action: .today, amount: 0, category: "", note: "")
+    }
+
+    private static func extractExpenseAmount(from text: String) -> Double {
+        let nsText = text as NSString
+        // Match patterns: "35元", "35块", "35.5元", "$35", "¥100", "100元钱"
+        let patterns = [
+            "([\\d]+\\.?[\\d]*)\\s*(?:元|块|块钱|元钱|rmb|¥|yuan)",
+            "(?:¥|\\$|￥)\\s*([\\d]+\\.?[\\d]*)",
+            "(?:花了|花费|消费|支出|spent|paid|cost)\\s*([\\d]+\\.?[\\d]*)",
+            "([\\d]+\\.?[\\d]*)\\s*(?:dollar|dollars|usd)"
+        ]
+        for pattern in patterns {
+            if let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive),
+               let match = regex.firstMatch(in: text, options: [], range: NSRange(location: 0, length: nsText.length)),
+               match.numberOfRanges >= 2 {
+                let numStr = nsText.substring(with: match.range(at: 1))
+                if let num = Double(numStr), num > 0 { return num }
+            }
+        }
+        return 0
+    }
+
+    private static func extractExpenseCategory(from text: String) -> String {
+        // Food / dining
+        if containsAny(text, ["早餐", "午餐", "晚餐", "吃饭", "外卖", "饭", "餐", "食",
+                               "零食", "奶茶", "咖啡", "水果", "买菜", "超市",
+                               "breakfast", "lunch", "dinner", "food", "meal", "coffee", "tea"]) {
+            return "餐饮"
+        }
+        // Transport
+        if containsAny(text, ["打车", "出租", "地铁", "公交", "加油", "油费", "停车", "交通",
+                               "uber", "taxi", "transport", "gas", "parking", "bus", "subway"]) {
+            return "交通"
+        }
+        // Shopping
+        if containsAny(text, ["买了", "购物", "网购", "衣服", "鞋", "包", "化妆品",
+                               "shopping", "bought", "purchase", "clothes"]) {
+            return "购物"
+        }
+        // Entertainment
+        if containsAny(text, ["电影", "游戏", "ktv", "娱乐", "门票", "旅游", "酒店",
+                               "movie", "game", "entertainment", "hotel", "travel"]) {
+            return "娱乐"
+        }
+        // Medical
+        if containsAny(text, ["医院", "药", "看病", "挂号", "体检", "医疗",
+                               "hospital", "medicine", "medical", "doctor"]) {
+            return "医疗"
+        }
+        // Education
+        if containsAny(text, ["书", "课", "学费", "培训", "教育",
+                               "book", "course", "education", "tuition"]) {
+            return "教育"
+        }
+        // Housing
+        if containsAny(text, ["房租", "水电", "物业", "维修", "家具",
+                               "rent", "utility", "maintenance"]) {
+            return "居住"
+        }
+        return "其他"
+    }
+
+    private static func extractExpenseNote(from original: String, lower: String) -> String {
+        // Try to extract a meaningful note after common keywords
+        let prefixes = ["记一笔", "记账", "花了", "消费", "支出", "花费"]
+        for prefix in prefixes {
+            if let range = lower.range(of: prefix) {
+                let after = String(original[range.upperBound...]).trimmingCharacters(in: .whitespaces)
+                // Remove amount patterns and return the rest as note
+                let cleaned = after.replacingOccurrences(
+                    of: "[\\d]+\\.?[\\d]*\\s*(?:元|块|块钱|元钱|rmb|¥)",
+                    with: "",
+                    options: .regularExpression
+                ).trimmingCharacters(in: .whitespacesAndNewlines)
+                    .trimmingCharacters(in: CharacterSet(charactersIn: "，,。.、"))
+                if !cleaned.isEmpty { return cleaned }
+            }
+        }
+        return ""
     }
 
     static func containsAny(_ text: String, _ keywords: [String]) -> Bool {

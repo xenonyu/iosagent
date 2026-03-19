@@ -14,10 +14,11 @@ struct CalendarSkill: ClawSkill {
     func execute(intent: QueryIntent, context: SkillContext, completion: @escaping (String) -> Void) {
         guard case .calendar(let range) = intent else { return }
 
-        // For today's schedule, enrich with health context (sleep + activity + HRV readiness)
+        // For today/tomorrow schedule, enrich with health context (sleep + activity + HRV readiness)
         let cal = Calendar.current
         let isTodayQuery = (range == .today)
-        if isTodayQuery && context.healthService.isHealthDataAvailable {
+        let isTomorrowQuery = (range == .tomorrow)
+        if (isTodayQuery || isTomorrowQuery) && context.healthService.isHealthDataAvailable {
             // Fetch 7 days in one call — provides today, yesterday, AND personal baseline
             context.healthService.fetchSummaries(days: 7) { summaries in
                 let todaySummary = summaries.first { cal.isDateInToday($0.date) }
@@ -29,14 +30,31 @@ struct CalendarSkill: ClawSkill {
                 let baseline = summaries.filter { !cal.isDateInToday($0.date) && $0.hasData }
 
                 var response = self.buildResponse(range: range, context: context)
-                let healthContext = self.buildHealthReadiness(
-                    lastNightSleep: sleepSummary,
-                    todayActivity: todaySummary,
-                    baseline: baseline,
-                    events: context.calendarService.todayEvents()
-                )
-                if !healthContext.isEmpty {
-                    response += "\n\n" + healthContext
+
+                if isTodayQuery {
+                    let healthContext = self.buildHealthReadiness(
+                        lastNightSleep: sleepSummary,
+                        todayActivity: todaySummary,
+                        baseline: baseline,
+                        events: context.calendarService.todayEvents()
+                    )
+                    if !healthContext.isEmpty {
+                        response += "\n\n" + healthContext
+                    }
+                } else {
+                    // Tomorrow: use today's data to give preparation advice
+                    let tomorrowStart = cal.date(byAdding: .day, value: 1, to: cal.startOfDay(for: Date()))!
+                    let tomorrowEnd = cal.date(byAdding: .day, value: 1, to: tomorrowStart)!
+                    let tomorrowEvents = context.calendarService.fetchEvents(from: tomorrowStart, to: tomorrowEnd)
+                    let prepContext = self.buildTomorrowPreparation(
+                        todaySleep: sleepSummary,
+                        todayActivity: todaySummary,
+                        baseline: baseline,
+                        tomorrowEvents: tomorrowEvents
+                    )
+                    if !prepContext.isEmpty {
+                        response += "\n\n" + prepContext
+                    }
                 }
                 completion(response)
             }
@@ -1189,6 +1207,112 @@ struct CalendarSkill: ClawSkill {
         let singleLine = trimmed.components(separatedBy: .newlines).joined(separator: " ")
         if singleLine.count <= 50 { return singleLine }
         return String(singleLine.prefix(47)) + "..."
+    }
+
+    // MARK: - Tomorrow Preparation (Cross-Data Insight)
+
+    /// Builds a preparation note for tomorrow's calendar view.
+    /// Uses today's sleep, activity, and recovery data to advise the user
+    /// on how to prepare for tomorrow's schedule density.
+    private func buildTomorrowPreparation(
+        todaySleep: HealthSummary,
+        todayActivity: HealthSummary,
+        baseline: [HealthSummary],
+        tomorrowEvents: [CalendarEventItem]
+    ) -> String {
+        let sleepHours = todaySleep.sleepHours
+        let steps = todayActivity.steps
+        let exerciseMin = todayActivity.exerciseMinutes
+        let todayHRV = todayActivity.hrv
+        let todayRHR = todayActivity.restingHeartRate
+
+        // Need at least some health data to show this section
+        guard sleepHours > 0 || steps > 100 || exerciseMin > 0 || todayHRV > 0 || todayRHR > 0 else { return "" }
+
+        var lines: [String] = []
+        lines.append("🌙 明天准备建议：")
+
+        // --- Assess tomorrow's schedule density ---
+        let timedEvents = tomorrowEvents.filter { !$0.isAllDay }
+        let meetingCount = timedEvents.count
+        let totalMeetingMin = timedEvents.reduce(0.0) { $0 + $1.duration } / 60.0
+        let isBusyTomorrow = meetingCount >= 4 || totalMeetingMin >= 300
+        let isLightTomorrow = meetingCount <= 1
+
+        // --- Sleep trend ---
+        if sleepHours > 0 {
+            let baselineSleepDays = baseline.filter { $0.sleepHours > 0 }
+            let avgSleep = baselineSleepDays.isEmpty ? 7.0
+                : baselineSleepDays.reduce(0) { $0 + $1.sleepHours } / Double(baselineSleepDays.count)
+            let sleepDebt = avgSleep - sleepHours
+
+            if sleepDebt > 1.0 {
+                if isBusyTomorrow {
+                    lines.append("  🔴 昨晚睡眠偏少（\(String(format: "%.1f", sleepHours))h），明天有 \(meetingCount) 个安排 — 今晚建议早睡补回来")
+                } else {
+                    lines.append("  🟡 昨晚睡了 \(String(format: "%.1f", sleepHours))h，低于你的平均水平 — 今晚早点休息")
+                }
+            } else if sleepHours >= 7.5 {
+                lines.append("  🟢 昨晚睡眠充足（\(String(format: "%.1f", sleepHours))h），保持这个节奏就好")
+            } else {
+                lines.append("  🟡 昨晚睡了 \(String(format: "%.1f", sleepHours))h，还行，今晚争取更早入睡")
+            }
+        }
+
+        // --- HRV recovery assessment ---
+        let baselineHRVDays = baseline.filter { $0.hrv > 0 }
+        if todayHRV > 0 && baselineHRVDays.count >= 2 {
+            let avgHRV = baselineHRVDays.reduce(0) { $0 + $1.hrv } / Double(baselineHRVDays.count)
+            let ratio = todayHRV / avgHRV
+
+            if ratio < 0.8 {
+                lines.append("  🟡 HRV 偏低（\(Int(todayHRV)) ms），身体在恢复中 — 今晚避免剧烈运动，让身体充分恢复")
+            } else if ratio >= 1.1 {
+                lines.append("  🟢 HRV 状态很好（\(Int(todayHRV)) ms），恢复充分，明天可以安心面对挑战")
+            }
+        }
+
+        // --- RHR trend ---
+        let baselineRHRDays = baseline.filter { $0.restingHeartRate > 0 }
+        if todayRHR > 0 && baselineRHRDays.count >= 2 {
+            let avgRHR = baselineRHRDays.reduce(0) { $0 + $1.restingHeartRate } / Double(baselineRHRDays.count)
+            if todayRHR - avgRHR >= 5 {
+                lines.append("  🟡 静息心率偏高（\(Int(todayRHR)) bpm），可能有疲劳积累 — 今晚放松为主")
+            }
+        }
+
+        // --- Today's activity load ---
+        if exerciseMin > 60 || steps > 15000 {
+            if isBusyTomorrow {
+                lines.append("  💡 今天已经运动 \(Int(exerciseMin)) 分钟，明天日程紧凑 — 让身体好好恢复")
+            } else {
+                lines.append("  💡 今天运动充分（\(Int(exerciseMin)) 分钟），明天轻松日适合主动恢复")
+            }
+        }
+
+        // --- Cross-data: preparation advice based on schedule × recovery ---
+        let hasLowHRV: Bool = {
+            guard todayHRV > 0, baselineHRVDays.count >= 2 else { return false }
+            let avgHRV = baselineHRVDays.reduce(0) { $0 + $1.hrv } / Double(baselineHRVDays.count)
+            return todayHRV / avgHRV < 0.8
+        }()
+        let hasPoorSleep = sleepHours > 0 && sleepHours < 6.0
+        let hasGoodRecovery = !hasLowHRV && sleepHours >= 7.0
+
+        // Only add the summary line if we haven't already covered it above
+        if lines.count > 1 { // Has more than just the header
+            if isBusyTomorrow && (hasPoorSleep || hasLowHRV) {
+                lines.append("  ⚡ 明天日程密集，今晚是关键恢复窗口 — 早睡、少刺激、轻松过渡")
+            } else if isBusyTomorrow && hasGoodRecovery {
+                lines.append("  ✅ 身体状态不错，明天 \(meetingCount) 个安排应该游刃有余")
+            } else if isLightTomorrow && hasGoodRecovery {
+                lines.append("  🌟 恢复好 + 日程轻松 — 明天适合安排需要深度思考的工作")
+            } else if isLightTomorrow && (hasPoorSleep || hasLowHRV) {
+                lines.append("  💚 明天不忙，正好给身体一个缓冲的机会")
+            }
+        }
+
+        return lines.count > 1 ? lines.joined(separator: "\n") : ""
     }
 
     // MARK: - Health Readiness (Cross-Data Insight)

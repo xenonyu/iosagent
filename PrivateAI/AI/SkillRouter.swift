@@ -327,11 +327,20 @@ struct SkillRouter {
         }
 
         // --- Summary ---
+        // Covers explicit summary words ("总结") AND natural status inquiries
+        // ("状态怎么样", "帮我分析") that users commonly ask.
         if containsAny(lower, ["总结", "回顾", "概括", "做了什么", "发生了什么",
                                 "过得怎么样", "过得如何", "怎么过的", "生活怎么样",
-                                "一天过得", "这段时间", "近况",
+                                "一天过得", "这段时间", "近况", "这阵子",
+                                // Natural state/condition inquiries
+                                "状态怎", "状态如何", "状态好不好",
+                                "情况怎", "情况如何",
+                                "我的状态", "我的情况",
+                                "表现怎", "表现如何",
+                                // Analysis requests (general, no specific topic)
+                                "帮我分析", "分析一下",
                                 "summary", "recap", "review", "what happened", "what did i",
-                                "how was my", "how have i been"]) {
+                                "how was my", "how have i been", "how am i"]) {
             return .summary(range: range)
         }
 
@@ -435,7 +444,8 @@ struct SkillRouter {
         // When user asks "忙不忙", "有空吗", "有什么安排" without a time word,
         // the default .lastWeek makes no sense — they mean today.
         if containsAny(lower, ["日历", "行程", "日程", "计划", "会议", "约会", "活动",
-                                "忙不忙", "忙吗", "有空", "空闲", "空不空", "安排", "待办",
+                                "忙不忙", "忙吗", "忙什么", "在忙什么",
+                                "有空", "空闲", "空不空", "安排", "待办",
                                 "有啥事", "啥安排", "什么安排", "有没有会", "开会",
                                 "专注", "深度工作", "碎片化", "集中精力", "能专心", "有时间",
                                 "calendar", "schedule", "meeting", "event", "appointment",
@@ -514,9 +524,21 @@ struct SkillRouter {
         }
 
         // --- General Events ---
-        if containsAny(lower, ["事件", "事情", "最近", "记录", "日志",
-                                "events", "diary", "log", "recent"]) {
+        // Note: "最近" alone was too broad — it matched "最近状态怎么样",
+        // "最近在忙什么" etc. that belong to summary/calendar.
+        // Now require "最近" to pair with event-related words.
+        if containsAny(lower, ["事件", "事情", "记录", "日志",
+                                "events", "diary", "log"]) {
             return .events(range: range)
+        }
+        if containsAny(lower, ["最近", "recent"]) &&
+           containsAny(lower, ["记了", "发生", "干了", "做了",
+                                "record", "happened"]) {
+            return .events(range: range)
+        }
+        // Bare "最近" with no other context → show summary overview
+        if trimmed == "最近" || trimmed == "recent" {
+            return .summary(range: .lastWeek)
         }
 
         return .unknown

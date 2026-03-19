@@ -35,7 +35,17 @@ enum QueryIntent {
     case expense(action: ExpenseAction, amount: Double, category: String, note: String)
     case reminder(action: ReminderAction)
     case search(keyword: String)
+    case note(action: NoteAction, content: String)
     case unknown
+}
+
+// MARK: - Note Action
+
+enum NoteAction {
+    case add          // 记个笔记, 备忘
+    case list         // 查看笔记, 我的笔记
+    case delete       // 删除笔记
+    case search       // 搜索笔记
 }
 
 // MARK: - Expense Action
@@ -289,8 +299,13 @@ struct SkillRouter {
             return reminderIntent
         }
 
+        // --- Note / Quick Memo ---
+        if let noteIntent = parseNote(lower, original: text) {
+            return noteIntent
+        }
+
         // --- Todo / Memo ---
-        if containsAny(lower, ["待办", "todo", "to-do", "任务清单", "备忘"]) {
+        if containsAny(lower, ["待办", "todo", "to-do", "任务清单"]) {
             let (action, content) = extractTodoAction(from: lower, original: text)
             return .todo(action: action, content: content)
         }
@@ -500,6 +515,66 @@ struct SkillRouter {
         for prefix in prefixes {
             if let range = lower.range(of: prefix) {
                 let content = String(text[range.upperBound...]).trimmingCharacters(in: .whitespaces)
+                if !content.isEmpty { return content }
+            }
+        }
+        return ""
+    }
+
+    // MARK: - Note Parsing
+
+    private static func parseNote(_ lower: String, original: String) -> QueryIntent? {
+        let noteKeywords = ["笔记", "备忘", "备忘录", "note", "notes", "memo",
+                            "记住", "记下", "记个笔记", "写个笔记", "快速记录"]
+        guard containsAny(lower, noteKeywords) else { return nil }
+
+        // Delete
+        if containsAny(lower, ["删除笔记", "删掉笔记", "移除笔记", "delete note", "remove note"]) {
+            let content = extractNoteContent(from: original, lower: lower)
+            return .note(action: .delete, content: content)
+        }
+
+        // Search
+        if containsAny(lower, ["搜索笔记", "查找笔记", "搜笔记", "search note", "find note"]) {
+            let content = extractNoteContent(from: original, lower: lower)
+            return .note(action: .search, content: content)
+        }
+
+        // List
+        if containsAny(lower, ["查看笔记", "我的笔记", "所有笔记", "笔记列表", "查看备忘",
+                                "备忘录", "我的备忘", "list notes", "show notes", "my notes"]) {
+            return .note(action: .list, content: "")
+        }
+
+        // Add (default when mentioning note with content)
+        if containsAny(lower, ["记个笔记", "写个笔记", "记住", "记下", "备忘",
+                                "add note", "new note", "save note", "write note", "快速记录"]) {
+            let content = extractNoteContent(from: original, lower: lower)
+            return .note(action: .add, content: content)
+        }
+
+        // Bare "笔记" / "note" → list
+        return .note(action: .list, content: "")
+    }
+
+    private static func extractNoteContent(from original: String, lower: String) -> String {
+        // Try delimiters first
+        let delimiters = ["：", ":", "——", "—", "- "]
+        for delim in delimiters {
+            if let range = original.range(of: delim) {
+                let content = String(original[range.upperBound...]).trimmingCharacters(in: .whitespaces)
+                if !content.isEmpty { return content }
+            }
+        }
+        // Try extracting after keyword phrases
+        let prefixes = ["记个笔记", "写个笔记", "记住", "记下", "备忘",
+                        "删除笔记", "搜索笔记", "查找笔记",
+                        "add note", "new note", "save note", "delete note",
+                        "search note", "find note", "快速记录"]
+        for prefix in prefixes {
+            if let range = lower.range(of: prefix) {
+                let content = String(original[original.index(original.startIndex, offsetBy: lower.distance(from: lower.startIndex, to: range.upperBound))...])
+                    .trimmingCharacters(in: .whitespaces)
                 if !content.isEmpty { return content }
             }
         }

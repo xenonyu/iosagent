@@ -2459,8 +2459,8 @@ struct HealthSkill: ClawSkill {
             }
 
             if isSingleDay, let day = focusDay {
-                // ── Single-day detailed breakdown (original behavior) ──
-                self.respondRecoverySingleDay(day: day, baseline: effectiveBaseline, range: range, completion: completion)
+                // ── Single-day detailed breakdown with calendar context ──
+                self.respondRecoverySingleDay(day: day, baseline: effectiveBaseline, range: range, context: context, completion: completion)
             } else {
                 // ── Multi-day recovery trend ──
                 self.respondRecoveryTrend(days: rangeData, baseline: effectiveBaseline, range: range, completion: completion)
@@ -2471,7 +2471,8 @@ struct HealthSkill: ClawSkill {
     // MARK: - Single-Day Recovery (detailed breakdown)
 
     private func respondRecoverySingleDay(day: HealthSummary, baseline: [HealthSummary],
-                                          range: QueryTimeRange, completion: @escaping (String) -> Void) {
+                                          range: QueryTimeRange, context: SkillContext,
+                                          completion: @escaping (String) -> Void) {
         let dayLabel = range == .today ? "今日" : range.label
         var lines: [String] = ["🔋 \(dayLabel)恢复状态分析\n"]
 
@@ -2496,25 +2497,64 @@ struct HealthSkill: ClawSkill {
             lines.append("   \(dim.detail)")
         }
 
-        // --- Training Recommendation ---
+        // --- Calendar-Aware Training Recommendation ---
+        // Cross-reference recovery score with today's schedule to suggest
+        // not just WHAT to do, but WHEN the user can actually do it.
         lines.append("")
         lines.append("💡 训练建议")
-        if score.total >= 85 {
-            lines.append("身体恢复充分，今天适合高强度训练！")
-            lines.append("可以挑战：间歇跑、HIIT、力量训练、速度训练")
-        } else if score.total >= 70 {
-            lines.append("状态不错，适合中高强度训练。")
-            lines.append("推荐：稳态有氧、常规力量训练、球类运动")
-        } else if score.total >= 55 {
-            lines.append("身体还在恢复，建议中低强度活动。")
-            lines.append("推荐：轻松慢跑、瑜伽、散步、拉伸")
-        } else if score.total >= 40 {
-            lines.append("恢复不足，今天以轻度活动为主。")
-            lines.append("推荐：散步、轻度拉伸、冥想，避免高强度运动")
+
+        // Fetch today's calendar for timing context (only for today/yesterday queries)
+        let todayEvents: [CalendarEventItem]
+        if range == .today {
+            todayEvents = context.calendarService.todayEvents().filter { !$0.isAllDay }
         } else {
+            todayEvents = []
+        }
+
+        // Base recommendation by recovery score
+        let trainingType: String
+        let trainingList: String
+        if score.total >= 85 {
+            trainingType = "高强度训练"
+            trainingList = "可以挑战：间歇跑、HIIT、力量训练、速度训练"
+            lines.append("身体恢复充分，今天适合高强度训练！")
+        } else if score.total >= 70 {
+            trainingType = "中高强度训练"
+            trainingList = "推荐：稳态有氧、常规力量训练、球类运动"
+            lines.append("状态不错，适合中高强度训练。")
+        } else if score.total >= 55 {
+            trainingType = "中低强度活动"
+            trainingList = "推荐：轻松慢跑、瑜伽、散步、拉伸"
+            lines.append("身体还在恢复，建议中低强度活动。")
+        } else if score.total >= 40 {
+            trainingType = "轻度活动"
+            trainingList = "推荐：散步、轻度拉伸、冥想，避免高强度运动"
+            lines.append("恢复不足，今天以轻度活动为主。")
+        } else {
+            trainingType = "恢复为主"
+            trainingList = "推荐：充足睡眠、轻度散步、放松活动"
             lines.append("身体需要休息，建议今天以恢复为主。")
-            lines.append("推荐：充足睡眠、轻度散步、放松活动")
             lines.append("如果持续多天恢复不佳，请留意是否有过度训练或生活压力。")
+        }
+        lines.append(trainingList)
+
+        // --- Calendar ↔ Recovery cross-data: find free windows for exercise ---
+        if range == .today && !todayEvents.isEmpty {
+            let calendarInsight = buildRecoveryCalendarInsight(
+                events: todayEvents, recoveryScore: score.total, trainingType: trainingType
+            )
+            if !calendarInsight.isEmpty {
+                lines.append("")
+                lines.append("📅 结合今日日程")
+                lines.append(contentsOf: calendarInsight)
+            }
+        } else if range == .today && todayEvents.isEmpty {
+            lines.append("")
+            if score.total >= 55 {
+                lines.append("📅 今天没有日程安排，随时可以运动！选一个你最有精力的时段吧。")
+            } else {
+                lines.append("📅 今天日程空闲，可以充分休息恢复。")
+            }
         }
 
         // --- HRV trend note ---
@@ -2540,6 +2580,180 @@ struct HealthSkill: ClawSkill {
         }
 
         completion(lines.joined(separator: "\n"))
+    }
+
+    // MARK: - Recovery × Calendar Insight
+
+    /// Cross-references the user's recovery score with today's calendar events to find
+    /// free windows for exercise. This is core iosclaw value: only a personal AI with access
+    /// to both HealthKit and EventKit can answer "when should I work out today?"
+    private func buildRecoveryCalendarInsight(events: [CalendarEventItem],
+                                              recoveryScore: Int,
+                                              trainingType: String) -> [String] {
+        let cal = Calendar.current
+        let now = Date()
+        let timeFmt = DateFormatter()
+        timeFmt.dateFormat = "HH:mm"
+
+        // Sort events by start time
+        let sorted = events.sorted { $0.startDate < $1.startDate }
+
+        // Calculate total meeting hours
+        let totalMeetingMinutes = sorted.reduce(0.0) { $0 + $1.duration / 60 }
+        let eventCount = sorted.count
+
+        var lines: [String] = []
+
+        // Describe today's calendar load
+        if totalMeetingMinutes >= 360 { // 6+ hours of meetings
+            lines.append("今天有 \(eventCount) 个日程（共约 \(Self.formatDurationShort(totalMeetingMinutes))），日程比较紧张。")
+        } else if totalMeetingMinutes >= 180 { // 3-6 hours
+            lines.append("今天有 \(eventCount) 个日程（共约 \(Self.formatDurationShort(totalMeetingMinutes))）。")
+        } else {
+            lines.append("今天日程较轻松（\(eventCount) 个，共 \(Self.formatDurationShort(totalMeetingMinutes))）。")
+        }
+
+        // Find free windows (gaps between events where exercise is possible)
+        // Only look at future windows (or from morning if it's still early)
+        let dayStart = cal.startOfDay(for: now)
+        let scanStart: Date
+        let currentHour = cal.component(.hour, from: now)
+        if currentHour < 6 {
+            // Very early — scan from 6 AM
+            scanStart = cal.date(bySettingHour: 6, minute: 0, second: 0, of: now) ?? now
+        } else {
+            scanStart = now
+        }
+        let dayEnd = cal.date(bySettingHour: 22, minute: 0, second: 0, of: dayStart) ?? dayStart
+
+        guard scanStart < dayEnd else {
+            lines.append("今天已经比较晚了，明天再安排运动吧。")
+            return lines
+        }
+
+        // Build free windows by scanning gaps between events
+        struct FreeWindow {
+            let start: Date
+            let end: Date
+            var minutes: Double { end.timeIntervalSince(start) / 60 }
+        }
+
+        var freeWindows: [FreeWindow] = []
+        var cursor = scanStart
+
+        for event in sorted {
+            // Skip events that already ended
+            guard event.endDate > scanStart else { continue }
+            let eventStart = max(event.startDate, scanStart)
+            if eventStart > cursor {
+                let gap = FreeWindow(start: cursor, end: eventStart)
+                if gap.minutes >= 20 { // At least 20 minutes to be useful
+                    freeWindows.append(gap)
+                }
+            }
+            cursor = max(cursor, event.endDate)
+        }
+        // Gap after last event until evening
+        if cursor < dayEnd {
+            let gap = FreeWindow(start: cursor, end: dayEnd)
+            if gap.minutes >= 20 {
+                freeWindows.append(gap)
+            }
+        }
+
+        // Recommend specific time windows
+        if freeWindows.isEmpty {
+            if recoveryScore >= 55 {
+                lines.append("日程排得很满，不过可以利用会间休息走动 5-10 分钟，积少成多。")
+            } else {
+                lines.append("日程密集，恢复又不够充分，今天专注工作就好，运动可以明天再安排。")
+            }
+        } else {
+            // Find the best window for exercise
+            // Prefer: long enough for the recommended training type, and not too late
+            let minMinutesForTraining: Double = recoveryScore >= 70 ? 45 : 30
+
+            // Sort by: windows that are long enough first, then by start time (prefer earlier)
+            let goodWindows = freeWindows.filter { $0.minutes >= minMinutesForTraining }
+            let bestWindow = goodWindows.first ?? freeWindows.max(by: { $0.minutes < $1.minutes })
+
+            if let window = bestWindow {
+                let startStr = timeFmt.string(from: window.start)
+                let endStr = timeFmt.string(from: window.end)
+                let windowMins = Int(window.minutes)
+
+                if windowMins >= 60 {
+                    lines.append("⏰ 推荐运动时段：\(startStr)-\(endStr)（\(windowMins) 分钟空闲）")
+                    if recoveryScore >= 70 {
+                        lines.append("   时间充裕，可以完成一次完整的\(trainingType)。")
+                    } else {
+                        lines.append("   时间充裕，但注意控制强度，\(trainingType)为宜。")
+                    }
+                } else if windowMins >= 30 {
+                    lines.append("⏰ 推荐运动时段：\(startStr)-\(endStr)（\(windowMins) 分钟空闲）")
+                    lines.append("   时间紧凑，可以做一组高效的 \(windowMins - 10) 分钟训练（留 10 分钟洗漱）。")
+                } else {
+                    lines.append("⏰ \(startStr)-\(endStr) 有 \(windowMins) 分钟空隙")
+                    lines.append("   适合快走、拉伸或简短的活动。")
+                }
+            }
+
+            // If there are multiple good windows, mention alternatives
+            if freeWindows.count >= 2 {
+                let otherWindows = freeWindows.filter { $0.start != (bestWindow?.start ?? Date()) }.prefix(2)
+                if !otherWindows.isEmpty {
+                    let alternatives = otherWindows.map { w in
+                        "\(timeFmt.string(from: w.start))-\(timeFmt.string(from: w.end))（\(Int(w.minutes))分钟）"
+                    }.joined(separator: "、")
+                    lines.append("   备选时段：\(alternatives)")
+                }
+            }
+        }
+
+        // Back-to-back meeting warning: suggest movement between long consecutive meetings
+        let consecutiveBlocks = findConsecutiveMeetingBlocks(events: sorted)
+        for block in consecutiveBlocks where block.count >= 3 {
+            let blockMinutes = block.reduce(0.0) { $0 + $1.duration / 60 }
+            if blockMinutes >= 120 {
+                let endTime = timeFmt.string(from: block.last!.endDate)
+                lines.append("⚠️ \(block.count) 个连续日程到 \(endTime)，建议会间起身走动、做做拉伸。")
+                break // Only show one such warning
+            }
+        }
+
+        return lines
+    }
+
+    /// Finds groups of consecutive/overlapping events (gaps < 15 min are considered consecutive).
+    private func findConsecutiveMeetingBlocks(events: [CalendarEventItem]) -> [[CalendarEventItem]] {
+        guard !events.isEmpty else { return [] }
+        var blocks: [[CalendarEventItem]] = []
+        var current: [CalendarEventItem] = [events[0]]
+
+        for i in 1..<events.count {
+            let prev = current.last!
+            let gap = events[i].startDate.timeIntervalSince(prev.endDate)
+            if gap <= 900 { // 15 minutes or less between meetings
+                current.append(events[i])
+            } else {
+                if current.count >= 2 { blocks.append(current) }
+                current = [events[i]]
+            }
+        }
+        if current.count >= 2 { blocks.append(current) }
+        return blocks
+    }
+
+    /// Formats minutes into a short duration string like "3.5h" or "45分钟".
+    private static func formatDurationShort(_ minutes: Double) -> String {
+        if minutes >= 60 {
+            let hours = minutes / 60
+            if hours == Double(Int(hours)) {
+                return "\(Int(hours)) 小时"
+            }
+            return "\(String(format: "%.1f", hours)) 小时"
+        }
+        return "\(Int(minutes)) 分钟"
     }
 
     // MARK: - Multi-Day Recovery Trend

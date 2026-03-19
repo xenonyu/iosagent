@@ -46,8 +46,12 @@ final class ContextMemory {
     // MARK: - Context Enrichment
 
     /// Returns a resolved intent by inheriting context from previous turns.
-    /// Example: "那昨天呢?" → inherits previous exercise intent but changes time range.
-    /// Example: "这周的呢?" → inherits previous health/calendar/location intent.
+    ///
+    /// Handles three follow-up scenarios:
+    /// 1. "那昨天呢?" → unknown intent + follow-up → inherits previous skill, changes time range
+    /// 2. "昨天" (bare time) → unknown intent + time-only → inherits previous skill, changes time range
+    /// 3. "睡眠呢?" → known intent + follow-up + no explicit time → inherits time range from previous turn
+    ///    (e.g. after "今天走了多少步？", "睡眠呢" should mean today's sleep, not default lastWeek)
     func resolveIntent(from rawText: String) -> QueryIntent {
         let lower = rawText.lowercased()
         let trimmed = lower.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -64,8 +68,22 @@ final class ContextMemory {
         // Also detect bare time references as follow-ups: "昨天", "上周", "这个月" alone
         let isTimeOnly = newIntent.isUnknown && isTimeReference(trimmed)
 
+        // Scenario 1 & 2: Unknown intent → inherit previous skill entirely
         if (isFollowUp || isTimeOnly), let last = lastIntent, newIntent.isUnknown {
             return inheritIntent(last, withRange: newRange)
+        }
+
+        // Scenario 3: Known intent + follow-up signal + no explicit time in query
+        // → keep the new skill but inherit time range from the previous turn.
+        // Example: "今天走了多少步？" then "睡眠呢？"
+        //   newIntent = .health(sleep, lastWeek)  ← wrong default range
+        //   lastTimeRange = .today                ← correct from previous turn
+        //   Result: .health(sleep, today)
+        if isFollowUp, let last = lastIntent, !newIntent.isUnknown {
+            let queryHasExplicitTime = hasExplicitTimeReference(lower)
+            if !queryHasExplicitTime, let previousRange = extractRange(from: last) {
+                return applyRange(previousRange, to: newIntent)
+            }
         }
 
         return newIntent
@@ -119,6 +137,54 @@ final class ContextMemory {
 
         // Keep only last 5 topics
         if mentionedTopics.count > 5 { mentionedTopics.removeFirst() }
+    }
+
+    /// Checks whether the query text contains an explicit time reference (e.g. "今天", "上周", "this month").
+    /// If not, the query is using the default range from SkillRouter (.lastWeek) and we should
+    /// inherit the time range from the previous conversational turn instead.
+    private func hasExplicitTimeReference(_ text: String) -> Bool {
+        let timeKeywords = [
+            "今天", "昨天", "前天", "大前天", "明天", "后天",
+            "这周", "本周", "上周", "上上周", "下周",
+            "这个月", "本月", "上个月", "下个月",
+            "今年", "最近", "近期",
+            "today", "yesterday", "tomorrow",
+            "this week", "last week", "next week",
+            "this month", "last month",
+            "recently", "lately"
+        ]
+        return timeKeywords.contains(where: { text.contains($0) })
+    }
+
+    /// Extracts the QueryTimeRange from an existing intent, if it carries one.
+    private func extractRange(from intent: QueryIntent) -> QueryTimeRange? {
+        switch intent {
+        case .exercise(let r):   return r
+        case .location(let r):   return r
+        case .mood(let r):       return r
+        case .summary(let r):    return r
+        case .events(let r):     return r
+        case .health(_, let r):  return r
+        case .calendar(let r):   return r
+        case .photos(let r):     return r
+        default:                 return nil
+        }
+    }
+
+    /// Returns a new intent of the same type but with a different time range.
+    /// For intents that don't carry a time range, returns them unchanged.
+    private func applyRange(_ range: QueryTimeRange, to intent: QueryIntent) -> QueryIntent {
+        switch intent {
+        case .exercise:          return .exercise(range: range)
+        case .location:          return .location(range: range)
+        case .mood:              return .mood(range: range)
+        case .summary:           return .summary(range: range)
+        case .events:            return .events(range: range)
+        case .health(let m, _):  return .health(metric: m, range: range)
+        case .calendar:          return .calendar(range: range)
+        case .photos:            return .photos(range: range)
+        default:                 return intent
+        }
     }
 
     private func inheritIntent(_ intent: QueryIntent, withRange range: QueryTimeRange) -> QueryIntent {

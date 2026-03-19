@@ -72,6 +72,20 @@ struct SummarySkill: ClawSkill {
                 lines.append("\n📍 去过 \(uniquePlaces) 个地点，共记录 \(locations.count) 次")
             }
 
+            // --- Photo Activity ---
+            if context.photoService.isAuthorized {
+                let photos = context.photoService.fetchMetadata(from: interval.start, to: interval.end)
+                if !photos.isEmpty {
+                    hasAnyData = true
+                    let activeDays = Set(photos.map { Calendar.current.startOfDay(for: $0.date) }).count
+                    let favCount = photos.filter { $0.isFavorite }.count
+                    var photoLine = "\n📷 拍了 \(photos.count) 张照片"
+                    if activeDays > 1 { photoLine += "，\(activeDays) 天有拍照" }
+                    if favCount > 0 { photoLine += "，\(favCount) 张收藏" }
+                    lines.append(photoLine)
+                }
+            }
+
             let totalSteps = summaries.reduce(0) { $0 + $1.steps }
             let totalExercise = summaries.reduce(0) { $0 + $1.exerciseMinutes }
             if totalSteps > 0 || totalExercise > 0 {
@@ -366,6 +380,31 @@ struct SummarySkill: ClawSkill {
                 lines.append("\n📍 **去过** \(places.prefix(3).joined(separator: "、"))")
             }
 
+            // --- Photos Today ---
+            if context.photoService.isAuthorized {
+                let todayPhotos = context.photoService.fetchMetadata(from: interval.start, to: interval.end)
+                if !todayPhotos.isEmpty {
+                    hasData = true
+                    let favCount = todayPhotos.filter { $0.isFavorite }.count
+                    var photoLine = "\n📷 **照片**  今天拍了 \(todayPhotos.count) 张"
+                    if favCount > 0 { photoLine += "（\(favCount) 张收藏）" }
+                    lines.append(photoLine)
+
+                    // Peak shooting time if enough photos
+                    if todayPhotos.count >= 3 {
+                        var hourCount = [Int: Int]()
+                        todayPhotos.forEach {
+                            let h = cal.component(.hour, from: $0.date)
+                            hourCount[h, default: 0] += 1
+                        }
+                        if let (hour, count) = hourCount.max(by: { $0.value < $1.value }), count >= 2 {
+                            let period = Self.photoTimeOfDay(hour: hour)
+                            lines.append("  ⏰ 拍照高峰：\(period)（\(count) 张）")
+                        }
+                    }
+                }
+            }
+
             // --- Cross-Data Intelligence ---
             // Correlate health + calendar + location to produce insights no single data source can
             if hasData {
@@ -640,6 +679,45 @@ struct SummarySkill: ClawSkill {
                 lines.append("\n\(eventLine)")
             }
 
+            // --- Photo Activity This Week ---
+            if context.photoService.isAuthorized {
+                let thisWeekPhotos = context.photoService.fetchMetadata(from: interval.start, to: interval.end)
+                if !thisWeekPhotos.isEmpty {
+                    hasAnyData = true
+                    let activeDays = Set(thisWeekPhotos.map { cal.startOfDay(for: $0.date) }).count
+                    let favCount = thisWeekPhotos.filter { $0.isFavorite }.count
+
+                    var photoLine = "\n📷 本周拍了 \(thisWeekPhotos.count) 张照片，\(activeDays) 天有拍照"
+                    // Compare with last week
+                    let lastWeekPhotos = context.photoService.fetchMetadata(from: lastWeekStart, to: lastWeekEnd)
+                    if !lastWeekPhotos.isEmpty {
+                        let delta = thisWeekPhotos.count - lastWeekPhotos.count
+                        if delta > 0 {
+                            photoLine += "（比上周多 \(delta) 张）"
+                        } else if delta < 0 {
+                            photoLine += "（比上周少 \(-delta) 张）"
+                        }
+                    }
+                    lines.append(photoLine)
+
+                    if favCount > 0 {
+                        lines.append("  ❤️ \(favCount) 张标记收藏")
+                    }
+
+                    // Most active day for photos
+                    if activeDays >= 2 {
+                        var dayPhotoCount: [Date: Int] = [:]
+                        thisWeekPhotos.forEach { dayPhotoCount[cal.startOfDay(for: $0.date), default: 0] += 1 }
+                        if let (bestDay, count) = dayPhotoCount.max(by: { $0.value < $1.value }) {
+                            let dayFmt = DateFormatter()
+                            dayFmt.dateFormat = "EEEE"
+                            dayFmt.locale = Locale(identifier: "zh_CN")
+                            lines.append("  🏆 拍照最多：\(dayFmt.string(from: bestDay))（\(count) 张）")
+                        }
+                    }
+                }
+            }
+
             // --- Weekly Cross-Data Pattern Discovery ---
             if hasAnyData {
                 let weeklyInsights = Self.buildWeeklyCrossInsights(
@@ -710,6 +788,19 @@ struct SummarySkill: ClawSkill {
         guard abs(pct) >= 10 else { return "" }
         let arrow = pct > 0 ? "↑" : "↓"
         return "（vs 上周 \(arrow)\(Int(abs(pct)))%）"
+    }
+
+    /// Maps an hour (0-23) to a Chinese time-of-day label for photo insights.
+    private static func photoTimeOfDay(hour: Int) -> String {
+        switch hour {
+        case 5..<9: return "清晨"
+        case 9..<12: return "上午"
+        case 12..<14: return "午间"
+        case 14..<17: return "下午"
+        case 17..<19: return "傍晚"
+        case 19..<22: return "晚上"
+        default: return "深夜"
+        }
     }
 
     // MARK: - Cross-Data Intelligence

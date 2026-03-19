@@ -360,6 +360,23 @@ struct SummarySkill: ClawSkill {
                 lines.append("\n📍 **去过** \(places.prefix(3).joined(separator: "、"))")
             }
 
+            // --- Cross-Data Intelligence ---
+            // Correlate health + calendar + location to produce insights no single data source can
+            if hasData {
+                let crossInsights = Self.buildCrossDataInsights(
+                    health: health,
+                    calendarEvents: calendarEvents,
+                    locations: locations,
+                    recentHealth: recentSummaries,
+                    now: now,
+                    cal: cal
+                )
+                if !crossInsights.isEmpty {
+                    lines.append("\n💡 **今日洞察**")
+                    crossInsights.forEach { lines.append("  \($0)") }
+                }
+            }
+
             // --- Empty State ---
             if !hasData {
                 lines.append("今天还没有记录哦 📭\n")
@@ -509,6 +526,20 @@ struct SummarySkill: ClawSkill {
                 lines.append("\n📝 共记录 \(events.count) 条生活事件")
             }
 
+            // --- Weekly Cross-Data Pattern Discovery ---
+            if hasAnyData {
+                let weeklyInsights = Self.buildWeeklyCrossInsights(
+                    healthSummaries: filtered,
+                    calendarEvents: calendarEvents,
+                    locations: locations,
+                    cal: cal
+                )
+                if !weeklyInsights.isEmpty {
+                    lines.append("\n💡 **本周发现**")
+                    weeklyInsights.forEach { lines.append("  \($0)") }
+                }
+            }
+
             if !hasAnyData {
                 lines.append("本周数据较少，建议开启健康、日历、位置权限并多与我分享，让周报更丰富！")
             }
@@ -525,6 +556,225 @@ struct SummarySkill: ClawSkill {
         if h > 0 && m > 0 { return "\(h) 小时 \(m) 分钟" }
         if h > 0 { return "\(h) 小时" }
         return "\(m) 分钟"
+    }
+
+    // MARK: - Cross-Data Intelligence
+
+    /// Correlates health, calendar, and location data to produce insights
+    /// that no single data source can provide on its own.
+    /// This is the core value of iosclaw: connecting the dots across your life data.
+    private static func buildCrossDataInsights(
+        health: HealthSummary,
+        calendarEvents: [CalendarEventItem],
+        locations: [LocationRecord],
+        recentHealth: [HealthSummary],
+        now: Date,
+        cal: Calendar
+    ) -> [String] {
+        var insights: [String] = []
+
+        let timedEvents = calendarEvents.filter { !$0.isAllDay }
+        let meetingCount = timedEvents.count
+        let totalMeetingMin = timedEvents.reduce(0.0) { $0 + $1.duration } / 60.0
+        let isBusyDay = meetingCount >= 4 || totalMeetingMin >= 240
+        let isLightDay = meetingCount <= 1
+
+        // Compute 7-day baselines (exclude today)
+        let pastDays = recentHealth.filter { !cal.isDateInToday($0.date) && $0.hasData }
+        let avgSteps = pastDays.isEmpty ? 0.0 : pastDays.reduce(0) { $0 + $1.steps } / Double(pastDays.count)
+        let avgExercise = pastDays.isEmpty ? 0.0 : pastDays.reduce(0) { $0 + $1.exerciseMinutes } / Double(pastDays.count)
+
+        // --- Insight 1: Calendar busy-ness vs activity level ---
+        if isBusyDay && health.steps > 0 && avgSteps > 0 {
+            let stepRatio = health.steps / avgSteps
+            if stepRatio < 0.6 {
+                // Busy day and significantly fewer steps than average
+                let remaining = timedEvents.filter { $0.endDate > now }
+                if remaining.isEmpty {
+                    insights.append("📅↔️🏃 今天 \(meetingCount) 个会议，步数低于平时 —— 日程已结束，趁现在出去走走吧")
+                } else {
+                    insights.append("📅↔️🏃 会议密集的一天，步数比平时少 \(Int((1 - stepRatio) * 100))% —— 会议间隙起来走动几分钟")
+                }
+            } else if stepRatio >= 1.0 {
+                insights.append("📅↔️🏃 今天会议很多但活动量依然充足，时间管理很棒 👏")
+            }
+        }
+
+        // --- Insight 2: Free day + activity opportunity ---
+        if isLightDay && health.exerciseMinutes < 15 {
+            let hour = cal.component(.hour, from: now)
+            if hour < 20 {
+                insights.append("📅↔️⏱ 今天日程清闲，适合安排一次运动 —— 还有时间")
+            }
+        } else if isLightDay && health.exerciseMinutes >= 30 {
+            insights.append("📅↔️⏱ 空闲日 + 充足运动 = 完美的一天 ✨")
+        }
+
+        // --- Insight 3: Sleep quality vs today's schedule ---
+        if health.sleepHours > 0 && meetingCount > 0 {
+            if health.sleepHours < 6 && isBusyDay {
+                insights.append("😴↔️📅 昨晚睡不到 6 小时，今天又有 \(meetingCount) 个会议 —— 注意补充能量，下午可以小憩")
+            } else if health.sleepHours >= 7.5 && isBusyDay {
+                insights.append("😴↔️📅 昨晚睡得不错，应对今天的密集日程状态应该不差")
+            }
+        }
+
+        // --- Insight 4: Movement pattern from locations + health ---
+        if !locations.isEmpty && health.steps > 0 {
+            let uniquePlaces = Set(locations.map { $0.displayName }).count
+            if uniquePlaces >= 3 && health.steps >= 8000 {
+                insights.append("📍↔️👟 去了 \(uniquePlaces) 个地方，步数也充足 —— 充实的一天")
+            } else if uniquePlaces == 1 && health.steps < 3000 && health.steps > 0 {
+                insights.append("📍↔️👟 一直待在同一个地方，活动量偏低 —— 换个环境走走？")
+            }
+        }
+
+        // --- Insight 5: Today vs recent trend anomaly ---
+        if health.steps > 0 && avgSteps > 0 {
+            let deviation = (health.steps - avgSteps) / avgSteps
+            if deviation >= 0.5 {
+                insights.append("📈 今天步数比近 7 天均值高 \(Int(deviation * 100))%，状态很活跃！")
+            } else if deviation <= -0.5 && !isBusyDay {
+                // Only flag low activity if it's NOT because of a busy calendar
+                insights.append("📉 今天步数比近 7 天均值低 \(Int(-deviation * 100))%，还好吗？")
+            }
+        }
+
+        // --- Insight 6: Exercise + sleep correlation from recent data ---
+        if pastDays.count >= 5 {
+            let exerciseDays = pastDays.filter { $0.exerciseMinutes >= 30 && $0.sleepHours > 0 }
+            let restDays = pastDays.filter { $0.exerciseMinutes < 15 && $0.sleepHours > 0 }
+            if exerciseDays.count >= 2 && restDays.count >= 2 {
+                let sleepOnExercise = exerciseDays.reduce(0) { $0 + $1.sleepHours } / Double(exerciseDays.count)
+                let sleepOnRest = restDays.reduce(0) { $0 + $1.sleepHours } / Double(restDays.count)
+                let diff = sleepOnExercise - sleepOnRest
+                if diff >= 0.5 {
+                    insights.append("🏃↔️😴 最近运动日比休息日多睡 \(String(format: "%.1f", diff))h —— 运动在帮助你的睡眠")
+                } else if diff <= -0.5 {
+                    insights.append("🏃↔️😴 运动日反而少睡 \(String(format: "%.1f", -diff))h —— 试试把运动安排在更早的时间")
+                }
+            }
+        }
+
+        // Limit to top 3 most relevant insights to avoid information overload
+        return Array(insights.prefix(3))
+    }
+
+    /// Discovers cross-data patterns across a full week of health, calendar, and location data.
+    private static func buildWeeklyCrossInsights(
+        healthSummaries: [HealthSummary],
+        calendarEvents: [CalendarEventItem],
+        locations: [LocationRecord],
+        cal: Calendar
+    ) -> [String] {
+        var insights: [String] = []
+        let withData = healthSummaries.filter { $0.hasData }
+        guard !withData.isEmpty else { return [] }
+
+        // --- Insight 1: Meeting-heavy days vs activity ---
+        if !calendarEvents.isEmpty && withData.count >= 3 {
+            let timedEvents = calendarEvents.filter { !$0.isAllDay }
+            // Group meetings by day
+            var meetingsPerDay: [Date: Int] = [:]
+            for e in timedEvents {
+                let day = cal.startOfDay(for: e.startDate)
+                meetingsPerDay[day, default: 0] += 1
+            }
+
+            // Pair with health data
+            var busyDaySteps: [Double] = []
+            var freeDaySteps: [Double] = []
+            for h in withData where h.steps > 0 {
+                let day = cal.startOfDay(for: h.date)
+                let meetings = meetingsPerDay[day] ?? 0
+                if meetings >= 3 {
+                    busyDaySteps.append(h.steps)
+                } else if meetings <= 1 {
+                    freeDaySteps.append(h.steps)
+                }
+            }
+
+            if busyDaySteps.count >= 1 && freeDaySteps.count >= 1 {
+                let busyAvg = busyDaySteps.reduce(0, +) / Double(busyDaySteps.count)
+                let freeAvg = freeDaySteps.reduce(0, +) / Double(freeDaySteps.count)
+                if freeAvg > 0 {
+                    let diff = (busyAvg - freeAvg) / freeAvg * 100
+                    if diff <= -25 {
+                        insights.append("📅↔️🏃 会议多的日子步数少 \(Int(-diff))% —— 忙碌日记得会议间走动")
+                    } else if diff >= 25 {
+                        insights.append("📅↔️🏃 会议多的日子反而更活跃，可能是通勤和换场的功劳")
+                    }
+                }
+            }
+        }
+
+        // --- Insight 2: Location variety correlates with activity ---
+        if !locations.isEmpty && withData.count >= 3 {
+            // Count unique places per day
+            var placesPerDay: [Date: Set<String>] = [:]
+            for loc in locations {
+                let day = cal.startOfDay(for: loc.timestamp)
+                placesPerDay[day, default: []].insert(loc.displayName)
+            }
+
+            var manyPlacesSteps: [Double] = []
+            var fewPlacesSteps: [Double] = []
+            for h in withData where h.steps > 0 {
+                let day = cal.startOfDay(for: h.date)
+                let places = placesPerDay[day]?.count ?? 0
+                if places >= 3 {
+                    manyPlacesSteps.append(h.steps)
+                } else if places <= 1 && places >= 0 {
+                    fewPlacesSteps.append(h.steps)
+                }
+            }
+
+            if manyPlacesSteps.count >= 1 && fewPlacesSteps.count >= 1 {
+                let manyAvg = manyPlacesSteps.reduce(0, +) / Double(manyPlacesSteps.count)
+                let fewAvg = fewPlacesSteps.reduce(0, +) / Double(fewPlacesSteps.count)
+                if fewAvg > 0 && manyAvg > fewAvg * 1.3 {
+                    insights.append("📍↔️👟 去过多个地方的日子比宅家日多走 \(Int((manyAvg - fewAvg) / fewAvg * 100))% —— 出门就是运动")
+                }
+            }
+        }
+
+        // --- Insight 3: Best day pattern (which weekday is healthiest?) ---
+        if withData.count >= 5 {
+            var weekdayScores: [Int: (steps: Double, count: Int)] = [:]
+            for h in withData where h.steps > 0 {
+                let wd = cal.component(.weekday, from: h.date)
+                let current = weekdayScores[wd] ?? (0, 0)
+                weekdayScores[wd] = (current.steps + h.steps, current.count + 1)
+            }
+
+            if let best = weekdayScores.max(by: {
+                ($0.value.count > 0 ? $0.value.steps / Double($0.value.count) : 0) <
+                ($1.value.count > 0 ? $1.value.steps / Double($1.value.count) : 0)
+            }), best.value.count > 0 {
+                let avgSteps = best.value.steps / Double(best.value.count)
+                let overallAvg = withData.reduce(0) { $0 + $1.steps } / Double(withData.count)
+                if avgSteps > overallAvg * 1.2 {
+                    let dayName = Self.weekdayName(best.key)
+                    insights.append("🗓↔️🏃 \(dayName)是你本周最活跃的日子（均 \(Int(avgSteps).formatted()) 步）")
+                }
+            }
+        }
+
+        return Array(insights.prefix(2))
+    }
+
+    /// Returns Chinese weekday name from Calendar weekday number (1=Sun, 7=Sat).
+    private static func weekdayName(_ weekday: Int) -> String {
+        switch weekday {
+        case 1: return "周日"
+        case 2: return "周一"
+        case 3: return "周二"
+        case 4: return "周三"
+        case 5: return "周四"
+        case 6: return "周五"
+        case 7: return "周六"
+        default: return "未知"
+        }
     }
 
     // MARK: - Events

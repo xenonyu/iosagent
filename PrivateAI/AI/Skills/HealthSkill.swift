@@ -111,11 +111,10 @@ struct HealthSkill: ClawSkill {
 
             // Trend insight (compare first half vs second half of the period)
             if daysWithData.count >= 4 {
-                let mid = daysWithData.count / 2
-                let recentHalf = Array(daysWithData.prefix(mid))
-                let olderHalf = Array(daysWithData.suffix(from: mid))
-                let recentAvg = recentHalf.reduce(0) { $0 + $1.steps } / Double(recentHalf.count)
-                let olderAvg = olderHalf.reduce(0) { $0 + $1.steps } / Double(olderHalf.count)
+                let sorted = daysWithData.sorted { $0.date < $1.date }
+                let mid = sorted.count / 2
+                let olderAvg = sorted.prefix(mid).reduce(0) { $0 + $1.steps } / Double(mid)
+                let recentAvg = sorted.suffix(from: mid).reduce(0) { $0 + $1.steps } / Double(sorted.count - mid)
 
                 if olderAvg > 0 {
                     let changePercent = ((recentAvg - olderAvg) / olderAvg) * 100
@@ -631,9 +630,10 @@ struct HealthSkill: ClawSkill {
 
             // Resting HR trend (compare first half vs second half)
             if restingDays.count >= 4 {
-                let mid = restingDays.count / 2
-                let recentAvg = restingDays.prefix(mid).reduce(0) { $0 + $1.restingHeartRate } / Double(mid)
-                let olderAvg = restingDays.suffix(from: mid).reduce(0) { $0 + $1.restingHeartRate } / Double(restingDays.count - mid)
+                let sortedResting = restingDays.sorted { $0.date < $1.date }
+                let mid = sortedResting.count / 2
+                let olderAvg = sortedResting.prefix(mid).reduce(0) { $0 + $1.restingHeartRate } / Double(mid)
+                let recentAvg = sortedResting.suffix(from: mid).reduce(0) { $0 + $1.restingHeartRate } / Double(sortedResting.count - mid)
                 let diff = recentAvg - olderAvg
                 if abs(diff) >= 2 {
                     if diff < 0 {
@@ -680,9 +680,10 @@ struct HealthSkill: ClawSkill {
 
             // HRV trend
             if hrvDays.count >= 4 {
-                let mid = hrvDays.count / 2
-                let recentAvg = hrvDays.prefix(mid).reduce(0) { $0 + $1.hrv } / Double(mid)
-                let olderAvg = hrvDays.suffix(from: mid).reduce(0) { $0 + $1.hrv } / Double(hrvDays.count - mid)
+                let sortedHRV = hrvDays.sorted { $0.date < $1.date }
+                let mid = sortedHRV.count / 2
+                let olderAvg = sortedHRV.prefix(mid).reduce(0) { $0 + $1.hrv } / Double(mid)
+                let recentAvg = sortedHRV.suffix(from: mid).reduce(0) { $0 + $1.hrv } / Double(sortedHRV.count - mid)
                 let diff = recentAvg - olderAvg
                 if abs(diff) >= 5 {
                     if diff > 0 {
@@ -919,9 +920,10 @@ struct HealthSkill: ClawSkill {
 
         // Trend (compare first half vs second half)
         if distanceDays.count >= 4 {
-            let mid = distanceDays.count / 2
-            let recentAvg = distanceDays.prefix(mid).reduce(0) { $0 + $1.distanceKm } / Double(mid)
-            let olderAvg = distanceDays.suffix(from: mid).reduce(0) { $0 + $1.distanceKm } / Double(distanceDays.count - mid)
+            let sorted = distanceDays.sorted { $0.date < $1.date }
+            let mid = sorted.count / 2
+            let olderAvg = sorted.prefix(mid).reduce(0) { $0 + $1.distanceKm } / Double(mid)
+            let recentAvg = sorted.suffix(from: mid).reduce(0) { $0 + $1.distanceKm } / Double(sorted.count - mid)
             if olderAvg > 0 {
                 let pct = ((recentAvg - olderAvg) / olderAvg) * 100
                 if pct >= 10 {

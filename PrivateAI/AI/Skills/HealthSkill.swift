@@ -876,6 +876,7 @@ struct HealthSkill: ClawSkill {
             return
         }
 
+        let cal = Calendar.current
         var lines: [String] = ["👟 \(range.label)的步数详情\n"]
         let total = stepDays.reduce(0) { $0 + $1.steps }
         let avg = total / Double(stepDays.count)
@@ -893,7 +894,21 @@ struct HealthSkill: ClawSkill {
             lines.append("📉 最少：\(fmt.string(from: worst.date)) \(Int(worst.steps).formatted()) 步")
         }
 
-        // Goal analysis
+        // --- Day-by-day trend chart ---
+        if stepDays.count >= 3 {
+            let sorted = stepDays.sorted { $0.date < $1.date }
+            lines.append("")
+            lines.append("📈 逐日趋势")
+            let dayFmt = DateFormatter()
+            dayFmt.dateFormat = "E"
+            dayFmt.locale = Locale(identifier: "zh_CN")
+            for day in sorted {
+                let bar = stepsTrendBar(steps: day.steps)
+                lines.append("   \(dayFmt.string(from: day.date)) \(bar) \(Int(day.steps).formatted())")
+            }
+        }
+
+        // --- Goal analysis ---
         let goalDays = stepDays.filter { $0.steps >= 8000 }.count
         let goalRate = Double(goalDays) / Double(stepDays.count) * 100
         lines.append("\n🎯 达标天数（≥8000步）：\(goalDays)/\(stepDays.count) 天（\(Int(goalRate))%）")
@@ -908,7 +923,132 @@ struct HealthSkill: ClawSkill {
             lines.append("活动量偏少，可以从每天增加 1000 步开始。")
         }
 
+        // --- Activity distribution buckets ---
+        if stepDays.count >= 3 {
+            let sedentary = stepDays.filter { $0.steps < 3000 }.count
+            let light = stepDays.filter { $0.steps >= 3000 && $0.steps < 5000 }.count
+            let moderate = stepDays.filter { $0.steps >= 5000 && $0.steps < 8000 }.count
+            let active = stepDays.filter { $0.steps >= 8000 && $0.steps < 12000 }.count
+            let veryActive = stepDays.filter { $0.steps >= 12000 }.count
+            let n = stepDays.count
+
+            lines.append("")
+            lines.append("📊 活动分布")
+            if sedentary > 0 { lines.append("   🔴 久坐（<3000）：\(sedentary) 天（\(sedentary * 100 / n)%）") }
+            if light > 0 { lines.append("   🟡 轻度（3k-5k）：\(light) 天（\(light * 100 / n)%）") }
+            if moderate > 0 { lines.append("   🟢 中度（5k-8k）：\(moderate) 天（\(moderate * 100 / n)%）") }
+            if active > 0 { lines.append("   💚 活跃（8k-12k）：\(active) 天（\(active * 100 / n)%）") }
+            if veryActive > 0 { lines.append("   🏅 高活跃（12k+）：\(veryActive) 天（\(veryActive * 100 / n)%）") }
+        }
+
+        // --- Consistency analysis ---
+        if stepDays.count >= 3 {
+            let cv = coefficient(of: stepDays.map { $0.steps })
+            lines.append("")
+            if cv < 0.2 {
+                lines.append("🎯 步数非常规律（波动仅 \(Int(cv * 100))%），节奏感很好！")
+            } else if cv < 0.4 {
+                lines.append("📊 步数比较规律（波动 \(Int(cv * 100))%），偶有高低起伏。")
+            } else {
+                lines.append("🎢 步数波动较大（\(Int(cv * 100))%），试试每天固定时间散步来建立节奏。")
+            }
+        }
+
+        // --- Weekday vs Weekend pattern ---
+        if stepDays.count >= 5 {
+            let weekdays = stepDays.filter { !cal.isDateInWeekend($0.date) }
+            let weekends = stepDays.filter { cal.isDateInWeekend($0.date) }
+            if !weekdays.isEmpty && !weekends.isEmpty {
+                let wdAvg = weekdays.reduce(0) { $0 + $1.steps } / Double(weekdays.count)
+                let weAvg = weekends.reduce(0) { $0 + $1.steps } / Double(weekends.count)
+                let diff = abs(weAvg - wdAvg)
+                let pct = wdAvg > 0 ? diff / wdAvg * 100 : 0
+                if pct > 15 {
+                    lines.append("")
+                    lines.append("🗓 工作日 vs 周末")
+                    lines.append("   工作日均 \(Int(wdAvg).formatted()) 步 · 周末均 \(Int(weAvg).formatted()) 步")
+                    if weAvg > wdAvg {
+                        lines.append("   周末更活跃（+\(Int(pct))%），工作日可以增加午间散步。")
+                    } else {
+                        lines.append("   工作日更活跃（+\(Int(pct))%），可能因通勤带来更多步数。")
+                    }
+                }
+            }
+        }
+
+        // --- Trend: first half vs second half ---
+        if stepDays.count >= 4 {
+            let sorted = stepDays.sorted { $0.date < $1.date }
+            let mid = sorted.count / 2
+            let olderAvg = sorted.prefix(mid).reduce(0) { $0 + $1.steps } / Double(mid)
+            let recentAvg = sorted.suffix(from: mid).reduce(0) { $0 + $1.steps } / Double(sorted.count - mid)
+            if olderAvg > 0 {
+                let changePct = ((recentAvg - olderAvg) / olderAvg) * 100
+                if abs(changePct) >= 10 {
+                    lines.append("")
+                    if changePct > 0 {
+                        lines.append("📈 步数呈上升趋势（+\(Int(changePct))%），保持这个势头！")
+                    } else {
+                        lines.append("📉 步数略有下降（\(Int(changePct))%），试试每天多走一站路？")
+                    }
+                } else {
+                    lines.append("")
+                    lines.append("📊 步数保持稳定，节奏不错！")
+                }
+            }
+        }
+
+        // --- Cross-metric: steps vs sleep correlation ---
+        if stepDays.count >= 4 {
+            let paired = summaries.filter { $0.steps > 0 && $0.sleepHours > 0 }
+            if paired.count >= 3 {
+                let stepMedian = paired.map(\.steps).sorted()[paired.count / 2]
+                let highStepDays = paired.filter { $0.steps >= stepMedian }
+                let lowStepDays = paired.filter { $0.steps < stepMedian }
+                if !highStepDays.isEmpty && !lowStepDays.isEmpty {
+                    let sleepOnHigh = highStepDays.reduce(0) { $0 + $1.sleepHours } / Double(highStepDays.count)
+                    let sleepOnLow = lowStepDays.reduce(0) { $0 + $1.sleepHours } / Double(lowStepDays.count)
+                    let diff = sleepOnHigh - sleepOnLow
+                    if abs(diff) >= 0.3 {
+                        lines.append("")
+                        lines.append("🔗 步数与睡眠的关联")
+                        if diff > 0 {
+                            lines.append("   多走路的日子平均多睡 \(String(format: "%.1f", diff)) 小时 — 运动有助于改善睡眠质量。")
+                        } else {
+                            lines.append("   少走路的日子反而多睡 \(String(format: "%.1f", -diff)) 小时 — 可能在休息日补觉较多。")
+                        }
+                    }
+                }
+            }
+        }
+
+        // --- Distance equivalent (fun context) ---
+        let totalDistance = stepDays.reduce(0) { $0 + $1.distanceKm }
+        if totalDistance >= 1.0 {
+            lines.append("")
+            var distLine = "🚶 总距离 \(String(format: "%.1f", totalDistance)) 公里"
+            if totalDistance >= 42.195 {
+                let marathons = totalDistance / 42.195
+                distLine += "（相当于 \(String(format: "%.1f", marathons)) 个全马！）"
+            } else if totalDistance >= 21.1 {
+                distLine += "（相当于一个半马的距离！）"
+            } else if totalDistance >= 10 {
+                distLine += "（已经超过 10 公里了！）"
+            }
+            lines.append(distLine)
+        }
+
         completion(lines.joined(separator: "\n"))
+    }
+
+    /// Day-by-day step bar (scaled to 15000 steps, using 8 blocks).
+    private func stepsTrendBar(steps: Double) -> String {
+        let maxS = 15000.0
+        let blocks = max(1, min(8, Int((steps / maxS) * 8)))
+        let bar = String(repeating: "▓", count: blocks) + String(repeating: "░", count: 8 - blocks)
+        if steps >= 8000 { return "🟢 \(bar)" }
+        if steps >= 5000 { return "🟡 \(bar)" }
+        return "🔴 \(bar)"
     }
 
     // MARK: - Flights Climbed

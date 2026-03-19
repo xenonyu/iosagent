@@ -344,7 +344,8 @@ struct CalendarSkill: ClawSkill {
         if timeOfDay != nil && !focusedTimedEvents.isEmpty {
             lines.append("🕐 \(timeOfDay!.label)安排：")
             focusedTimedEvents.forEach { event in
-                var line = "  • \(event.timeDisplay) \(event.title)"
+                let recurTag = event.isRecurring ? " 🔄" : ""
+                var line = "  • \(event.timeDisplay) \(event.title)\(recurTag)"
                 if !event.location.isEmpty { line += "  📍\(event.location)" }
                 lines.append(line)
                 if let preview = notesPreview(event.notes) {
@@ -357,7 +358,8 @@ struct CalendarSkill: ClawSkill {
             if !otherTimedEvents.isEmpty {
                 lines.append("📋 其他时段还有 \(otherTimedEvents.count) 个安排：")
                 otherTimedEvents.forEach { event in
-                    var line = "  · \(event.timeDisplay) \(event.title)"
+                    let recurTag = event.isRecurring ? " 🔄" : ""
+                    var line = "  · \(event.timeDisplay) \(event.title)\(recurTag)"
                     if !event.location.isEmpty { line += "  📍\(event.location)" }
                     lines.append(line)
                 }
@@ -366,7 +368,8 @@ struct CalendarSkill: ClawSkill {
         } else if !timedEvents.isEmpty {
             lines.append("🕐 时间安排：")
             timedEvents.forEach { event in
-                var line = "  • \(event.timeDisplay) \(event.title)"
+                let recurTag = event.isRecurring ? " 🔄" : ""
+                var line = "  • \(event.timeDisplay) \(event.title)\(recurTag)"
                 if !event.location.isEmpty { line += "  📍\(event.location)" }
                 lines.append(line)
                 if let preview = notesPreview(event.notes) {
@@ -494,7 +497,8 @@ struct CalendarSkill: ClawSkill {
             let weekendTag = isWeekend(day) ? " 🏖️" : ""
             lines.append("📌 \(dateFmt.string(from: day)) \(dayBusy.emoji)\(weekendTag)")
             dayEvents.forEach { event in
-                var line = "  • \(event.isAllDay ? "全天" : event.timeDisplay) \(event.title)"
+                let recurTag = event.isRecurring ? " 🔄" : ""
+                var line = "  • \(event.isAllDay ? "全天" : event.timeDisplay) \(event.title)\(recurTag)"
                 if !event.location.isEmpty { line += "  📍\(event.location)" }
                 lines.append(line)
                 // In free-time-focused mode, skip notes to keep output concise
@@ -555,6 +559,13 @@ struct CalendarSkill: ClawSkill {
                 lines.append("")
                 lines.append(contentsOf: freeOverview)
             }
+        }
+
+        // --- Recurring vs one-off event breakdown ---
+        let recurringInsight = buildRecurringBreakdown(events: events, spanDays: spanDays)
+        if !recurringInsight.isEmpty {
+            lines.append("")
+            lines.append(contentsOf: recurringInsight)
         }
 
         // --- Week-over-week comparison ---
@@ -744,6 +755,76 @@ struct CalendarSkill: ClawSkill {
 
         if bestDays.count > 5 {
             lines.append("  …还有 \(bestDays.count - 5) 天有空闲时段")
+        }
+
+        return lines
+    }
+
+    // MARK: - Recurring vs One-off Breakdown
+
+    /// Analyzes recurring vs one-off events to show how much time is "locked in" to
+    /// repeating commitments vs flexible one-time events. This helps users understand
+    /// their true schedule flexibility.
+    private func buildRecurringBreakdown(events: [CalendarEventItem], spanDays: Int) -> [String] {
+        let timedEvents = events.filter { !$0.isAllDay }
+        guard timedEvents.count >= 3 else { return [] } // Need enough events for meaningful analysis
+
+        let recurring = timedEvents.filter { $0.isRecurring }
+        let oneOff = timedEvents.filter { !$0.isRecurring }
+
+        // Skip if there's no mix — all recurring or all one-off isn't insightful
+        guard !recurring.isEmpty else { return [] }
+
+        let recurringMinutes = recurring.reduce(0.0) { $0 + $1.duration } / 60.0
+        let oneOffMinutes = oneOff.reduce(0.0) { $0 + $1.duration } / 60.0
+        let totalMinutes = recurringMinutes + oneOffMinutes
+        guard totalMinutes > 0 else { return [] }
+
+        let recurringPct = Int(recurringMinutes / totalMinutes * 100)
+
+        var lines: [String] = []
+        lines.append("🔄 日程结构分析：")
+
+        // Summary line: recurring vs one-off count and time
+        lines.append("  固定日程：\(recurring.count) 个（\(formatDuration(recurringMinutes))）")
+        if !oneOff.isEmpty {
+            lines.append("  临时安排：\(oneOff.count) 个（\(formatDuration(oneOffMinutes))）")
+        }
+
+        // Visual bar showing recurring vs flexible ratio
+        let recurBlocks = max(1, min(10, Int(Double(recurringPct) / 10.0)))
+        let flexBlocks = 10 - recurBlocks
+        let bar = String(repeating: "🔵", count: recurBlocks) + String(repeating: "⚪", count: flexBlocks)
+        lines.append("  \(bar) 固定 \(recurringPct)%")
+
+        // Top recurring events by total time commitment
+        let recurringByTitle = Dictionary(grouping: recurring) { $0.title }
+        let topRecurring = recurringByTitle
+            .map { (title: $0.key, count: $0.value.count, totalMin: $0.value.reduce(0.0) { $0 + $1.duration } / 60.0) }
+            .sorted { $0.totalMin > $1.totalMin }
+
+        if topRecurring.count > 1 || (topRecurring.count == 1 && topRecurring[0].count > 1) {
+            lines.append("")
+            lines.append("  📌 固定日程明细：")
+            for item in topRecurring.prefix(5) {
+                let freq = item.count > 1 ? "×\(item.count)" : ""
+                lines.append("  · \(item.title) \(freq)  \(formatDuration(item.totalMin))")
+            }
+        }
+
+        // Flexibility insight
+        if recurringPct >= 70 {
+            // Weekly projection: if span < 7 days, extrapolate
+            let weeklyRecurringHours = spanDays >= 5
+                ? recurringMinutes / 60.0
+                : recurringMinutes / Double(max(1, spanDays)) * 5.0
+            if weeklyRecurringHours >= 15 {
+                lines.append("\n  ⚠️ 固定会议每周约 \(String(format: "%.0f", weeklyRecurringHours)) 小时，灵活时间有限 — 可考虑合并或减少频次")
+            } else {
+                lines.append("\n  💡 大部分日程是固定安排，调整空间有限")
+            }
+        } else if recurringPct <= 30 && !oneOff.isEmpty {
+            lines.append("\n  ✨ 日程以临时安排为主，时间灵活度较高")
         }
 
         return lines

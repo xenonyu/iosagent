@@ -49,7 +49,8 @@ final class CalendarService: ObservableObject {
                 isAllDay: $0.isAllDay,
                 calendar: $0.calendar?.title ?? "",
                 location: $0.location ?? "",
-                notes: $0.notes ?? ""
+                notes: $0.notes ?? "",
+                isRecurring: $0.hasRecurrenceRules
             )
         }
         .sorted { $0.startDate < $1.startDate }
@@ -75,6 +76,7 @@ struct CalendarEventItem: Identifiable {
     let calendar: String
     let location: String
     let notes: String
+    let isRecurring: Bool
 
     var duration: TimeInterval { endDate.timeIntervalSince(startDate) }
 

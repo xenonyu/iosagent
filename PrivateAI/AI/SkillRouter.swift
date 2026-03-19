@@ -357,29 +357,38 @@ struct SkillRouter {
         // "本周总结", "本周回顾" contain "总结"/"回顾" which would match Summary first.
         // Weekly insight provides richer cross-data analysis than basic summary.
         if containsAny(lower, ["本周总结", "这周总结", "本周回顾", "这周回顾",
-                                "这周怎么样", "这周过得", "本周情况", "这周情况",
+                                "这周怎么样", "这周怎样", "这周过得", "本周情况", "这周情况",
                                 "周报", "这礼拜", "一周总结", "一周回顾",
                                 "本周表现", "这周表现", "这周分析", "本周分析",
+                                "这周好不好", "本周好不好", "这礼拜怎",
                                 "weekly", "weekly review", "weekly insight",
                                 "week summary", "this week review"]) {
             return .weeklyInsight
         }
 
         // --- Summary ---
-        // Covers explicit summary words ("总结") AND natural status inquiries
-        // ("状态怎么样", "帮我分析") that users commonly ask.
+        // Covers explicit summary words ("总结") AND natural status inquiries.
+        // Important: include both "怎么样" and "怎样" variants — Chinese users
+        // use them interchangeably ("过得怎么样" ≈ "过得怎样").
         if containsAny(lower, ["总结", "回顾", "概括", "做了什么", "发生了什么",
-                                "过得怎么样", "过得如何", "怎么过的", "生活怎么样",
-                                "一天过得", "这段时间", "近况", "这阵子",
+                                "过得怎么样", "过得怎样", "过得如何", "过得好",
+                                "怎么过的", "生活怎么样", "生活怎样", "生活如何",
+                                "一天过得", "这段时间", "近况", "这阵子", "近来如何",
+                                // Broad "how am I doing" patterns with time context
+                                // "最近怎" catches "最近怎么样"/"最近怎样"
+                                "最近怎", "最近好", "最近过得",
                                 // Natural state/condition inquiries
                                 "状态怎", "状态如何", "状态好不好",
                                 "情况怎", "情况如何",
-                                "我的状态", "我的情况",
+                                "我的状态", "我的情况", "我的近况",
                                 "表现怎", "表现如何",
+                                // General "how am I" patterns
+                                "日子过得", "日子怎",
                                 // Analysis requests (general, no specific topic)
                                 "帮我分析", "分析一下",
                                 "summary", "recap", "review", "what happened", "what did i",
-                                "how was my", "how have i been", "how am i"]) {
+                                "how was my", "how have i been", "how am i",
+                                "how's it going", "how am i doing"]) {
             return .summary(range: range)
         }
 

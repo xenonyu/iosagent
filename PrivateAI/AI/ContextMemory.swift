@@ -59,8 +59,9 @@ final class ContextMemory {
         let newRange = SkillRouter.extractTimeRange(from: lower)
 
         // Detect follow-up patterns: "那...呢", time-only queries, continuation phrases
+        // Include both "怎么样" and "怎样" — they're interchangeable in Chinese
         let followUpPhrases = [
-            "那", "那天", "那昨", "呢", "怎么样", "那上周", "那上个月",
+            "那", "那天", "那昨", "呢", "怎么样", "怎样", "那上周", "那上个月",
             "and", "what about", "how about", "then"
         ]
         let isFollowUp = SkillRouter.containsAny(lower, followUpPhrases)
@@ -101,7 +102,7 @@ final class ContextMemory {
         ]
         // Strip filler words to check if the core is just a time reference
         var stripped = text
-        for filler in ["呢", "的", "怎么样", "如何", "？", "?", "吗"] {
+        for filler in ["呢", "的", "怎么样", "怎样", "如何", "好不好", "好吗", "？", "?", "吗"] {
             stripped = stripped.replacingOccurrences(of: filler, with: "")
         }
         stripped = stripped.trimmingCharacters(in: .whitespacesAndNewlines)

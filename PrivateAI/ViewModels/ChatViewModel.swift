@@ -103,9 +103,10 @@ final class ChatViewModel: ObservableObject {
         let profile = CDUserProfile.fetchOrCreate(in: context).toProfileData()
         engine.updateProfile(profile)
 
-        // Local-first routing: use SkillRouter to determine intent
-        let intent = SkillRouter.parse(text)
+        // Resolve intent with multi-turn context (inherits previous intent for follow-ups)
+        let intent = contextMemory.resolveIntent(from: text)
         lastIntent = intent
+        contextMemory.setLastIntent(intent)
 
         // For known intents, handle locally via ClawEngine skills
         if !intent.isUnknown {

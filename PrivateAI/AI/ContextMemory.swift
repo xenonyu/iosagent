@@ -47,23 +47,47 @@ final class ContextMemory {
 
     /// Returns a resolved intent by inheriting context from previous turns.
     /// Example: "那昨天呢?" → inherits previous exercise intent but changes time range.
+    /// Example: "这周的呢?" → inherits previous health/calendar/location intent.
     func resolveIntent(from rawText: String) -> QueryIntent {
         let lower = rawText.lowercased()
-        let newIntent = IntentParser.parse(rawText)
-        let newRange = IntentParser.extractTimeRange(from: lower)
+        let trimmed = lower.trimmingCharacters(in: .whitespacesAndNewlines)
+        let newIntent = SkillRouter.parse(rawText)
+        let newRange = SkillRouter.extractTimeRange(from: lower)
 
-        // "那...呢" / "那..." follow-up patterns — inherit last intent with new range
-        let isFollowUp = IntentParser.containsAny(lower, [
+        // Detect follow-up patterns: "那...呢", time-only queries, continuation phrases
+        let followUpPhrases = [
             "那", "那天", "那昨", "呢", "怎么样", "那上周", "那上个月",
             "and", "what about", "how about", "then"
-        ])
+        ]
+        let isFollowUp = SkillRouter.containsAny(lower, followUpPhrases)
 
-        if isFollowUp, let last = lastIntent, case .unknown = newIntent {
+        // Also detect bare time references as follow-ups: "昨天", "上周", "这个月" alone
+        let isTimeOnly = newIntent.isUnknown && isTimeReference(trimmed)
+
+        if (isFollowUp || isTimeOnly), let last = lastIntent, newIntent.isUnknown {
             return inheritIntent(last, withRange: newRange)
         }
 
-        // If same topic continuation, prefer last intent's category
         return newIntent
+    }
+
+    /// Checks if the input is primarily a time reference with no other meaningful content.
+    /// e.g. "昨天", "上周呢", "这个月的", "前天怎么样"
+    private func isTimeReference(_ text: String) -> Bool {
+        let timeWords = [
+            "今天", "昨天", "前天", "大前天",
+            "这周", "上周", "上上周", "本周",
+            "这个月", "上个月", "本月",
+            "最近", "近期",
+            "today", "yesterday", "last week", "this week", "this month"
+        ]
+        // Strip filler words to check if the core is just a time reference
+        var stripped = text
+        for filler in ["呢", "的", "怎么样", "如何", "？", "?", "吗"] {
+            stripped = stripped.replacingOccurrences(of: filler, with: "")
+        }
+        stripped = stripped.trimmingCharacters(in: .whitespacesAndNewlines)
+        return timeWords.contains(where: { stripped == $0 || stripped.hasPrefix($0) && stripped.count <= $0.count + 2 })
     }
 
     /// Returns a context hint string to prepend to queries.
@@ -81,7 +105,7 @@ final class ContextMemory {
         let lower = text.lowercased()
 
         // Time range
-        lastTimeRange = IntentParser.extractTimeRange(from: lower)
+        lastTimeRange = SkillRouter.extractTimeRange(from: lower)
 
         // People
         let peopleKw = ["老婆", "妻子", "老公", "丈夫", "妈妈", "爸爸", "孩子", "朋友", "同事", "boss", "女朋友", "男朋友"]
@@ -99,13 +123,18 @@ final class ContextMemory {
 
     private func inheritIntent(_ intent: QueryIntent, withRange range: QueryTimeRange) -> QueryIntent {
         switch intent {
-        case .exercise:      return .exercise(range: range)
-        case .location:      return .location(range: range)
-        case .mood:          return .mood(range: range)
-        case .summary:       return .summary(range: range)
-        case .events:        return .events(range: range)
+        case .exercise:         return .exercise(range: range)
+        case .location:         return .location(range: range)
+        case .mood:             return .mood(range: range)
+        case .summary:          return .summary(range: range)
+        case .events:           return .events(range: range)
         case .health(let m, _): return .health(metric: m, range: range)
-        default:             return intent
+        case .calendar:         return .calendar(range: range)
+        case .photos:           return .photos(range: range)
+        case .streak:           return .streak
+        case .weeklyInsight:    return .weeklyInsight
+        case .comparison:       return .comparison
+        default:                return intent
         }
     }
 }

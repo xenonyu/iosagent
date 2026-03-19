@@ -192,7 +192,21 @@ struct SummarySkill: ClawSkill {
                         }
                     }
                     lines.append(sleepLine)
+
+                    // Sleep quality breakdown: deep/REM/efficiency when available
+                    let qualityLines = Self.buildSleepQualityBreakdown(
+                        sleepDays: sleepDays,
+                        prevSleepDays: prevSleepDays
+                    )
+                    lines.append(contentsOf: qualityLines)
                 }
+
+                // ── Recovery Metrics: HRV + Resting HR ──
+                let recoveryLines = Self.buildRecoveryMetrics(
+                    withData: withData,
+                    prevSummaries: prevSummaries
+                )
+                lines.append(contentsOf: recoveryLines)
 
                 // Best and worst day
                 if withData.count >= 3, let best = withData.max(by: { $0.steps < $1.steps }),
@@ -205,15 +219,32 @@ struct SummarySkill: ClawSkill {
                     lines.append("  📉 最安静：\(fmt.string(from: worst.date)) \(Int(worst.steps).formatted())步")
                 }
 
-                // Overall health verdict
+                // Overall health verdict — considers activity, sleep, AND recovery
+                let hrvDays = withData.filter { $0.hrv > 0 }
+                let avgHRV = hrvDays.isEmpty ? 0.0 : hrvDays.reduce(0) { $0 + $1.hrv } / Double(hrvDays.count)
+                let rhrDays = withData.filter { $0.restingHeartRate > 0 }
+                let avgRHR = rhrDays.isEmpty ? 0.0 : rhrDays.reduce(0) { $0 + $1.restingHeartRate } / Double(rhrDays.count)
+
                 var score = 0
                 if avgSteps >= 8000 { score += 1 }
                 if avgExercise >= 30 { score += 1 }
                 if avgSleep >= 7 && avgSleep <= 9 { score += 1 }
-                if score == 3 {
+                // Recovery bonus: good HRV trend or low resting HR indicates body is thriving
+                let recoveryGood = (avgHRV > 0 && avgHRV >= 40) || (avgRHR > 0 && avgRHR <= 65)
+                let recoveryPoor = (avgHRV > 0 && avgHRV < 25) || (avgRHR > 0 && avgRHR >= 80)
+
+                if score == 3 && recoveryGood {
+                    lines.append("  ✅ 活动、睡眠、恢复全面达标，身体状态极佳！")
+                } else if score == 3 {
                     lines.append("  ✅ 步数、运动、睡眠全面达标！")
+                } else if score >= 2 && recoveryGood {
+                    lines.append("  💪 整体状态不错，身体恢复良好")
+                } else if score >= 2 && recoveryPoor {
+                    lines.append("  ⚠️ 活动达标但恢复指标偏低，注意休息和放松")
                 } else if score >= 2 {
                     lines.append("  💪 整体状态不错，还有一项可以提升")
+                } else if recoveryPoor && withData.count >= 3 {
+                    lines.append("  ⚠️ 恢复指标偏低，建议优先保证睡眠质量")
                 } else if score == 1 && withData.count >= 3 {
                     lines.append("  💡 有提升空间，试试从最容易的一项开始")
                 }
@@ -955,6 +986,13 @@ struct SummarySkill: ClawSkill {
                     }
                 }
 
+                // Recovery metrics: HRV + Resting HR trends
+                let recoveryLines = Self.buildRecoveryMetrics(
+                    withData: withData,
+                    prevSummaries: lastWeekWithData
+                )
+                lines.append(contentsOf: recoveryLines)
+
                 // Best and worst day for steps
                 if withData.count >= 3, let best = withData.max(by: { $0.steps < $1.steps }),
                    let worst = withData.filter({ $0.steps > 0 }).min(by: { $0.steps < $1.steps }),
@@ -966,7 +1004,14 @@ struct SummarySkill: ClawSkill {
                     lines.append("  📉 最低调：\(fmt.string(from: worst.date)) \(Int(worst.steps).formatted())步")
                 }
 
-                // Overall weekly health verdict with trend context
+                // Overall weekly health verdict with trend context + recovery awareness
+                let hrvDaysW = withData.filter { $0.hrv > 0 }
+                let avgHRVW = hrvDaysW.isEmpty ? 0.0 : hrvDaysW.reduce(0) { $0 + $1.hrv } / Double(hrvDaysW.count)
+                let rhrDaysW = withData.filter { $0.restingHeartRate > 0 }
+                let avgRHRW = rhrDaysW.isEmpty ? 0.0 : rhrDaysW.reduce(0) { $0 + $1.restingHeartRate } / Double(rhrDaysW.count)
+                let recoveryGoodW = (avgHRVW > 0 && avgHRVW >= 40) || (avgRHRW > 0 && avgRHRW <= 65)
+                let recoveryPoorW = (avgHRVW > 0 && avgHRVW < 25) || (avgRHRW > 0 && avgRHRW >= 80)
+
                 var score = 0
                 if avgSteps >= 8000 { score += 1 }
                 if avgExercise >= 30 { score += 1 }
@@ -980,12 +1025,16 @@ struct SummarySkill: ClawSkill {
                     if lwAvgSleep >= 7 && lwAvgSleep <= 9 { lwScore += 1 }
                 }
 
-                if score == 3 {
+                if score == 3 && recoveryGoodW {
+                    lines.append("  ✅ 活动、睡眠、恢复全线达标，本周状态极佳！🎉")
+                } else if score == 3 {
                     if hasLastWeek && lwScore < 3 {
                         lines.append("  ✅ 本周步数、运动、睡眠全面达标！比上周更好 🎉")
                     } else {
                         lines.append("  ✅ 本周步数、运动、睡眠全面达标！")
                     }
+                } else if score >= 2 && recoveryPoorW {
+                    lines.append("  ⚠️ 活动量不错但恢复指标偏低，下周适当减量、优先睡眠")
                 } else if score >= 2 {
                     if hasLastWeek && score > lwScore {
                         lines.append("  💪 本周状态比上周有进步，继续加油！")
@@ -994,6 +1043,8 @@ struct SummarySkill: ClawSkill {
                     } else {
                         lines.append("  💪 本周状态不错，还有一项可以提升")
                     }
+                } else if recoveryPoorW {
+                    lines.append("  ⚠️ 恢复指标偏低，下周建议优先保证睡眠质量和休息")
                 } else if score == 1 {
                     lines.append("  💡 有提升空间，下周试试从最容易的一项开始")
                 }
@@ -1161,6 +1212,163 @@ struct SummarySkill: ClawSkill {
         if h > 0 && m > 0 { return "\(h) 小时 \(m) 分钟" }
         if h > 0 { return "\(h) 小时" }
         return "\(m) 分钟"
+    }
+
+    // MARK: - Recovery Metrics (HRV + Resting HR)
+
+    /// Builds HRV and resting heart rate trend lines for the period summary.
+    /// These are the most important recovery/stress indicators from Apple Watch.
+    private static func buildRecoveryMetrics(
+        withData: [HealthSummary],
+        prevSummaries: [HealthSummary]
+    ) -> [String] {
+        var lines: [String] = []
+        let hrvDays = withData.filter { $0.hrv > 0 }
+        let rhrDays = withData.filter { $0.restingHeartRate > 0 }
+
+        // Need at least one recovery metric to show this section
+        guard !hrvDays.isEmpty || !rhrDays.isEmpty else { return [] }
+
+        // HRV average + trend vs previous period
+        if !hrvDays.isEmpty {
+            let avgHRV = hrvDays.reduce(0) { $0 + $1.hrv } / Double(hrvDays.count)
+            var hrvLine = "  📳 HRV 均值 \(Int(avgHRV)) ms"
+
+            // Trend within the period: first half vs second half
+            if hrvDays.count >= 4 {
+                let mid = hrvDays.count / 2
+                let firstHalf = hrvDays.prefix(mid).reduce(0) { $0 + $1.hrv } / Double(mid)
+                let secondHalf = hrvDays.suffix(from: mid).reduce(0) { $0 + $1.hrv } / Double(hrvDays.count - mid)
+                let trendPct = ((secondHalf - firstHalf) / firstHalf) * 100
+                if trendPct > 10 {
+                    hrvLine += " 📈"
+                } else if trendPct < -10 {
+                    hrvLine += " 📉"
+                }
+            }
+
+            // Compare vs previous period
+            let prevHRVDays = prevSummaries.filter { $0.hrv > 0 }
+            if !prevHRVDays.isEmpty {
+                let prevAvgHRV = prevHRVDays.reduce(0) { $0 + $1.hrv } / Double(prevHRVDays.count)
+                let delta = ((avgHRV - prevAvgHRV) / prevAvgHRV) * 100
+                if abs(delta) >= 10 {
+                    let arrow = delta > 0 ? "↑" : "↓"
+                    hrvLine += "（\(arrow)\(Int(abs(delta)))% vs 上期）"
+                }
+            }
+
+            // Interpret the HRV level
+            if avgHRV >= 50 {
+                hrvLine += " — 恢复状态很好"
+            } else if avgHRV >= 30 {
+                hrvLine += " — 恢复正常"
+            } else {
+                hrvLine += " — 压力偏高，注意休息"
+            }
+            lines.append(hrvLine)
+        }
+
+        // Resting HR average + trend (lower is better for cardiovascular fitness)
+        if !rhrDays.isEmpty {
+            let avgRHR = rhrDays.reduce(0) { $0 + $1.restingHeartRate } / Double(rhrDays.count)
+            var rhrLine = "  ❤️ 静息心率 \(Int(avgRHR)) BPM"
+
+            // Compare vs previous period
+            let prevRHRDays = prevSummaries.filter { $0.restingHeartRate > 0 }
+            if !prevRHRDays.isEmpty {
+                let prevAvgRHR = prevRHRDays.reduce(0) { $0 + $1.restingHeartRate } / Double(prevRHRDays.count)
+                let delta = avgRHR - prevAvgRHR
+                if abs(delta) >= 2 {
+                    // For resting HR, lower is better, so down arrow is positive
+                    let arrow = delta < 0 ? "↓" : "↑"
+                    let sentiment = delta < 0 ? "👍" : ""
+                    rhrLine += "（\(arrow)\(Int(abs(delta))) vs 上期）\(sentiment)"
+                }
+            }
+            lines.append(rhrLine)
+        }
+
+        return lines
+    }
+
+    // MARK: - Sleep Quality Breakdown
+
+    /// Breaks down sleep quality beyond total hours: deep sleep %, REM %, efficiency.
+    /// These phases matter more than raw duration for actual rest quality.
+    private static func buildSleepQualityBreakdown(
+        sleepDays: [HealthSummary],
+        prevSleepDays: [HealthSummary]
+    ) -> [String] {
+        var lines: [String] = []
+        let daysWithPhases = sleepDays.filter { $0.sleepDeepHours > 0 || $0.sleepREMHours > 0 }
+        guard !daysWithPhases.isEmpty else { return [] }
+
+        let count = Double(daysWithPhases.count)
+        let avgDeep = daysWithPhases.reduce(0) { $0 + $1.sleepDeepHours } / count
+        let avgREM = daysWithPhases.reduce(0) { $0 + $1.sleepREMHours } / count
+        let avgTotal = daysWithPhases.reduce(0) { $0 + $1.sleepHours } / count
+
+        guard avgTotal > 0 else { return [] }
+
+        let deepPct = (avgDeep / avgTotal) * 100
+        let remPct = (avgREM / avgTotal) * 100
+
+        // Build compact phase breakdown
+        var phaseLine = "    🌙 睡眠结构：深睡 \(String(format: "%.0f", deepPct))%"
+        phaseLine += " · REM \(String(format: "%.0f", remPct))%"
+
+        // Assess quality: ideal deep sleep 15-25%, ideal REM 20-25%
+        let deepGood = deepPct >= 15
+        let remGood = remPct >= 18
+        if deepGood && remGood {
+            phaseLine += " ✅"
+        } else if !deepGood && !remGood {
+            phaseLine += " — 深睡和REM均偏低"
+        } else if !deepGood {
+            phaseLine += " — 深睡偏少"
+        } else {
+            phaseLine += " — REM偏少"
+        }
+        lines.append(phaseLine)
+
+        // Sleep efficiency: actual sleep / time in bed
+        let daysWithInBed = daysWithPhases.filter { $0.inBedHours > 0 }
+        if !daysWithInBed.isEmpty {
+            let avgInBed = daysWithInBed.reduce(0) { $0 + $1.inBedHours } / Double(daysWithInBed.count)
+            let avgActualSleep = daysWithInBed.reduce(0) { $0 + $1.sleepHours } / Double(daysWithInBed.count)
+            if avgInBed > 0 {
+                let efficiency = (avgActualSleep / avgInBed) * 100
+                var effLine = "    💤 睡眠效率 \(String(format: "%.0f", efficiency))%"
+                if efficiency >= 90 {
+                    effLine += " — 入睡快、中途醒来少"
+                } else if efficiency >= 80 {
+                    effLine += " — 正常范围"
+                } else {
+                    effLine += " — 偏低，可能辗转较多"
+                }
+                lines.append(effLine)
+            }
+        }
+
+        // Compare sleep quality vs previous period
+        let prevWithPhases = prevSleepDays.filter { $0.sleepDeepHours > 0 || $0.sleepREMHours > 0 }
+        if !prevWithPhases.isEmpty {
+            let prevCount = Double(prevWithPhases.count)
+            let prevAvgDeep = prevWithPhases.reduce(0) { $0 + $1.sleepDeepHours } / prevCount
+            let prevAvgTotal = prevWithPhases.reduce(0) { $0 + $1.sleepHours } / prevCount
+            if prevAvgTotal > 0 {
+                let prevDeepPct = (prevAvgDeep / prevAvgTotal) * 100
+                let deepDelta = deepPct - prevDeepPct
+                if abs(deepDelta) >= 3 {
+                    let arrow = deepDelta > 0 ? "↑" : "↓"
+                    let sentiment = deepDelta > 0 ? "睡眠质量提升" : "深睡比例下降"
+                    lines.append("    \(arrow) 深睡占比 vs 上期 \(String(format: "%+.0f", deepDelta))%，\(sentiment)")
+                }
+            }
+        }
+
+        return lines
     }
 
     /// Formats a week-over-week percentage delta as a concise arrow string.

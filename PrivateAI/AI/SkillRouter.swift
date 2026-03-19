@@ -398,7 +398,10 @@ struct SkillRouter {
                                 "瘦了", "胖了", "增重", "减重", "称重",
                                 "weight", "body mass", "weigh",
                                 "sleep", "heart rate", "calories", "health", "slept",
-                                "energy", "burned", "body"]) {
+                                "energy", "burned", "body",
+                                "spo2", "氧饱和", "氧含量", "blood oxygen",
+                                "vo2", "vo2max", "摄氧量", "最大摄氧", "有氧耐力", "心肺适能",
+                                "cardio fitness", "aerobic capacity"]) {
             let metric = extractHealthMetric(from: lower)
             return .health(metric: metric, range: range)
         }
@@ -913,6 +916,9 @@ struct SkillRouter {
         if containsAny(text, ["恢复", "精力", "精神", "活力", "体力", "状态好不好",
                                "能运动", "适合运动", "能不能练", "能锻炼", "适合锻炼",
                                "recovery", "readiness", "energy level", "ready to train"]) { return "recovery" }
+        if containsAny(text, ["血氧", "氧饱和", "spo2", "oxygen", "blood oxygen", "氧含量"]) { return "bloodOxygen" }
+        if containsAny(text, ["vo2", "vo2max", "摄氧量", "最大摄氧", "有氧耐力", "心肺适能",
+                               "cardio fitness", "aerobic capacity"]) { return "vo2max" }
         return "general"
     }
 

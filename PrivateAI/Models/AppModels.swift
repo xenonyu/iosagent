@@ -286,6 +286,10 @@ struct HealthSummary {
     var flightsClimbed: Double = 0
     /// Body mass in kg — from HealthKit (smart scales, manual entries)
     var bodyMassKg: Double = 0
+    /// Blood oxygen saturation (SpO2) as percentage 0-100 — Apple Watch background measurements
+    var oxygenSaturation: Double = 0
+    /// VO2 Max in mL/(kg·min) — cardiorespiratory fitness from Apple Watch workouts
+    var vo2Max: Double = 0
     /// Individual workout sessions from HKWorkout
     var workouts: [WorkoutRecord] = []
     var date: Date = Date()

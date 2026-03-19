@@ -257,6 +257,10 @@ struct HealthSkill: ClawSkill {
                 respondCalories(summaries: withData, range: range, completion: completion)
             case "recovery":
                 respondRecovery(summaries: allSummaries, todaySummaries: withData, context: context, completion: completion)
+            case "bloodOxygen":
+                self.respondBloodOxygen(summaries: withData, range: range, completion: completion)
+            case "vo2max":
+                self.respondVO2Max(summaries: withData, range: range, completion: completion)
             default:
                 respondOverview(summaries: withData, range: range, completion: completion)
             }
@@ -1468,6 +1472,197 @@ struct HealthSkill: ClawSkill {
         }
     }
 
+    // MARK: - Blood Oxygen (SpO2)
+
+    private func respondBloodOxygen(summaries: [HealthSummary], range: QueryTimeRange, completion: @escaping (String) -> Void) {
+        let spo2Days = summaries.filter { $0.oxygenSaturation > 0 }
+        guard !spo2Days.isEmpty else {
+            var lines: [String] = ["🫁 \(range.label)暂无血氧数据。\n"]
+            lines.append("血氧饱和度（SpO2）需要 Apple Watch Series 6 或更新型号才能自动测量。")
+            lines.append("💡 可以在 Apple Watch 的「血氧」App 中手动测量，")
+            lines.append("   或在设置中开启后台自动测量。")
+            completion(lines.joined(separator: "\n"))
+            return
+        }
+
+        var lines: [String] = ["🫁 \(range.label)的血氧分析\n"]
+        let avg = spo2Days.reduce(0) { $0 + $1.oxygenSaturation } / Double(spo2Days.count)
+        let maxVal = spo2Days.max(by: { $0.oxygenSaturation < $1.oxygenSaturation })!
+        let minVal = spo2Days.min(by: { $0.oxygenSaturation < $1.oxygenSaturation })!
+
+        lines.append("💨 平均血氧：\(String(format: "%.1f", avg))%")
+        if spo2Days.count > 1 {
+            lines.append("📊 波动范围：\(String(format: "%.0f", minVal.oxygenSaturation))%~\(String(format: "%.0f", maxVal.oxygenSaturation))%")
+        }
+
+        // Clinical interpretation (WHO/medical guidelines)
+        lines.append("")
+        if avg >= 95 {
+            lines.append("✅ 血氧正常（≥95%），身体供氧充足。")
+        } else if avg >= 90 {
+            lines.append("⚠️ 血氧偏低（90-94%），可能与呼吸不畅、高海拔或剧烈运动后有关。")
+            lines.append("   如果持续低于 95%，建议咨询医生。")
+        } else {
+            lines.append("🔴 血氧较低（<90%），建议尽快就医检查。")
+        }
+
+        // Low-value alert: flag any day below 90%
+        let lowDays = spo2Days.filter { $0.oxygenSaturation < 92 }
+        if !lowDays.isEmpty && lowDays.count < spo2Days.count {
+            let fmt = DateFormatter()
+            fmt.dateFormat = "M月d日"
+            fmt.locale = Locale(identifier: "zh_CN")
+            let dayStrs = lowDays.prefix(3).map { fmt.string(from: $0.date) }
+            lines.append("\n⚠️ 有 \(lowDays.count) 天血氧低于 92%：\(dayStrs.joined(separator: "、"))")
+        }
+
+        // Sleep correlation: lower SpO2 during sleep can indicate issues
+        let sleepDays = summaries.filter { $0.sleepHours > 0 && $0.oxygenSaturation > 0 }
+        if sleepDays.count >= 3 {
+            let poorSleepSpo2 = sleepDays.filter { $0.sleepHours < 6 }
+            let goodSleepSpo2 = sleepDays.filter { $0.sleepHours >= 7 }
+            if !poorSleepSpo2.isEmpty && !goodSleepSpo2.isEmpty {
+                let poorAvg = poorSleepSpo2.reduce(0) { $0 + $1.oxygenSaturation } / Double(poorSleepSpo2.count)
+                let goodAvg = goodSleepSpo2.reduce(0) { $0 + $1.oxygenSaturation } / Double(goodSleepSpo2.count)
+                let diff = goodAvg - poorAvg
+                if diff >= 1.0 {
+                    lines.append("\n😴↔️🫁 睡眠充足的日子血氧高 \(String(format: "%.1f", diff))% —— 好的睡眠有助于血氧稳定。")
+                }
+            }
+        }
+
+        // Trend (compare first half vs second half)
+        if spo2Days.count >= 4 {
+            let sorted = spo2Days.sorted { $0.date < $1.date }
+            let mid = sorted.count / 2
+            let olderAvg = sorted.prefix(mid).reduce(0) { $0 + $1.oxygenSaturation } / Double(mid)
+            let recentAvg = sorted.suffix(from: mid).reduce(0) { $0 + $1.oxygenSaturation } / Double(sorted.count - mid)
+            let diff = recentAvg - olderAvg
+            if abs(diff) >= 0.5 {
+                if diff > 0 {
+                    lines.append("\n📈 血氧呈上升趋势（+\(String(format: "%.1f", diff))%），供氧状态在改善。")
+                } else {
+                    lines.append("\n📉 血氧有所下降（\(String(format: "%.1f", diff))%），注意呼吸通畅和适度运动。")
+                }
+            } else {
+                lines.append("\n📊 血氧保持稳定，状态不错。")
+            }
+        }
+
+        // Day-by-day sparkline
+        if spo2Days.count >= 3 {
+            let sorted = spo2Days.sorted { $0.date < $1.date }
+            let sparkChars: [Character] = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"]
+            // Scale from 88-100% for visibility
+            let spark = sorted.map { day -> Character in
+                let normalized = min(max((day.oxygenSaturation - 88) / 12, 0), 1)
+                let idx = min(Int(normalized * 7), 7)
+                return sparkChars[idx]
+            }
+            lines.append("📈 血氧趋势：\(String(spark))")
+        }
+
+        lines.append("")
+        lines.append("💡 血氧正常范围：95~100%。Apple Watch 在后台自动测量，")
+        lines.append("   运动、高海拔、呼吸问题等都可能影响血氧。")
+
+        completion(lines.joined(separator: "\n"))
+    }
+
+    // MARK: - VO2 Max
+
+    private func respondVO2Max(summaries: [HealthSummary], range: QueryTimeRange, completion: @escaping (String) -> Void) {
+        let vo2Days = summaries.filter { $0.vo2Max > 0 }
+        guard !vo2Days.isEmpty else {
+            var lines: [String] = ["🏅 \(range.label)暂无 VO2 Max 数据。\n"]
+            lines.append("VO2 Max（最大摄氧量）是衡量心肺适能的金标准指标。")
+            lines.append("")
+            lines.append("💡 如何获取 VO2 Max 数据：")
+            lines.append("• 需要 Apple Watch Series 3 或更新型号")
+            lines.append("• 进行 20 分钟以上的户外步行、跑步或健走")
+            lines.append("• Apple Watch 会在运动后自动估算 VO2 Max")
+            lines.append("")
+            lines.append("坚持户外有氧运动，Apple Watch 就会开始记录你的心肺适能水平。")
+            completion(lines.joined(separator: "\n"))
+            return
+        }
+
+        var lines: [String] = ["🏅 \(range.label)的心肺适能（VO2 Max）\n"]
+        let latest = vo2Days.sorted { $0.date > $1.date }.first!
+        let avg = vo2Days.reduce(0) { $0 + $1.vo2Max } / Double(vo2Days.count)
+
+        lines.append("💨 最新 VO2 Max：\(String(format: "%.1f", latest.vo2Max)) mL/(kg·min)")
+        if vo2Days.count > 1 {
+            lines.append("📊 期间平均：\(String(format: "%.1f", avg)) mL/(kg·min)")
+            let maxVal = vo2Days.max(by: { $0.vo2Max < $1.vo2Max })!
+            let minVal = vo2Days.min(by: { $0.vo2Max < $1.vo2Max })!
+            if maxVal.vo2Max - minVal.vo2Max > 0.5 {
+                lines.append("   波动范围：\(String(format: "%.1f", minVal.vo2Max))~\(String(format: "%.1f", maxVal.vo2Max))")
+            }
+        }
+
+        // Fitness level classification (AHA/ACSM guidelines, approximate for adults)
+        // These are rough midpoints; actual norms vary by age and sex
+        lines.append("")
+        let v = latest.vo2Max
+        if v >= 50 {
+            lines.append("🏆 优秀！VO2 Max ≥50 属于高水平有氧能力，接近运动员级别。")
+        } else if v >= 43 {
+            lines.append("✅ 良好，心肺适能高于平均水平，有氧基础扎实。")
+        } else if v >= 36 {
+            lines.append("💡 中等水平，规律有氧训练可以进一步提升。")
+        } else if v >= 30 {
+            lines.append("📊 略低于平均，建议增加每周 3~5 次有氧运动（跑步、游泳、骑行）。")
+        } else {
+            lines.append("⚠️ 偏低，心肺适能需要关注。从每天 20 分钟快走开始，循序渐进。")
+        }
+
+        // What VO2 Max means in practical terms
+        lines.append("")
+        if v >= 40 {
+            let fiveKPace = 25.0 / (v / 10.0) // rough estimate
+            lines.append("🏃 你的有氧能力约可支撑 5K 跑步配速 \(Int(fiveKPace))~\(Int(fiveKPace + 1)) 分钟/公里")
+        }
+
+        // Trend analysis
+        if vo2Days.count >= 3 {
+            let sorted = vo2Days.sorted { $0.date < $1.date }
+            let first = sorted.first!
+            let last = sorted.last!
+            let change = last.vo2Max - first.vo2Max
+
+            lines.append("")
+            if abs(change) < 0.5 {
+                lines.append("📊 VO2 Max 保持稳定，继续当前的训练节奏。")
+            } else if change > 0 {
+                lines.append("📈 VO2 Max 提升了 \(String(format: "%.1f", change))，心肺功能在进步！")
+                lines.append("   每提升 1 mL/(kg·min) 都意味着身体能更高效地利用氧气。")
+            } else {
+                lines.append("📉 VO2 Max 下降了 \(String(format: "%.1f", abs(change)))。")
+                lines.append("   可能与近期运动量减少、疲劳或身体状况有关。")
+                lines.append("   恢复规律有氧训练后通常会回升。")
+            }
+        }
+
+        // Correlate with exercise data
+        let exerciseDays = summaries.filter { $0.exerciseMinutes > 0 }
+        if !exerciseDays.isEmpty {
+            let avgExercise = exerciseDays.reduce(0) { $0 + $1.exerciseMinutes } / Double(exerciseDays.count)
+            lines.append("")
+            if avgExercise >= 30 {
+                lines.append("💪 日均运动 \(Int(avgExercise)) 分钟，这对维持和提升 VO2 Max 很有帮助。")
+            } else {
+                lines.append("💡 日均运动 \(Int(avgExercise)) 分钟，增加到 30 分钟以上对提升 VO2 Max 效果更好。")
+            }
+        }
+
+        lines.append("")
+        lines.append("📖 VO2 Max 是预测长寿和心血管健康最重要的单一指标之一。")
+        lines.append("   研究表明，VO2 Max 每提升 1 mL/(kg·min)，全因死亡风险下降约 9%。")
+
+        completion(lines.joined(separator: "\n"))
+    }
+
     private func respondOverview(summaries: [HealthSummary], range: QueryTimeRange, completion: @escaping (String) -> Void) {
         var lines: [String] = ["📊 \(range.label)健康概览\n"]
         let dayCount = Double(max(summaries.count, 1))
@@ -1532,6 +1727,18 @@ struct HealthSkill: ClawSkill {
                 }
             }
             lines.append(weightLine)
+        }
+
+        // --- SpO2 & VO2 Max ---
+        let spo2Days = summaries.filter { $0.oxygenSaturation > 0 }
+        if !spo2Days.isEmpty {
+            let avgSpO2 = spo2Days.reduce(0) { $0 + $1.oxygenSaturation } / Double(spo2Days.count)
+            let spo2Emoji = avgSpO2 >= 95 ? "✅" : (avgSpO2 >= 90 ? "⚠️" : "🔴")
+            lines.append("🫁 血氧 \(String(format: "%.0f", avgSpO2))% \(spo2Emoji)")
+        }
+        let vo2Days = summaries.filter { $0.vo2Max > 0 }
+        if let latestVO2 = vo2Days.sorted(by: { $0.date > $1.date }).first {
+            lines.append("🏅 VO2 Max \(String(format: "%.1f", latestVO2.vo2Max)) mL/(kg·min)")
         }
 
         // --- Workout type summary (from HKWorkout sessions) ---

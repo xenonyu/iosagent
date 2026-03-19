@@ -21,7 +21,9 @@ final class HealthService: ObservableObject {
             .heartRateVariabilitySDNN,
             .distanceWalkingRunning,
             .flightsClimbed,
-            .bodyMass
+            .bodyMass,
+            .oxygenSaturation,
+            .vo2Max
         ]
         identifiers.forEach {
             if let t = HKQuantityType.quantityType(forIdentifier: $0) { types.insert(t) }
@@ -133,6 +135,22 @@ final class HealthService: ObservableObject {
         group.enter()
         fetchLatest(.bodyMass, unit: .gramUnit(with: .kilo), predicate: predicate) { val in
             summary.bodyMassKg = val
+            group.leave()
+        }
+
+        // Blood oxygen saturation (SpO2, percentage 0-1 from HealthKit → convert to 0-100)
+        group.enter()
+        fetchAverage(.oxygenSaturation, unit: .percent(), predicate: predicate) { val in
+            summary.oxygenSaturation = val * 100  // HealthKit stores as 0-1 fraction
+            group.leave()
+        }
+
+        // VO2 Max (latest sample — Apple Watch estimates from outdoor walk/run/hike workouts)
+        group.enter()
+        fetchLatest(.vo2Max,
+                    unit: HKUnit(from: "ml/kg*min"),
+                    predicate: predicate) { val in
+            summary.vo2Max = val
             group.leave()
         }
 

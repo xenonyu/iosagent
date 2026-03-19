@@ -11,6 +11,7 @@
 		0570EE17ED17F727A06A3B0D /* RecommendationSkill.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0E0CB3253163E40232B6BB4 /* RecommendationSkill.swift */; };
 		0D30AD56F5E48A735FD34A96 /* PrivateAIApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9400C7ACA018FA9DB3A65F7A /* PrivateAIApp.swift */; };
 		157BA3783D1DA0417CE308C3 /* WidgetKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = BCC752E6251770B3ED0266FE /* WidgetKit.framework */; };
+		159145056FABB8D70C098C0F /* SleepCalculatorSkill.swift in Sources */ = {isa = PBXBuildFile; fileRef = FFCEC700DEDE242713561C91 /* SleepCalculatorSkill.swift */; };
 		1629AC2683D0413511958C4D /* LocationMapView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 283CD90008D11942D3C5AE72 /* LocationMapView.swift */; };
 		1CBE700BAE9C065E1DFCE259 /* PhotoIndexService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 93E7F9209DB80408CB8E91D4 /* PhotoIndexService.swift */; };
 		1F8A74106053911191D26936 /* PrivateAIWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = FDB27CEC9D33CCDF90C0F401 /* PrivateAIWidget.swift */; };
@@ -150,6 +151,7 @@
 		FD7475206AF12DD9FDE4E568 /* PhotoMetadataService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotoMetadataService.swift; sourceTree = "<group>"; };
 		FDB27CEC9D33CCDF90C0F401 /* PrivateAIWidget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PrivateAIWidget.swift; sourceTree = "<group>"; };
 		FDCFA7B0F9CFCCAA2C6B874F /* QuickRecordView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuickRecordView.swift; sourceTree = "<group>"; };
+		FFCEC700DEDE242713561C91 /* SleepCalculatorSkill.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SleepCalculatorSkill.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -226,6 +228,7 @@
 				E0D30AC57225B6B7E6E63177 /* RandomDecisionSkill.swift */,
 				A0E0CB3253163E40232B6BB4 /* RecommendationSkill.swift */,
 				749BA5F94BA2252D4E0744BB /* RecordSkill.swift */,
+				FFCEC700DEDE242713561C91 /* SleepCalculatorSkill.swift */,
 				85E0695CE3DE415DB52E76A0 /* SummarySkill.swift */,
 				B85998145F0B8168C2FE2522 /* TodoSkill.swift */,
 				3100F32ADD102580E12A1694 /* UnitConversionSkill.swift */,
@@ -580,6 +583,7 @@
 				6DD3A7EEF424C809B15CFB30 /* SharedDefaults.swift in Sources */,
 				7B85E497604C703863346C02 /* SkillRegistry.swift in Sources */,
 				D601BAB1830280F4AFC85CC9 /* SkillRouter.swift in Sources */,
+				159145056FABB8D70C098C0F /* SleepCalculatorSkill.swift in Sources */,
 				3A0DDB0DF46DB35B0CB08084 /* SpeechService.swift in Sources */,
 				6A41110D3B4B797554B49B38 /* StatsView.swift in Sources */,
 				37CEB8CFA6B43087E51D14BA /* StatsViewModel.swift in Sources */,

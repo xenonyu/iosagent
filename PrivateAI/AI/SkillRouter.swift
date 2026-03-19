@@ -29,6 +29,7 @@ enum QueryIntent {
     case waterTrack(action: WaterAction, amount: Int)
     case breathing(type: BreathingType)
     case bmi(heightCM: Double, weightKG: Double)
+    case sleepCalc(query: SleepCalcQuery)
     case unknown
 }
 
@@ -73,6 +74,14 @@ enum GreetingType {
     case howAreYou      // 你好吗, how are you
 }
 
+// MARK: - Sleep Calculator Query
+
+enum SleepCalcQuery {
+    case bedtimeFor(wakeHour: Int, wakeMin: Int)   // 几点睡 → 给定起床时间
+    case wakeTimeFor(sleepHour: Int, sleepMin: Int) // 几点起 → 给定入睡时间
+    case overview                                    // 通用睡眠计算
+}
+
 // MARK: - Water Track Action
 
 enum WaterAction {
@@ -109,6 +118,11 @@ struct SkillRouter {
         // --- Math / Calculator ---
         if let expr = parseMathExpression(lower, original: text) {
             return .math(expression: expr)
+        }
+
+        // --- Sleep Calculator ---
+        if let sleepQuery = parseSleepCalc(lower) {
+            return .sleepCalc(query: sleepQuery)
         }
 
         // --- BMI Calculator ---
@@ -1030,6 +1044,108 @@ struct SkillRouter {
         }
 
         return (height, weight)
+    }
+
+    // MARK: - Sleep Calculator Parser
+
+    private static func parseSleepCalc(_ text: String) -> SleepCalcQuery? {
+        let sleepKeywords = ["睡眠计算", "睡眠周期", "几点睡", "几点起", "什么时候睡",
+                             "什么时候起", "几点入睡", "几点醒", "几点起床",
+                             "sleep calc", "sleep cycle", "when to sleep", "when to wake",
+                             "现在睡", "打算睡", "想睡", "要睡"]
+
+        guard containsAny(text, sleepKeywords) else { return nil }
+
+        // Try to extract a time from the text
+        let (hour, minute) = extractTimeFromText(text)
+
+        // Determine direction: bedtime (given wake time) or wake time (given sleep time)
+        let wantBedtime = containsAny(text, ["几点睡", "什么时候睡", "几点入睡", "when to sleep",
+                                              "要几点睡", "应该几点睡"])
+        let wantWakeTime = containsAny(text, ["几点起", "几点醒", "几点起床", "什么时候起",
+                                               "when to wake", "现在睡", "打算睡", "想睡", "要睡"])
+
+        if let h = hour {
+            let m = minute ?? 0
+            if wantBedtime {
+                // "我想7点起床，几点睡" → bedtime for wake=7:00
+                return .bedtimeFor(wakeHour: h, wakeMin: m)
+            } else if wantWakeTime {
+                // "我打算11点睡，几点起" → wake time for sleep=23:00
+                return .wakeTimeFor(sleepHour: h, sleepMin: m)
+            }
+            // Ambiguous with time: guess from the hour value
+            // If hour >= 18 or hour <= 2, likely a bedtime → compute wake times
+            // If hour >= 5 and hour <= 12, likely a wake time → compute bedtimes
+            if h >= 18 || h <= 2 {
+                return .wakeTimeFor(sleepHour: h, sleepMin: m)
+            } else if h >= 5 && h <= 12 {
+                return .bedtimeFor(wakeHour: h, wakeMin: m)
+            }
+            // Default: treat as wake time target
+            return .bedtimeFor(wakeHour: h, wakeMin: m)
+        }
+
+        // "现在睡几点起" — no specific time, use current time as bedtime
+        if wantWakeTime {
+            let cal = Calendar.current
+            let now = Date()
+            return .wakeTimeFor(sleepHour: cal.component(.hour, from: now),
+                                sleepMin: cal.component(.minute, from: now))
+        }
+
+        return .overview
+    }
+
+    /// Extract hour (and optional minute) from natural language time expressions.
+    private static func extractTimeFromText(_ text: String) -> (Int?, Int?) {
+        let nsText = text as NSString
+
+        // Pattern: "7点半" "7点30" "7:30" "23点" "11点"
+        // Chinese: X点Y分, X点半, X点
+        if let regex = try? NSRegularExpression(
+            pattern: "(\\d{1,2})[点时:：](\\d{1,2}|半)?\\s*(?:分)?",
+            options: []
+        ), let match = regex.firstMatch(in: text, options: [], range: NSRange(location: 0, length: nsText.length)),
+           match.numberOfRanges >= 2 {
+            let hourStr = nsText.substring(with: match.range(at: 1))
+            if let h = Int(hourStr), h >= 0, h <= 23 {
+                var minute: Int? = nil
+                if match.numberOfRanges >= 3, match.range(at: 2).location != NSNotFound {
+                    let minStr = nsText.substring(with: match.range(at: 2))
+                    if minStr == "半" {
+                        minute = 30
+                    } else if let m = Int(minStr), m >= 0, m <= 59 {
+                        minute = m
+                    }
+                }
+                return (h, minute)
+            }
+        }
+
+        // Pattern: bare number in sleep context, e.g., "6点起床" already matched above
+        // Try "早上7点", "晚上11点" — the digit part
+        if let regex = try? NSRegularExpression(
+            pattern: "(?:早上|上午|中午|下午|晚上|深夜|凌晨)\\s*(\\d{1,2})",
+            options: []
+        ), let match = regex.firstMatch(in: text, options: [], range: NSRange(location: 0, length: nsText.length)),
+           match.numberOfRanges >= 2 {
+            let hourStr = nsText.substring(with: match.range(at: 1))
+            if let h = Int(hourStr) {
+                // Adjust for period
+                var adjusted = h
+                if text.contains("下午") || text.contains("晚上") {
+                    if h >= 1 && h <= 12 { adjusted = (h == 12) ? 12 : h + 12 }
+                } else if text.contains("凌晨") || text.contains("深夜") {
+                    if h == 12 { adjusted = 0 }
+                }
+                if adjusted >= 0 && adjusted <= 23 {
+                    return (adjusted, nil)
+                }
+            }
+        }
+
+        return (nil, nil)
     }
 
     static func containsAny(_ text: String, _ keywords: [String]) -> Bool {

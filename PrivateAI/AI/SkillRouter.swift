@@ -278,6 +278,7 @@ struct SkillRouter {
                                 "运动量", "活动量", "消耗", "有氧", "骑车", "骑行",
                                 "游泳", "爬山", "瑜伽", "打球", "散步", "徒步", "登山",
                                 "跳绳", "举铁", "撸铁", "拉伸", "仰卧起坐", "俯卧撑",
+                                "走了多", "跑了多", "走了几", "跑了几", "多少步", "几步",
                                 "exercise", "workout", "steps", "run", "walk", "fitness",
                                 "calories", "hiking", "swim", "cycling", "yoga"]) {
             return .exercise(range: range)
@@ -287,7 +288,8 @@ struct SkillRouter {
         if containsAny(lower, ["去过", "去哪", "哪里", "地点", "位置", "地方", "在哪",
                                 "足迹", "轨迹", "常去", "经常去", "出没", "到过", "待过",
                                 "出门", "外出", "逛了", "逛街", "路过", "出去了",
-                                "去了哪", "跑哪", "溜达", "遛弯",
+                                "去了哪", "跑哪", "溜达", "遛弯", "到了哪",
+                                "哪儿", "哪些地方", "什么地方",
                                 "where", "place", "location", "visit", "went to", "been to",
                                 "footprint", "places", "traveled", "visited"]) {
             return .location(range: range)
@@ -318,8 +320,10 @@ struct SkillRouter {
         // --- Health Metrics ---
         if containsAny(lower, ["睡眠", "睡了", "睡得", "睡觉", "入睡", "失眠", "熬夜", "早睡", "晚睡",
                                 "心率", "血压", "卡路里", "健康", "血氧", "脉搏",
-                                "爬楼", "楼层", "爬了多少", "几层楼", "flights", "climbed",
+                                "爬楼", "楼层", "爬了多少", "几层楼", "爬了几", "几层",
+                                "flights", "climbed",
                                 "走了多远", "跑了多远", "距离多少", "多少公里", "多少距离",
+                                "多远", "几公里",
                                 "sleep", "heart rate", "calories", "health", "slept"]) {
             let metric = extractHealthMetric(from: lower)
             return .health(metric: metric, range: range)
@@ -417,9 +421,9 @@ struct SkillRouter {
             return .calendar(range: range)
         }
 
-        // --- Calendar: future day + generic question → calendar intent ---
-        // e.g. "明天有什么事", "后天干嘛", "后天有什么"
-        if range.isFuture && containsAny(lower, ["有什么", "干嘛", "干什么", "做什么",
+        // --- Calendar: today/future + generic question → calendar intent ---
+        // e.g. "今天有什么事", "明天干嘛", "后天有什么"
+        if (range == .today || range.isFuture) && containsAny(lower, ["有什么", "干嘛", "干什么", "做什么",
                                                    "什么事", "有事", "有没有", "啥事",
                                                    "有啥", "怎么安排",
                                                    "what's on", "what do i have"]) {
@@ -518,10 +522,10 @@ struct SkillRouter {
     private static func extractHealthMetric(from text: String) -> String {
         if containsAny(text, ["睡眠", "睡了", "睡得", "睡觉", "入睡", "失眠", "熬夜", "早睡", "晚睡", "sleep", "slept"]) { return "sleep" }
         if containsAny(text, ["心率", "脉搏", "heart rate"]) { return "heartRate" }
-        if containsAny(text, ["步数", "走路", "步行", "steps", "walk"]) { return "steps" }
+        if containsAny(text, ["步数", "走路", "步行", "多少步", "几步", "steps", "walk"]) { return "steps" }
         if containsAny(text, ["卡路里", "热量", "calories"]) { return "calories" }
-        if containsAny(text, ["爬楼", "楼层", "几层", "flights", "climbed", "floor"]) { return "flights" }
-        if containsAny(text, ["多远", "距离", "公里", "distance", "km", "far"]) { return "distance" }
+        if containsAny(text, ["爬楼", "楼层", "几层", "爬了", "flights", "climbed", "floor"]) { return "flights" }
+        if containsAny(text, ["多远", "距离", "公里", "几公里", "distance", "km", "far"]) { return "distance" }
         return "general"
     }
 

@@ -147,6 +147,13 @@ struct CalendarSkill: ClawSkill {
             }
         }
 
+        // --- Deep work & focus analysis ---
+        let focusInsight = buildFocusInsight(events: timedEvents, date: date, onlyFuture: isToday)
+        if !focusInsight.isEmpty {
+            lines.append("")
+            lines.append(contentsOf: focusInsight)
+        }
+
         return lines.joined(separator: "\n")
     }
 
@@ -198,6 +205,13 @@ struct CalendarSkill: ClawSkill {
         if sortedDays.count < spanDays {
             let freeDays = spanDays - sortedDays.count
             lines.append("\n💚 其中 \(freeDays) 天没有安排，可以自由支配。")
+        }
+
+        // --- Weekly focus & rhythm analysis ---
+        let rhythmInsight = buildWeeklyRhythm(grouped: grouped, sortedDays: sortedDays, dateFmt: dateFmt, spanDays: spanDays)
+        if !rhythmInsight.isEmpty {
+            lines.append("")
+            lines.append(contentsOf: rhythmInsight)
         }
 
         return lines.joined(separator: "\n")
@@ -300,6 +314,268 @@ struct CalendarSkill: ClawSkill {
         }
 
         return slots
+    }
+
+    // MARK: - Deep Work & Focus Analysis
+
+    /// Analyzes a single day's schedule for focus time quality.
+    private func buildFocusInsight(events: [CalendarEventItem], date: Date, onlyFuture: Bool) -> [String] {
+        let cal = Calendar.current
+        let now = Date()
+        let dayStart = cal.date(bySettingHour: 8, minute: 0, second: 0, of: date) ?? date
+        let dayEnd = cal.date(bySettingHour: 22, minute: 0, second: 0, of: date) ?? date
+        let effectiveStart = (onlyFuture && now > dayStart) ? now : dayStart
+        guard effectiveStart < dayEnd else { return [] }
+
+        let totalAvailableMin = dayEnd.timeIntervalSince(effectiveStart) / 60
+        guard totalAvailableMin > 0 else { return [] }
+
+        let meetingMin = events.reduce(0.0) { total, e in
+            let s = max(e.startDate, effectiveStart)
+            let e2 = min(e.endDate, dayEnd)
+            return s < e2 ? total + e2.timeIntervalSince(s) / 60 : total
+        }
+
+        // Find longest uninterrupted free block
+        let sorted = events.sorted { $0.startDate < $1.startDate }
+        var occupied: [(Date, Date)] = []
+        for event in sorted {
+            let s = max(event.startDate, effectiveStart)
+            let e = min(event.endDate, dayEnd)
+            guard s < e else { continue }
+            if let last = occupied.last, s <= last.1 {
+                occupied[occupied.count - 1].1 = max(last.1, e)
+            } else {
+                occupied.append((s, e))
+            }
+        }
+
+        var longestFreeMin = 0.0
+        var longestFreeStart = effectiveStart
+        var cursor = effectiveStart
+        for (start, end) in occupied {
+            if start > cursor {
+                let gap = start.timeIntervalSince(cursor) / 60
+                if gap > longestFreeMin {
+                    longestFreeMin = gap
+                    longestFreeStart = cursor
+                }
+            }
+            cursor = max(cursor, end)
+        }
+        // Check tail gap
+        if cursor < dayEnd {
+            let gap = dayEnd.timeIntervalSince(cursor) / 60
+            if gap > longestFreeMin {
+                longestFreeMin = gap
+                longestFreeStart = cursor
+            }
+        }
+
+        let focusRatio = max(0, (totalAvailableMin - meetingMin)) / totalAvailableMin
+        let fragmentationScore = computeFragmentation(events: events, effectiveStart: effectiveStart, dayEnd: dayEnd)
+
+        // Classify meeting types
+        let typeBreakdown = classifyMeetingTypes(events: events)
+
+        var lines: [String] = []
+        lines.append("🧠 专注力分析：")
+
+        // Focus ratio bar
+        let filledBlocks = Int(focusRatio * 10)
+        let bar = String(repeating: "▓", count: filledBlocks) + String(repeating: "░", count: 10 - filledBlocks)
+        lines.append("  专注时间占比：[\(bar)] \(Int(focusRatio * 100))%")
+
+        // Longest deep work block
+        if longestFreeMin >= 30 {
+            let timeFmt = DateFormatter()
+            timeFmt.dateFormat = "HH:mm"
+            let blockLabel: String
+            if longestFreeMin >= 120 {
+                blockLabel = "🟢 非常适合深度工作"
+            } else if longestFreeMin >= 60 {
+                blockLabel = "🟡 可做中等难度任务"
+            } else {
+                blockLabel = "🟠 仅够处理简单事务"
+            }
+            lines.append("  最长连续空闲：\(formatDuration(longestFreeMin))（\(timeFmt.string(from: longestFreeStart)) 起）\(blockLabel)")
+        } else if events.isEmpty {
+            lines.append("  整天都是自由时间，适合安排深度工作 🟢")
+        } else {
+            lines.append("  ⚠️ 没有超过 30 分钟的连续空闲，难以进入专注状态")
+        }
+
+        // Fragmentation insight
+        if events.count >= 2 {
+            let fragDesc: String
+            if fragmentationScore < 0.3 {
+                fragDesc = "日程集中，上下文切换少 👍"
+            } else if fragmentationScore < 0.6 {
+                fragDesc = "日程较分散，注意切换成本"
+            } else {
+                fragDesc = "日程非常碎片化，建议合并或移动会议 ⚠️"
+            }
+            lines.append("  碎片化程度：\(fragDesc)")
+        }
+
+        // Meeting type breakdown
+        if !typeBreakdown.isEmpty && events.count >= 2 {
+            let typeStr = typeBreakdown.map { "\($0.value)个\($0.key)" }.joined(separator: "、")
+            lines.append("  会议类型：\(typeStr)")
+        }
+
+        return lines
+    }
+
+    /// Computes fragmentation: how scattered meetings are across the day.
+    /// Returns 0.0 (all clustered) to 1.0 (maximally fragmented).
+    private func computeFragmentation(events: [CalendarEventItem], effectiveStart: Date, dayEnd: Date) -> Double {
+        let sorted = events.filter {
+            max($0.startDate, effectiveStart) < min($0.endDate, dayEnd)
+        }.sorted { $0.startDate < $1.startDate }
+        guard sorted.count >= 2 else { return 0 }
+
+        let totalSpan = dayEnd.timeIntervalSince(effectiveStart)
+        guard totalSpan > 0 else { return 0 }
+
+        // Count gaps between meetings (not counting before first or after last)
+        var gapSum: TimeInterval = 0
+        var gapCount = 0
+        for i in 0..<(sorted.count - 1) {
+            let gap = sorted[i + 1].startDate.timeIntervalSince(sorted[i].endDate)
+            if gap > 0 {
+                gapSum += gap
+                gapCount += 1
+            }
+        }
+
+        guard gapCount > 0 else { return 0 }
+        // Fragmentation = (inter-meeting gap time / total span) * number of context switches
+        let gapRatio = gapSum / totalSpan
+        let switchFactor = min(Double(gapCount) / 5.0, 1.0) // normalize: 5+ switches = max
+        return min(gapRatio * 0.5 + switchFactor * 0.5, 1.0)
+    }
+
+    /// Classifies meeting types by parsing event titles.
+    private func classifyMeetingTypes(events: [CalendarEventItem]) -> [String: Int] {
+        var types: [String: Int] = [:]
+        for event in events {
+            let t = event.title.lowercased()
+            let type: String
+            if t.contains("standup") || t.contains("站会") || t.contains("晨会") || t.contains("daily") {
+                type = "站会"
+            } else if t.contains("1:1") || t.contains("1v1") || t.contains("one on one") || t.contains("单聊") {
+                type = "1:1"
+            } else if t.contains("review") || t.contains("评审") || t.contains("复盘") || t.contains("回顾") {
+                type = "评审"
+            } else if t.contains("面试") || t.contains("interview") {
+                type = "面试"
+            } else if t.contains("培训") || t.contains("training") || t.contains("workshop") || t.contains("分享") {
+                type = "培训/分享"
+            } else if t.contains("sync") || t.contains("同步") || t.contains("对齐") || t.contains("沟通") {
+                type = "同步会"
+            } else if t.contains("planning") || t.contains("规划") || t.contains("sprint") {
+                type = "规划会"
+            } else {
+                type = "会议"
+            }
+            types[type, default: 0] += 1
+        }
+        return types
+    }
+
+    /// Analyzes multi-day schedule rhythm: per-day focus time, best day for deep work.
+    private func buildWeeklyRhythm(grouped: [Date: [CalendarEventItem]], sortedDays: [Date], dateFmt: DateFormatter, spanDays: Int) -> [String] {
+        guard spanDays > 1 else { return [] }
+
+        let cal = Calendar.current
+        var dayFocusData: [(date: Date, focusRatio: Double, longestBlock: Double, meetingCount: Int)] = []
+
+        // Analyze all days in the span (including days with no events)
+        let firstDay = sortedDays.first ?? Date()
+        for offset in 0..<spanDays {
+            guard let day = cal.date(byAdding: .day, value: offset, to: cal.startOfDay(for: firstDay)) else { continue }
+            let dayStart = cal.date(bySettingHour: 8, minute: 0, second: 0, of: day) ?? day
+            let dayEnd = cal.date(bySettingHour: 22, minute: 0, second: 0, of: day) ?? day
+            let totalMin = dayEnd.timeIntervalSince(dayStart) / 60
+
+            let dayEvents = (grouped[cal.startOfDay(for: day)] ?? []).filter { !$0.isAllDay }
+            let meetingMin = dayEvents.reduce(0.0) { total, e in
+                let s = max(e.startDate, dayStart)
+                let e2 = min(e.endDate, dayEnd)
+                return s < e2 ? total + e2.timeIntervalSince(s) / 60 : total
+            }
+
+            let focusRatio = totalMin > 0 ? max(0, (totalMin - meetingMin)) / totalMin : 1.0
+
+            // Longest free block
+            let sorted = dayEvents.sorted { $0.startDate < $1.startDate }
+            var occupied: [(Date, Date)] = []
+            for event in sorted {
+                let s = max(event.startDate, dayStart)
+                let e = min(event.endDate, dayEnd)
+                guard s < e else { continue }
+                if let last = occupied.last, s <= last.1 {
+                    occupied[occupied.count - 1].1 = max(last.1, e)
+                } else {
+                    occupied.append((s, e))
+                }
+            }
+            var longest = 0.0
+            var cursor = dayStart
+            for (start, end) in occupied {
+                if start > cursor {
+                    longest = max(longest, start.timeIntervalSince(cursor) / 60)
+                }
+                cursor = max(cursor, end)
+            }
+            if cursor < dayEnd {
+                longest = max(longest, dayEnd.timeIntervalSince(cursor) / 60)
+            }
+
+            dayFocusData.append((day, focusRatio, longest, dayEvents.count))
+        }
+
+        guard !dayFocusData.isEmpty else { return [] }
+
+        var lines: [String] = []
+        lines.append("🧠 本周专注力节奏：")
+
+        // Per-day focus bar visualization
+        let shortFmt = DateFormatter()
+        shortFmt.dateFormat = "E"
+        shortFmt.locale = Locale(identifier: "zh_CN")
+
+        for data in dayFocusData.prefix(7) {
+            let blocks = Int(data.focusRatio * 8)
+            let bar = String(repeating: "▓", count: blocks) + String(repeating: "░", count: 8 - blocks)
+            let dayLabel = shortFmt.string(from: data.date)
+            let meetingNote = data.meetingCount > 0 ? " \(data.meetingCount)个会" : " 无会议"
+            lines.append("  \(dayLabel) [\(bar)] \(Int(data.focusRatio * 100))%\(meetingNote)")
+        }
+
+        // Best day for deep work (longest continuous free block)
+        if let bestDay = dayFocusData.max(by: { $0.longestBlock < $1.longestBlock }),
+           bestDay.longestBlock >= 60 {
+            lines.append("\n  💡 最适合深度工作：\(dateFmt.string(from: bestDay.date))（连续 \(formatDuration(bestDay.longestBlock)) 空闲）")
+        }
+
+        // Weekly meeting load
+        let totalMeetings = dayFocusData.reduce(0) { $0 + $1.meetingCount }
+        let avgFocus = dayFocusData.reduce(0.0) { $0 + $1.focusRatio } / Double(dayFocusData.count)
+        if totalMeetings > 0 {
+            let verdict: String
+            if avgFocus >= 0.7 {
+                verdict = "整体节奏健康，专注时间充裕 👍"
+            } else if avgFocus >= 0.5 {
+                verdict = "会议占比适中，注意保护连续空闲"
+            } else {
+                verdict = "会议过密，建议合并或推迟部分会议 ⚠️"
+            }
+            lines.append("  📊 平均专注率 \(Int(avgFocus * 100))%，\(verdict)")
+        }
+
+        return lines
     }
 
     // MARK: - Helpers

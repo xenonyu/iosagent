@@ -416,8 +416,10 @@ struct SkillRouter {
         if containsAny(lower, ["日历", "行程", "日程", "计划", "会议", "约会", "活动",
                                 "忙不忙", "忙吗", "有空", "空闲", "空不空", "安排", "待办",
                                 "有啥事", "啥安排", "什么安排", "有没有会", "开会",
+                                "专注", "深度工作", "碎片化", "集中精力", "能专心", "有时间",
                                 "calendar", "schedule", "meeting", "event", "appointment",
-                                "busy", "free time", "available", "agenda"]) {
+                                "busy", "free time", "available", "agenda",
+                                "focus time", "deep work", "fragmented"]) {
             return .calendar(range: range)
         }
 

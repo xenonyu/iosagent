@@ -1265,11 +1265,20 @@ final class GPTContextBuilder {
         // Walking+running distance is one of the most-asked metrics ("这周走了多远?")
         // but was previously only available in [今日健康数据], not the trend table.
         let hasDistanceData = trendDays.contains { $0.distanceKm > 0.01 }
+        // Resting HR and HRV per day — critical for stress/recovery trend analysis.
+        // Previously only available as weekly aggregates in weekSubTotal(), which hid
+        // day-to-day variations. Users asking "昨天静息心率多少" or "HRV最近几天有变化吗"
+        // need per-day data. These are the most medically relevant daily metrics for
+        // detecting stress accumulation, overtraining, or illness onset.
+        let hasRestingHRData = trendDays.contains { $0.restingHeartRate > 0 }
+        let hasHRVData = trendDays.contains { $0.hrv > 0 }
         let headerWeight = hasWeightData ? " | 体重(kg)" : ""
         let headerStand = hasStandData ? " | 站立(分)" : ""
         let headerDistance = hasDistanceData ? " | 距离(km)" : ""
+        let headerRHR = hasRestingHRData ? " | 静息HR" : ""
+        let headerHRV = hasHRVData ? " | HRV(ms)" : ""
         let dayCount = trendDays.count
-        var lines = ["[近\(dayCount)天健康趋势]", "日期  | 步数  | 运动(分) | 活动kcal | 总消耗kcal | 睡眠(h)（对应哪晚） | 心率avg(min~max)bpm\(headerDistance)\(headerStand)\(headerWeight)"]
+        var lines = ["[近\(dayCount)天健康趋势]", "日期  | 步数  | 运动(分) | 活动kcal | 总消耗kcal | 睡眠(h)（对应哪晚） | 心率avg(min~max)bpm\(headerRHR)\(headerHRV)\(headerDistance)\(headerStand)\(headerWeight)"]
         // Show oldest→newest so GPT can naturally read the trend direction
         let chronological = trendDays
         for s in chronological {
@@ -1313,10 +1322,12 @@ final class GPTContextBuilder {
             } else {
                 hr = "-"
             }
+            let rhrCol = hasRestingHRData ? (s.restingHeartRate > 0 ? "  | \(Int(s.restingHeartRate))" : "  | -") : ""
+            let hrvCol = hasHRVData ? (s.hrv > 0 ? "  | \(Int(s.hrv))" : "  | -") : ""
             let distCol = hasDistanceData ? (s.distanceKm > 0.01 ? "  | \(String(format: "%.1f", s.distanceKm))" : "  | -") : ""
             let standCol = hasStandData ? (s.standMinutes > 0 ? "  | \(Int(s.standMinutes))" : "  | -") : ""
             let weightCol = hasWeightData ? (s.bodyMassKg > 0 ? "  | \(String(format: "%.1f", s.bodyMassKg))" : "  | -") : ""
-            lines.append("\(dateLabel)  | \(steps)  | \(ex)  | \(activeCal)  | \(totalCal)  | \(sl)  | \(hr)\(distCol)\(standCol)\(weightCol)")
+            lines.append("\(dateLabel)  | \(steps)  | \(ex)  | \(activeCal)  | \(totalCal)  | \(sl)  | \(hr)\(rhrCol)\(hrvCol)\(distCol)\(standCol)\(weightCol)")
         }
         // Add weekly totals and averages with active-day counts so GPT can give
         // honest answers. E.g. "6天中有3天运动，共90分钟" is more useful than "日均30分钟"

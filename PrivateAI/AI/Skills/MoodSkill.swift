@@ -22,7 +22,18 @@ struct MoodSkill: ClawSkill {
             let query = context.originalQuery.lowercased()
             let emotionalWords = ["累", "疲惫", "压力", "焦虑", "烦", "崩溃", "郁闷", "低落",
                                   "难过", "伤心", "开心", "兴奋", "紧张", "无聊", "孤独", "沮丧",
-                                  "放松", "舒服", "丧", "满足", "充实"]
+                                  "放松", "舒服", "丧", "满足", "充实",
+                                  // Internet slang
+                                  "emo", "破防", "裂开", "麻了", "心塞", "摆烂", "躺平",
+                                  // Colloquial
+                                  "闹心", "心烦", "烦闷", "揪心", "心累", "窒息",
+                                  "憋屈", "委屈", "抓狂", "暴躁",
+                                  // Physical-emotional
+                                  "虚弱", "乏力", "没力气", "浑身无力", "提不起劲", "不在状态",
+                                  // Existential
+                                  "迷茫", "困惑", "纠结", "不知所措", "彷徨",
+                                  // Positive colloquial
+                                  "舒坦", "治愈", "感恩", "感动", "知足"]
             let isEmotionalExpression = emotionalWords.contains(where: { query.contains($0) })
 
             if isEmotionalExpression {
@@ -610,6 +621,110 @@ struct MoodSkill: ClawSkill {
         if SkillRouter.containsAny(query, ["平静", "安心"]) {
             return EmpathyResult(text: "内心平静是最好的状态 🌿", isNegative: false)
         }
+        // Internet slang / youth emotional expressions
+        if SkillRouter.containsAny(query, ["emo", "破防", "裂开"]) {
+            let intensity = detectIntensity(query: query, emotionWord: "emo")
+            switch intensity {
+            case .mild:
+                return EmpathyResult(text: "有点 emo？没关系，情绪波动很正常 🫂", isNegative: true)
+            case .moderate:
+                return EmpathyResult(text: "破防了？说明这件事对你很重要 🫂 想聊聊吗？", isNegative: true)
+            case .strong, .extreme:
+                return EmpathyResult(text: "听起来真的绷不住了 🫂 先允许自己难过一会儿，不用假装没事。", isNegative: true)
+            }
+        }
+        if SkillRouter.containsAny(query, ["麻了", "无语", "心塞"]) {
+            let intensity = detectIntensity(query: query, emotionWord: query.contains("心塞") ? "心塞" : "无语")
+            switch intensity {
+            case .mild:
+                return EmpathyResult(text: "有点无语？哎，有些事确实让人没话说 😮‍💨", isNegative: true)
+            case .moderate:
+                return EmpathyResult(text: "心塞的感觉不好受，说出来会好一些 🫂", isNegative: true)
+            case .strong, .extreme:
+                return EmpathyResult(text: "麻了说明已经承受太多了，先给自己放个假吧 🫂", isNegative: true)
+            }
+        }
+        if SkillRouter.containsAny(query, ["摆烂", "躺平"]) {
+            return EmpathyResult(text: "想躺平的时候就躺一会儿 🛋️ 休息够了再说，不用强迫自己。", isNegative: true)
+        }
+        // Colloquial negative: 闹心/心烦/揪心/心累/窒息
+        if SkillRouter.containsAny(query, ["闹心", "心烦", "烦闷", "揪心", "心累"]) {
+            let coreWord = ["心累", "揪心", "闹心", "心烦", "烦闷"].first(where: { query.contains($0) }) ?? "心烦"
+            let intensity = detectIntensity(query: query, emotionWord: coreWord)
+            switch intensity {
+            case .mild:
+                return EmpathyResult(text: "心里有点不舒服？跟我说说 🫂", isNegative: true)
+            case .moderate:
+                return EmpathyResult(text: "心累的时候最需要的不是鼓励，是被理解 🫂 我在听。", isNegative: true)
+            case .strong, .extreme:
+                return EmpathyResult(text: "心里堵得慌对吧？你已经很不容易了 🫂\n先什么都别想，让自己歇一歇。", isNegative: true)
+            }
+        }
+        if SkillRouter.containsAny(query, ["窒息"]) {
+            return EmpathyResult(text: "喘不过气的感觉很难受 🫂 先深呼吸，一切会好起来的。", isNegative: true)
+        }
+        // Grievance: 憋屈/委屈
+        if SkillRouter.containsAny(query, ["憋屈", "委屈"]) {
+            let intensity = detectIntensity(query: query, emotionWord: query.contains("委屈") ? "委屈" : "憋屈")
+            switch intensity {
+            case .mild:
+                return EmpathyResult(text: "有点委屈？你的感受是对的 🫂", isNegative: true)
+            case .moderate:
+                return EmpathyResult(text: "委屈的时候就别憋着了，想说就说 🫂", isNegative: true)
+            case .strong, .extreme:
+                return EmpathyResult(text: "受了这么大委屈，真的辛苦了 🫂 你值得被好好对待。", isNegative: true)
+            }
+        }
+        // Rage: 抓狂/暴躁
+        if SkillRouter.containsAny(query, ["抓狂", "暴躁"]) {
+            let intensity = detectIntensity(query: query, emotionWord: query.contains("暴躁") ? "暴躁" : "抓狂")
+            switch intensity {
+            case .mild:
+                return EmpathyResult(text: "有点抓狂？先离开让你烦的事一会儿 😮‍💨", isNegative: true)
+            case .moderate:
+                return EmpathyResult(text: "快抓狂了？先让自己冷静一下，别做冲动的决定 😤", isNegative: true)
+            case .strong, .extreme:
+                return EmpathyResult(text: "暴躁说明底线被触碰了 😤 你的愤怒是合理的，先深呼吸几次。", isNegative: true)
+            }
+        }
+        // Physical-emotional: 虚弱/乏力/没力气/提不起劲/不在状态
+        if SkillRouter.containsAny(query, ["虚弱", "乏力", "没力气", "浑身无力", "提不起劲", "不在状态"]) {
+            let intensity = detectIntensity(query: query, emotionWord: "虚弱")
+            switch intensity {
+            case .mild:
+                return EmpathyResult(text: "感觉没什么力气？可能需要好好休息一下 🫂", isNegative: true)
+            case .moderate:
+                return EmpathyResult(text: "身体在发信号了，可能最近太操劳了 🫂 照顾好自己。", isNegative: true)
+            case .strong, .extreme:
+                return EmpathyResult(text: "浑身无力的感觉很不好受 🫂 身体是最诚实的，该休息就休息。", isNegative: true)
+            }
+        }
+        // Existential / confused: 迷茫/困惑/纠结/不知所措/彷徨
+        if SkillRouter.containsAny(query, ["迷茫", "困惑", "纠结", "犹豫", "不知所措", "彷徨"]) {
+            let coreWord = ["迷茫", "困惑", "纠结", "犹豫", "不知所措", "彷徨"].first(where: { query.contains($0) }) ?? "迷茫"
+            let intensity = detectIntensity(query: query, emotionWord: coreWord)
+            switch intensity {
+            case .mild:
+                return EmpathyResult(text: "有点纠结？慢慢想，不急 🤗", isNegative: true)
+            case .moderate:
+                return EmpathyResult(text: "迷茫的时候说明你在思考，这本身就是好事 🌱", isNegative: true)
+            case .strong, .extreme:
+                return EmpathyResult(text: "不知所措的感觉很难熬 🫂 不用急着找答案，有些事需要时间。", isNegative: true)
+            }
+        }
+        // Positive colloquial: 舒坦/治愈/感恩/感动/知足/美滋滋
+        if SkillRouter.containsAny(query, ["舒坦", "治愈", "感恩", "感动", "知足", "美滋滋"]) {
+            let coreWord = ["感动", "感恩", "治愈", "知足", "舒坦", "美滋滋"].first(where: { query.contains($0) }) ?? "舒坦"
+            let intensity = detectIntensity(query: query, emotionWord: coreWord)
+            switch intensity {
+            case .mild:
+                return EmpathyResult(text: "不错的心情 ☀️ 记住这个感觉。", isNegative: false)
+            case .moderate:
+                return EmpathyResult(text: "这种感觉真好 🌟 生活里这样的时刻值得珍惜。", isNegative: false)
+            case .strong, .extreme:
+                return EmpathyResult(text: "能被治愈、能感动，说明你是个有温度的人 🌟", isNegative: false)
+            }
+        }
         return EmpathyResult(text: "我听到你了 😊", isNegative: false)
     }
 
@@ -633,6 +748,24 @@ struct MoodSkill: ClawSkill {
             (["兴奋", "激动"],                "有点兴奋",    "很兴奋",       "超级兴奋"),
             (["放松", "舒服", "惬意"],         "挺放松",     "很放松",       "超级放松"),
             (["满足", "充实"],                "挺充实",      "很充实",       "特别充实"),
+            // Internet slang
+            (["emo", "破防", "裂开"],          "有点 emo",   "破防了",       "彻底破防"),
+            (["麻了", "无语", "心塞"],          "有点无语",    "心塞了",       "彻底麻了"),
+            (["摆烂", "躺平"],                "想躺平",      "想摆烂",       "彻底躺平"),
+            // Colloquial negative
+            (["闹心", "心烦", "烦闷", "揪心", "心累"], "有点心累", "挺心累的",   "心累到不行"),
+            (["窒息"],                        "有点窒息",    "快窒息了",     "要窒息了"),
+            (["憋屈", "委屈"],                "有点委屈",    "很委屈",       "委屈到不行"),
+            (["抓狂", "暴躁"],                "有点抓狂",    "快抓狂了",     "彻底暴躁"),
+            // Physical-emotional
+            (["虚弱", "乏力", "没力气", "浑身无力", "提不起劲", "不在状态"],
+                                              "有点没力气",  "浑身没劲",     "完全提不起劲"),
+            // Existential
+            (["迷茫", "困惑", "纠结", "犹豫", "不知所措", "彷徨"],
+                                              "有点迷茫",    "很迷茫",       "完全不知所措"),
+            // Positive colloquial
+            (["舒坦", "治愈", "美滋滋"],        "挺舒坦",     "很治愈",       "超级治愈"),
+            (["感恩", "感动", "知足"],          "有点感动",    "很感动",       "特别感动"),
         ]
 
         for entry in emotionMap {

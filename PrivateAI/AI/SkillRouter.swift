@@ -280,6 +280,17 @@ struct SkillRouter {
         let emotionPriorityKeywords = ["累", "疲惫", "压力", "焦虑", "烦", "崩溃", "郁闷",
                                         "低落", "难过", "伤心", "开心", "兴奋", "紧张",
                                         "无聊", "孤独", "沮丧", "放松", "舒服", "丧",
+                                        // Internet slang / youth expressions
+                                        "emo", "破防", "裂开", "麻了", "心塞", "摆烂", "躺平",
+                                        // Colloquial negative
+                                        "闹心", "心烦", "烦闷", "揪心", "心累", "窒息",
+                                        "憋屈", "委屈", "抓狂", "暴躁",
+                                        // Physical-emotional overlap
+                                        "虚弱", "乏力", "没力气", "浑身无力", "提不起劲", "不在状态",
+                                        // Existential / confused
+                                        "迷茫", "困惑", "纠结", "不知所措", "彷徨",
+                                        // Positive colloquial
+                                        "舒坦", "治愈", "感恩", "感动", "知足",
                                         "tired", "stressed", "anxious", "depressed"]
         let actionVerbs = ["去了", "做了", "吃了", "喝了", "跑了", "买了", "看了", "见了",
                            "学了", "写了", "读了", "听了", "玩了", "到了", "回了", "完成"]
@@ -425,15 +436,26 @@ struct SkillRouter {
             // Positive emotions
             "开心", "高兴", "快乐", "幸福", "满足", "充实",
             "兴奋", "激动", "喜悦", "愉快", "愉悦",
+            // Positive colloquial
+            "舒坦", "治愈", "感恩", "感动", "知足", "美滋滋",
             // Negative emotions
             "难过", "伤心", "沮丧", "郁闷", "低落", "抑郁", "丧",
             "焦虑", "紧张", "不安", "慌", "恐惧",
             "烦", "烦躁", "烦恼", "恼火", "生气", "愤怒",
             "孤独", "寂寞", "空虚", "无聊",
+            // Internet slang / youth expressions
+            "emo", "破防", "裂开", "麻了", "无语", "心塞", "摆烂", "躺平",
+            // Colloquial negative
+            "闹心", "心烦", "烦闷", "揪心", "心累", "窒息",
+            "憋屈", "委屈", "抓狂", "暴躁",
             // Physical-emotional states
             "累", "疲惫", "疲倦", "疲劳", "过劳", "精神不好", "没精神", "没劲",
             "压力", "有压力", "崩溃", "受不了", "扛不住",
             "放松", "平静", "安心", "舒服", "惬意",
+            // Physical-emotional overlap (body sensations as mood expressions)
+            "虚弱", "乏力", "没力气", "浑身无力", "提不起劲", "不在状态",
+            // Existential / confused states
+            "迷茫", "困惑", "纠结", "犹豫", "不知所措", "彷徨",
             // English
             "mood", "feeling", "emotion", "emotional",
             "happy", "sad", "stressed", "anxious", "tired",

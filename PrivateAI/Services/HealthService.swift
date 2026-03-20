@@ -303,6 +303,12 @@ final class HealthService: ObservableObject {
     /// Fetches sleep data with phase breakdown (deep, REM, core), in-bed time,
     /// and sleep timing (onset/wake) for circadian analysis.
     /// Returns (totalHours, deepHours, remHours, coreHours, inBedHours, sleepOnset, wakeTime).
+    ///
+    /// **Deduplication**: HealthKit often contains overlapping sleep samples from
+    /// multiple sources (Apple Watch, iPhone Sleep schedule, third-party apps like
+    /// AutoSleep/Pillow). Without deduplication, the same sleep period would be
+    /// counted 2-3x, inflating reported hours (e.g. 15h instead of 7.5h).
+    /// We merge overlapping time intervals per sleep category to get accurate totals.
     private func fetchSleepPhases(start: Date, end: Date,
                                   completion: @escaping (Double, Double, Double, Double, Double, Date?, Date?) -> Void) {
         guard let type = HKObjectType.categoryType(forIdentifier: .sleepAnalysis) else {
@@ -311,11 +317,13 @@ final class HealthService: ObservableObject {
         let predicate = HKQuery.predicateForSamples(withStart: start, end: end)
         let query = HKSampleQuery(sampleType: type, predicate: predicate,
                                   limit: HKObjectQueryNoLimit, sortDescriptors: nil) { _, samples, _ in
-            var deep: Double = 0
-            var rem: Double = 0
-            var core: Double = 0
-            var unspecified: Double = 0
-            var inBed: Double = 0
+            // Group intervals by sleep category for per-phase deduplication
+            var deepIntervals: [(Date, Date)] = []
+            var remIntervals: [(Date, Date)] = []
+            var coreIntervals: [(Date, Date)] = []
+            var unspecifiedIntervals: [(Date, Date)] = []
+            var inBedIntervals: [(Date, Date)] = []
+
             // Track earliest sleep start and latest sleep end for circadian timing
             var earliestOnset: Date?
             var latestWake: Date?
@@ -328,18 +336,18 @@ final class HealthService: ObservableObject {
             ]
 
             (samples as? [HKCategorySample])?.forEach { s in
-                let hours = s.endDate.timeIntervalSince(s.startDate) / 3600
+                let interval = (s.startDate, s.endDate)
                 switch s.value {
                 case HKCategoryValueSleepAnalysis.asleepDeep.rawValue:
-                    deep += hours
+                    deepIntervals.append(interval)
                 case HKCategoryValueSleepAnalysis.asleepREM.rawValue:
-                    rem += hours
+                    remIntervals.append(interval)
                 case HKCategoryValueSleepAnalysis.asleepCore.rawValue:
-                    core += hours
+                    coreIntervals.append(interval)
                 case HKCategoryValueSleepAnalysis.asleepUnspecified.rawValue:
-                    unspecified += hours
+                    unspecifiedIntervals.append(interval)
                 case HKCategoryValueSleepAnalysis.inBed.rawValue:
-                    inBed += hours
+                    inBedIntervals.append(interval)
                 default:
                     break // skip awake, etc.
                 }
@@ -354,9 +362,43 @@ final class HealthService: ObservableObject {
                 }
             }
 
+            // Merge overlapping intervals per category, then sum durations
+            let deep = Self.mergedDurationHours(deepIntervals)
+            let rem = Self.mergedDurationHours(remIntervals)
+            let core = Self.mergedDurationHours(coreIntervals)
+            let unspecified = Self.mergedDurationHours(unspecifiedIntervals)
+            let inBed = Self.mergedDurationHours(inBedIntervals)
+
             let total = deep + rem + core + unspecified
             completion(total, deep, rem, core, inBed, earliestOnset, latestWake)
         }
         store.execute(query)
+    }
+
+    /// Merges overlapping time intervals and returns total non-overlapping duration in hours.
+    /// E.g. [(22:00, 02:00), (22:30, 02:30)] → merged to (22:00, 02:30) → 4.5 hours,
+    /// not the naive sum of 4.0 + 4.0 = 8.0 hours.
+    private static func mergedDurationHours(_ intervals: [(Date, Date)]) -> Double {
+        guard !intervals.isEmpty else { return 0 }
+        // Sort by start date
+        let sorted = intervals.sorted { $0.0 < $1.0 }
+        var merged: [(Date, Date)] = [sorted[0]]
+        for i in 1..<sorted.count {
+            let current = sorted[i]
+            let lastIdx = merged.count - 1
+            if current.0 <= merged[lastIdx].1 {
+                // Overlapping or adjacent — extend the end if needed
+                if current.1 > merged[lastIdx].1 {
+                    merged[lastIdx].1 = current.1
+                }
+            } else {
+                // No overlap — add as new interval
+                merged.append(current)
+            }
+        }
+        // Sum durations of merged intervals
+        return merged.reduce(0.0) { total, interval in
+            total + interval.1.timeIntervalSince(interval.0) / 3600.0
+        }
     }
 }

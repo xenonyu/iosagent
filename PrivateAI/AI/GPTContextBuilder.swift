@@ -687,6 +687,7 @@ final class GPTContextBuilder {
     }
 
     private func photoSection(_ photos: [PhotoMetadataItem]) -> String {
+        let cal = Calendar.current
         let total = photos.count
         let videos = photos.filter { $0.isVideo }.count
         let geoTagged = photos.filter { $0.hasLocation }.count
@@ -697,6 +698,59 @@ final class GPTContextBuilder {
         if geoTagged > 0 { lines.append("含地理位置：\(geoTagged) 张") }
         if favorites > 0 { lines.append("已收藏：\(favorites) 张") }
         if screenshots > 0 { lines.append("截图：\(screenshots) 张") }
+
+        // Per-day breakdown so GPT can answer "昨天拍了几张照片？" accurately
+        var dayGroups: [Date: [PhotoMetadataItem]] = [:]
+        for p in photos {
+            let dayStart = cal.startOfDay(for: p.date)
+            dayGroups[dayStart, default: []].append(p)
+        }
+        let sortedDays = dayGroups.keys.sorted(by: >)  // newest first
+
+        if sortedDays.count > 1 || (sortedDays.count == 1 && photos.count > 3) {
+            let dateFmt = DateFormatter(); dateFmt.dateFormat = "M月d日"
+            dateFmt.locale = Locale(identifier: "zh_CN")
+            let weekdayFmt = DateFormatter(); weekdayFmt.locale = Locale(identifier: "zh_CN"); weekdayFmt.dateFormat = "EEE"
+
+            lines.append("每日拍摄：")
+            for day in sortedDays.prefix(7) {
+                guard let dayPhotos = dayGroups[day] else { continue }
+                let dayLabel: String
+                if cal.isDateInToday(day) {
+                    dayLabel = "今天"
+                } else if cal.isDateInYesterday(day) {
+                    dayLabel = "昨天"
+                } else {
+                    dayLabel = "\(dateFmt.string(from: day))(\(weekdayFmt.string(from: day)))"
+                }
+
+                let dayPhotosOnly = dayPhotos.filter { !$0.isVideo }
+                let dayVideos = dayPhotos.filter { $0.isVideo }
+                var countParts: [String] = []
+                if !dayPhotosOnly.isEmpty { countParts.append("\(dayPhotosOnly.count)张照片") }
+                if !dayVideos.isEmpty { countParts.append("\(dayVideos.count)个视频") }
+
+                // Show media kind breakdown for variety (portrait, live, panorama, etc.)
+                var kindCounts: [String: Int] = [:]
+                for p in dayPhotos {
+                    // Only annotate special types (skip plain .photo and .video)
+                    switch p.mediaKind {
+                    case .livePhoto, .panorama, .depthEffect, .burst, .sloMo, .timelapse:
+                        kindCounts[p.mediaKind.label, default: 0] += 1
+                    default:
+                        break
+                    }
+                }
+                let kindNote = kindCounts.isEmpty ? "" :
+                    "（含\(kindCounts.map { "\($0.value)张\($0.key)" }.joined(separator: "、"))）"
+
+                let dayFavs = dayPhotos.filter { $0.isFavorite }.count
+                let favNote = dayFavs > 0 ? " ⭐\(dayFavs)" : ""
+
+                lines.append("  \(dayLabel)：\(countParts.joined(separator: "、"))\(kindNote)\(favNote)")
+            }
+        }
+
         return lines.joined(separator: "\n")
     }
 

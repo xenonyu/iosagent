@@ -25,6 +25,7 @@ final class HealthService: ObservableObject {
             .heartRateVariabilitySDNN,
             .distanceWalkingRunning,
             .flightsClimbed,
+            .appleStandTime,
             .bodyMass,
             .oxygenSaturation,
             .vo2Max
@@ -89,6 +90,13 @@ final class HealthService: ObservableObject {
         group.enter()
         fetchSum(.appleExerciseTime, unit: .minute(), predicate: predicate) { val in
             summary.exerciseMinutes = val
+            group.leave()
+        }
+
+        // Stand time (third Activity Ring — how much time standing, from Apple Watch)
+        group.enter()
+        fetchSum(.appleStandTime, unit: .minute(), predicate: predicate) { val in
+            summary.standMinutes = val
             group.leave()
         }
 

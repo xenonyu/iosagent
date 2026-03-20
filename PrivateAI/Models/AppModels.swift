@@ -270,6 +270,9 @@ struct HealthSummary {
     /// Basal (resting) energy burned — metabolism at rest, typically 1200-2000 kcal/day
     var basalCalories: Double = 0
     var exerciseMinutes: Double = 0
+    /// Apple Stand Time in minutes — the third Activity Ring metric.
+    /// Measures how much time the user spent standing (from Apple Watch).
+    var standMinutes: Double = 0
     var sleepHours: Double = 0
     /// Deep sleep (N3 stage) — most restorative phase
     var sleepDeepHours: Double = 0
@@ -311,7 +314,7 @@ struct HealthSummary {
 
     /// True if this day has any recorded data at all.
     var hasData: Bool {
-        steps > 0 || exerciseMinutes > 0 || sleepHours > 0 || heartRate > 0 || distanceKm > 0.01 || flightsClimbed > 0 || bodyMassKg > 0
+        steps > 0 || exerciseMinutes > 0 || standMinutes > 0 || sleepHours > 0 || heartRate > 0 || distanceKm > 0.01 || flightsClimbed > 0 || bodyMassKg > 0
     }
 }
 

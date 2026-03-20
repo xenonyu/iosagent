@@ -331,6 +331,7 @@ final class GPTContextBuilder {
         - 回答健康、运动相关问题时，优先引用准确数值，再结合[健康参考标准]给出个性化解读（如「离建议的7000步还差1500步」），不要只说数字。
         - ⚠️ 今日健康数据标注了「截至X点」。如果现在还在上午或下午，今天的步数/运动/卡路里等数据还会继续增长，不要过早下结论说「今天步数偏少」「运动不够」。应该说「截至目前…」或「到目前为止…」，必要时可鼓励用户继续保持。只有晚上10点之后的数据才接近当天最终值。
         - ⚠️ 卡路里说明：「活动kcal」是运动/活动消耗，「总消耗kcal」= 活动 + 基础代谢（身体维持生命所需能量）。用户问「今天消耗了多少卡路里」时，应回答总消耗值。基础代谢约占总消耗60-75%，这是正常的。
+        - ⚠️ 活动圆环（Apple Watch 三圆环）说明：用户问「圆环合了吗」「三个圆环怎么样」时，结合活动卡路里（🔴Move）、运动分钟数（🟢Exercise）和站立时间（🔵Stand）来评估。如果某个圆环数据为0或缺失，说明可能未佩戴 Apple Watch。站立时间衡量的是「一天中有几个小时站起来活动了」。
         - 涉及多天数据时，可引用「近7天趋势」进行对比分析，指出趋势变化。
         - 周统计中会标注「X天中Y天有运动」，回答时要如实反映活跃天数，不要把少数几天的数据当作每天都达到了。例如7天中2天运动共60分钟，应该说「这周运动了2天，共60分钟」，而不是「日均运动30分钟」。
         - ⚠️ 跨周对比时，务必使用「日均」数据进行公平比较，因为本周天数可能不足7天。例如本周4天日均消耗2100kcal vs 上周7天日均2000kcal → 说明本周消耗更高，而不是比较总量（8400 vs 14000）得出本周更少的错误结论。
@@ -603,8 +604,11 @@ final class GPTContextBuilder {
             "拉伸", "冥想", "太极", "跳绳", "划船", "椭圆机", "高强度",
             // Physical condition — often relates to health/sleep data
             "累", "疲劳", "精力", "恢复", "酸痛", "状态",
+            // Activity Rings (Apple Watch) — users commonly ask "圆环合了吗？"
+            "圆环", "活动圆环", "站立", "站了",
             "exercise", "sleep", "step", "heart", "workout", "calorie", "weight",
-            "hrv", "vo2", "bpm", "swimming", "cycling", "yoga", "hiking", "running"
+            "hrv", "vo2", "bpm", "swimming", "cycling", "yoga", "hiking", "running",
+            "stand", "ring", "activity ring"
         ]
         if healthWords.contains(where: { lower.contains($0) }) {
             topics.insert(.health)
@@ -766,6 +770,12 @@ final class GPTContextBuilder {
         // HRV
         lines.append("HRV：数值因人而异，趋势比绝对值更重要，持续下降可能提示疲劳或压力")
 
+        // Stand time — Apple Watch Activity Ring
+        lines.append("站立：Apple Watch 建议每天至少12个小时有站立活动（每小时站起来活动1分钟以上即计入）")
+
+        // Activity Rings explanation
+        lines.append("活动圆环（Apple Watch 三圆环）：🔴活动（Move）= 活动卡路里消耗（用户自定义目标，默认约500kcal），🟢健身（Exercise）= 30分钟运动，🔵站立（Stand）= 12小时站立。用户问「圆环合了吗」时，参考以上默认目标评估完成度。注意：我们只知道默认目标值，用户可能在 Apple Watch 上设置了不同的目标。")
+
         // Weight — BMI reference only when user has provided height or has weight data
         lines.append("体重：健康体重因身高而异，短期（1-3天）波动0.5-1kg属正常水分变化，关注周均趋势更有意义")
 
@@ -834,6 +844,19 @@ final class GPTContextBuilder {
             lines.append("运动时间：\(Int(h.exerciseMinutes))分钟")
         } else if healthAuthorized && hourOfDay >= 8 {
             lines.append("运动时间：0分钟（今天还没有运动记录）")
+        }
+
+        // Stand time — the third Activity Ring on Apple Watch.
+        // Users commonly ask "圆环合了吗？" or "今天站了多久？"
+        if h.standMinutes > 0 {
+            let standHrs = h.standMinutes / 60.0
+            if standHrs >= 1 {
+                lines.append("站立时间：\(String(format: "%.1f", standHrs))小时（\(Int(h.standMinutes))分钟）")
+            } else {
+                lines.append("站立时间：\(Int(h.standMinutes))分钟")
+            }
+        } else if healthAuthorized && hourOfDay >= 8 {
+            lines.append("站立时间：0分钟（今天还没有站立记录，可能未佩戴 Apple Watch）")
         }
 
         if h.heartRate > 0 {
@@ -913,6 +936,7 @@ final class GPTContextBuilder {
         var lines = ["[昨日健康概要]（今日数据尚在积累，以下为昨天参考）"]
         if y.steps > 0 { lines.append("步数：\(Int(y.steps))步") }
         if y.exerciseMinutes > 0 { lines.append("运动：\(Int(y.exerciseMinutes))分钟") }
+        if y.standMinutes > 0 { lines.append("站立：\(Int(y.standMinutes))分钟") }
         if y.activeCalories > 0 || y.basalCalories > 0 {
             let total = Int(y.activeCalories + y.basalCalories)
             if y.basalCalories > 0 {
@@ -947,8 +971,10 @@ final class GPTContextBuilder {
         let trendDays = Array(summaries.prefix(7).reversed())
         let hasWeightData = trendDays.contains { $0.bodyMassKg > 0 }
 
+        let hasStandData = trendDays.contains { $0.standMinutes > 0 }
         let headerWeight = hasWeightData ? " | 体重(kg)" : ""
-        var lines = ["[近7天健康趋势]", "日期  | 步数  | 运动(分) | 活动kcal | 总消耗kcal | 睡眠(h)（对应哪晚） | 心率avg(min~max)bpm\(headerWeight)"]
+        let headerStand = hasStandData ? " | 站立(分)" : ""
+        var lines = ["[近7天健康趋势]", "日期  | 步数  | 运动(分) | 活动kcal | 总消耗kcal | 睡眠(h)（对应哪晚） | 心率avg(min~max)bpm\(headerStand)\(headerWeight)"]
         // Show oldest→newest so GPT can naturally read the trend direction
         let chronological = trendDays
         for s in chronological {
@@ -992,8 +1018,9 @@ final class GPTContextBuilder {
             } else {
                 hr = "-"
             }
+            let standCol = hasStandData ? (s.standMinutes > 0 ? "  | \(Int(s.standMinutes))" : "  | -") : ""
             let weightCol = hasWeightData ? (s.bodyMassKg > 0 ? "  | \(String(format: "%.1f", s.bodyMassKg))" : "  | -") : ""
-            lines.append("\(dateLabel)  | \(steps)  | \(ex)  | \(activeCal)  | \(totalCal)  | \(sl)  | \(hr)\(weightCol)")
+            lines.append("\(dateLabel)  | \(steps)  | \(ex)  | \(activeCal)  | \(totalCal)  | \(sl)  | \(hr)\(standCol)\(weightCol)")
         }
         // Add weekly totals and averages with active-day counts so GPT can give
         // honest answers. E.g. "6天中有3天运动，共90分钟" is more useful than "日均30分钟"
@@ -1177,6 +1204,14 @@ final class GPTContextBuilder {
             items.append("\(exDays.count)/\(days.count)天运动共\(totalMin)分钟（日均\(avgMin)分钟）")
         } else {
             items.append("无运动记录")
+        }
+
+        // Stand time — third Activity Ring
+        let standDays = days.filter { $0.standMinutes > 0 }
+        if !standDays.isEmpty {
+            let totalStand = Int(standDays.map(\.standMinutes).reduce(0, +))
+            let avgStand = Int(Double(totalStand) / Double(days.count))
+            items.append("日均站立\(avgStand)分钟")
         }
 
         let sleepDays = days.filter { $0.sleepHours > 0 }

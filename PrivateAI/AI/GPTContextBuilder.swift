@@ -1196,7 +1196,27 @@ final class GPTContextBuilder {
             dayNameFmt.locale = Locale(identifier: "zh_CN")
             dayNameFmt.dateFormat = "M月d日（EEEE）"
 
-            lines.append("过去14天日程：")
+            // Overall summary line so GPT can quickly answer "最近忙吗？" / "上周有几个会？"
+            let totalPastEvents = past.count
+            var calBreakdown: [String: Int] = [:]
+            for e in past where !e.calendar.isEmpty {
+                calBreakdown[e.calendar, default: 0] += 1
+            }
+            let breakdownStr = calBreakdown.sorted { $0.value > $1.value }
+                .prefix(4)
+                .map { "\($0.key)\($0.value)个" }
+                .joined(separator: "、")
+            let summaryNote = breakdownStr.isEmpty
+                ? "过去14天共\(totalPastEvents)个日程："
+                : "过去14天共\(totalPastEvents)个日程（\(breakdownStr)）："
+            lines.append(summaryNote)
+
+            // Determine the "recent detail threshold": show full event details only
+            // for the past 3 days (yesterday, 前天, 大前天). Older days get a compact
+            // daily summary (count + titles only) to save ~60-70% of tokens while
+            // preserving data for GPT to answer common queries like "上周有几个会?"
+            let recentCutoff = cal.date(byAdding: .day, value: -3, to: cal.startOfDay(for: now)) ?? now
+
             for day in sortedDays.prefix(14) {
                 guard let dayEvents = dayGroups[day] else { continue }
                 let dayLabel: String
@@ -1205,26 +1225,47 @@ final class GPTContextBuilder {
                 } else if let twoDaysAgo = cal.date(byAdding: .day, value: -2, to: cal.startOfDay(for: now)),
                           cal.isDate(day, inSameDayAs: twoDaysAgo) {
                     dayLabel = "前天"
+                } else if let threeDaysAgo = cal.date(byAdding: .day, value: -3, to: cal.startOfDay(for: now)),
+                          cal.isDate(day, inSameDayAs: threeDaysAgo) {
+                    dayLabel = "大前天"
                 } else {
                     dayLabel = dayNameFmt.string(from: day)
                 }
-                let eventDescs = dayEvents.prefix(5).map { e -> String in
-                    let timeStr = e.isAllDay ? "全天" : "\(timeFmt.string(from: e.startDate))–\(timeFmt.string(from: e.endDate))"
-                    var desc = "\(timeStr) \(e.title)"
-                    if !e.calendar.isEmpty { desc += " [\(e.calendar)]" }
-                    if !e.location.isEmpty { desc += "（\(e.location)）" }
-                    if let label = e.attendeeLabel { desc += " \(label)" }
-                    // Include notes for past events so GPT can answer "昨天那个会议聊什么？"
-                    let trimmedNotes = e.notes.trimmingCharacters(in: .whitespacesAndNewlines)
-                    if !trimmedNotes.isEmpty {
-                        let preview = trimmedNotes.count > 80 ? String(trimmedNotes.prefix(80)) + "…" : trimmedNotes
-                        desc += " 备注：\(preview)"
+
+                let isRecent = day >= recentCutoff
+                if isRecent {
+                    // Full detail for recent days — GPT can answer "昨天那个会议聊什么？"
+                    let eventDescs = dayEvents.prefix(5).map { e -> String in
+                        let timeStr = e.isAllDay ? "全天" : "\(timeFmt.string(from: e.startDate))–\(timeFmt.string(from: e.endDate))"
+                        var desc = "\(timeStr) \(e.title)"
+                        if !e.calendar.isEmpty { desc += " [\(e.calendar)]" }
+                        if !e.location.isEmpty { desc += "（\(e.location)）" }
+                        if let label = e.attendeeLabel { desc += " \(label)" }
+                        let trimmedNotes = e.notes.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if !trimmedNotes.isEmpty {
+                            let preview = trimmedNotes.count > 80 ? String(trimmedNotes.prefix(80)) + "…" : trimmedNotes
+                            desc += " 备注：\(preview)"
+                        }
+                        return desc
                     }
-                    return desc
-                }
-                lines.append("  \(dayLabel)：\(eventDescs.joined(separator: "；"))")
-                if dayEvents.count > 5 {
-                    lines.append("    …还有\(dayEvents.count - 5)项")
+                    lines.append("  \(dayLabel)：\(eventDescs.joined(separator: "；"))")
+                    if dayEvents.count > 5 {
+                        lines.append("    …还有\(dayEvents.count - 5)项")
+                    }
+                } else {
+                    // Compact summary for older days — titles only, no notes/location/attendees.
+                    // Saves tokens while letting GPT answer "上周二有什么会?" with event names.
+                    let titles = dayEvents.prefix(4).map { e -> String in
+                        var title = e.title
+                        if !e.calendar.isEmpty { title += "[\(e.calendar)]" }
+                        return title
+                    }
+                    var compactLine = "  \(dayLabel)：\(dayEvents.count)个日程"
+                    compactLine += "（\(titles.joined(separator: "、"))）"
+                    if dayEvents.count > 4 {
+                        compactLine += "等"
+                    }
+                    lines.append(compactLine)
                 }
             }
         }

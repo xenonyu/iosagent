@@ -312,8 +312,13 @@ struct SkillRouter {
                                       "last time", "when did i last", "how long since"]
         let exerciseContextKeywords = ["运动", "锻炼", "健身", "跑步", "跑了", "游泳", "骑车",
                                        "骑行", "瑜伽", "训练", "走路", "步行", "散步", "徒步",
-                                       "爬山", "打球", "跳绳", "举铁", "撸铁", "exercise",
-                                       "workout", "run", "swim", "cycling", "yoga", "hike"]
+                                       "爬山", "打球", "跳绳", "举铁", "撸铁",
+                                       "篮球", "足球", "网球", "羽毛球", "乒乓球",
+                                       "跳舞", "舞蹈", "攀岩", "滑雪", "搏击", "拳击",
+                                       "椭圆机", "划船机", "太极", "普拉提",
+                                       "exercise", "workout", "run", "swim", "cycling",
+                                       "yoga", "hike", "badminton", "tennis", "basketball",
+                                       "dance", "climbing", "skiing"]
         if containsAny(lower, lastOccurrenceKeywords) &&
            containsAny(lower, exerciseContextKeywords) {
             let filter = extractWorkoutFilter(from: lower)
@@ -386,9 +391,17 @@ struct SkillRouter {
                                 "走了多", "跑了多", "走了几", "跑了几", "多少步", "几步",
                                 "训练", "运动类型", "做了什么运动", "什么运动", "哪些运动",
                                 "配速", "跑量", "骑了多", "游了多", "练了什么",
-                                "hiit", "力量训练", "核心训练", "普拉提", "搏击",
+                                "hiit", "力量训练", "核心训练", "普拉提", "搏击", "拳击",
+                                // Ball sports (打球 won't substring-match 打篮球/打羽毛球)
+                                "篮球", "足球", "网球", "羽毛球", "乒乓球",
+                                // Other workout types from extractWorkoutFilter
+                                "跳舞", "舞蹈", "攀岩", "滑雪", "太极", "冥想",
+                                "椭圆机", "划船机",
                                 "exercise", "workout", "steps", "run", "walk", "fitness",
-                                "calories", "hiking", "swim", "cycling", "yoga"]) {
+                                "calories", "hiking", "swim", "cycling", "yoga",
+                                "badminton", "tennis", "basketball", "soccer",
+                                "dance", "climbing", "skiing", "rowing", "elliptical",
+                                "meditation", "tai chi"]) {
             let filter = extractWorkoutFilter(from: lower)
             // Exercise queries without explicit time words (e.g. "走了多少步", "运动了吗")
             // intuitively mean today, not last week. Same pattern as calendar.

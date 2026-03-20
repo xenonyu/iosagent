@@ -1091,16 +1091,12 @@ struct SummarySkill: ClawSkill {
                 )
                 lines.append(contentsOf: recoveryLines)
 
-                // Best and worst day for steps
-                if withData.count >= 3, let best = withData.max(by: { $0.steps < $1.steps }),
-                   let worst = withData.filter({ $0.steps > 0 }).min(by: { $0.steps < $1.steps }),
-                   best.steps > worst.steps {
-                    let fmt = DateFormatter()
-                    fmt.dateFormat = "E"
-                    fmt.locale = Locale(identifier: "zh_CN")
-                    lines.append("  🏆 最活跃：\(fmt.string(from: best.date)) \(Int(best.steps).formatted())步")
-                    lines.append("  📉 最低调：\(fmt.string(from: worst.date)) \(Int(worst.steps).formatted())步")
-                }
+                // Day-by-day activity rhythm visualization + pattern detection
+                let rhythmLines = Self.buildWeeklyActivityRhythm(
+                    withData: withData,
+                    cal: cal
+                )
+                lines.append(contentsOf: rhythmLines)
 
                 // Overall weekly health verdict with trend context + recovery awareness
                 let hrvDaysW = withData.filter { $0.hrv > 0 }
@@ -1409,6 +1405,145 @@ struct SummarySkill: ClawSkill {
         }
 
         return lines
+    }
+
+    // MARK: - Weekly Activity Rhythm
+
+    /// Builds a day-by-day visual activity chart for the weekly insight.
+    /// Shows each day's step count as a bar chart with goal markers, then detects
+    /// rhythm patterns like "front-loaded week", "alternating", or "weekend warrior".
+    private static func buildWeeklyActivityRhythm(
+        withData: [HealthSummary],
+        cal: Calendar
+    ) -> [String] {
+        // Need at least 3 days for a meaningful rhythm view
+        guard withData.count >= 3 else { return [] }
+        let steppedDays = withData.filter { $0.steps > 0 }
+        guard steppedDays.count >= 3 else { return [] }
+
+        // Sort by date
+        let sorted = steppedDays.sorted { $0.date < $1.date }
+        let maxSteps = sorted.map(\.steps).max() ?? 1
+        let avgSteps = sorted.reduce(0.0) { $0 + $1.steps } / Double(sorted.count)
+        let goalSteps: Double = 8000
+
+        let dayFmt = DateFormatter()
+        dayFmt.dateFormat = "E"
+        dayFmt.locale = Locale(identifier: "zh_CN")
+
+        var lines: [String] = []
+        lines.append("  📊 每日节奏：")
+
+        // Build visual bar for each day
+        for h in sorted {
+            let dayLabel = dayFmt.string(from: h.date)
+            let steps = h.steps
+            // Scale bar to max 8 characters
+            let barLen = maxSteps > 0 ? max(1, Int(steps / maxSteps * 8)) : 1
+            let bar = String(repeating: "▓", count: barLen) + String(repeating: "░", count: max(0, 8 - barLen))
+            let goalMark = steps >= goalSteps ? "✅" : "  "
+            let stepsStr = Int(steps).formatted()
+            lines.append("     \(dayLabel) \(bar) \(stepsStr)步 \(goalMark)")
+        }
+
+        // --- Pattern detection ---
+        let pattern = detectActivityPattern(sorted: sorted, avgSteps: avgSteps, cal: cal)
+        if !pattern.isEmpty {
+            lines.append("     \(pattern)")
+        }
+
+        return lines
+    }
+
+    /// Detects meaningful patterns in daily activity data.
+    /// Returns a single-line insight like "前半周活跃，后半周放缓" or "隔天运动的节奏".
+    private static func detectActivityPattern(
+        sorted: [HealthSummary],
+        avgSteps: Double,
+        cal: Calendar
+    ) -> String {
+        let count = sorted.count
+        guard count >= 3 else { return "" }
+
+        let goalSteps: Double = 8000
+
+        // 1. Check front-loaded vs back-loaded week
+        let mid = count / 2
+        let firstHalf = sorted.prefix(mid)
+        let secondHalf = sorted.suffix(count - mid)
+        let firstAvg = firstHalf.reduce(0.0) { $0 + $1.steps } / Double(firstHalf.count)
+        let secondAvg = secondHalf.reduce(0.0) { $0 + $1.steps } / Double(secondHalf.count)
+
+        // 2. Check alternating pattern (high-low-high or low-high-low)
+        var alternatingCount = 0
+        for i in 1..<count {
+            let prev = sorted[i - 1].steps
+            let curr = sorted[i].steps
+            let prevAbove = prev >= avgSteps
+            let currAbove = curr >= avgSteps
+            if prevAbove != currAbove { alternatingCount += 1 }
+        }
+        let isAlternating = count >= 4 && alternatingCount >= count - 2
+
+        // 3. Check weekend warrior (weekend days >> weekday average)
+        let weekdayData = sorted.filter {
+            let wd = cal.component(.weekday, from: $0.date)
+            return wd >= 2 && wd <= 6
+        }
+        let weekendData = sorted.filter {
+            let wd = cal.component(.weekday, from: $0.date)
+            return wd == 1 || wd == 7
+        }
+
+        // 4. Check steady rhythm (low variance)
+        let variance = sorted.reduce(0.0) { $0 + ($1.steps - avgSteps) * ($1.steps - avgSteps) } / Double(count)
+        let cv = avgSteps > 0 ? sqrt(variance) / avgSteps : 0 // coefficient of variation
+
+        // 5. Check streak (consecutive goal days)
+        var maxStreak = 0
+        var currentStreak = 0
+        for h in sorted {
+            if h.steps >= goalSteps {
+                currentStreak += 1
+                maxStreak = max(maxStreak, currentStreak)
+            } else {
+                currentStreak = 0
+            }
+        }
+
+        // Priority-based pattern reporting
+        if isAlternating {
+            return "💡 隔天高低交替的节奏 —— 形成了运动-休息的循环"
+        }
+
+        if cv < 0.25 {
+            return "💡 每天步数很稳定（波动 <25%）—— 节奏感很强 👏"
+        }
+
+        if !weekendData.isEmpty && !weekdayData.isEmpty {
+            let wdAvg = weekdayData.reduce(0.0) { $0 + $1.steps } / Double(weekdayData.count)
+            let weAvg = weekendData.reduce(0.0) { $0 + $1.steps } / Double(weekendData.count)
+            if weAvg > wdAvg * 1.5 && weekendData.count >= 1 {
+                return "💡 周末比工作日活跃 \(Int((weAvg / wdAvg - 1) * 100))% —— 典型的「周末战士」🏃"
+            }
+            if wdAvg > weAvg * 1.5 && weekdayData.count >= 2 {
+                return "💡 工作日比周末活跃 \(Int((wdAvg / weAvg - 1) * 100))% —— 通勤和工作带来的运动量不少"
+            }
+        }
+
+        let ratio = firstAvg > 0 ? secondAvg / firstAvg : 1
+        if ratio < 0.65 && count >= 4 {
+            return "💡 前半周活跃，后半周放缓 —— 注意保持节奏，别周末就「躺平」"
+        }
+        if ratio > 1.5 && count >= 4 {
+            return "💡 后半周发力，越来越活跃 —— 状态在上升 📈"
+        }
+
+        if maxStreak >= 3 {
+            return "💡 连续 \(maxStreak) 天达标 —— 好习惯正在养成 🔥"
+        }
+
+        return ""
     }
 
     // MARK: - Sleep Quality Breakdown

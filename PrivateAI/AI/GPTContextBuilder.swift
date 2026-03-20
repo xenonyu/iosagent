@@ -58,11 +58,16 @@ final class GPTContextBuilder {
             guard let self else { return }
 
             let now = Date()
-            let sevenDaysAgo = Calendar.current.date(byAdding: .day, value: -7, to: now) ?? now
-            let sevenDaysAhead = Calendar.current.date(byAdding: .day, value: 7, to: now) ?? now
+            let cal = Calendar.current
+            let sevenDaysAgo = cal.date(byAdding: .day, value: -7, to: now) ?? now
+            let sevenDaysAhead = cal.date(byAdding: .day, value: 7, to: now) ?? now
 
             let todayEvents = self.calendarService.todayEvents()
             let upcomingEvents = self.calendarService.fetchEvents(from: now, to: sevenDaysAhead)
+            // Also fetch past 7 days of calendar events so GPT can answer
+            // "what meetings did I have yesterday?" or "last week's schedule"
+            let pastStartOfToday = cal.startOfDay(for: now)
+            let pastEvents = self.calendarService.fetchEvents(from: sevenDaysAgo, to: pastStartOfToday)
             let recentPhotos = self.photoService.fetchAllMedia(from: sevenDaysAgo, to: now)
             let locationRecords = CDLocationRecord.fetchRecent(days: 7, in: self.coreDataContext)
             let lifeEvents = CDLifeEvent.fetchRecent(limit: 15, in: self.coreDataContext)
@@ -77,6 +82,7 @@ final class GPTContextBuilder {
                 weeklyHealth: weeklyHealth,
                 todayEvents: todayEvents,
                 upcomingEvents: upcomingEvents,
+                pastEvents: pastEvents,
                 recentPhotos: recentPhotos,
                 locationRecords: locationRecords,
                 lifeEvents: lifeEvents,
@@ -94,6 +100,7 @@ final class GPTContextBuilder {
                           weeklyHealth: [HealthSummary],
                           todayEvents: [CalendarEventItem],
                           upcomingEvents: [CalendarEventItem],
+                          pastEvents: [CalendarEventItem] = [],
                           recentPhotos: [PhotoMetadataItem],
                           locationRecords: [CDLocationRecord],
                           lifeEvents: [CDLifeEvent],
@@ -115,7 +122,7 @@ final class GPTContextBuilder {
         } else {
             unavailableData.append("健康数据（未授权或未同步）")
         }
-        if !todayEvents.isEmpty || !upcomingEvents.isEmpty {
+        if !todayEvents.isEmpty || !upcomingEvents.isEmpty || !pastEvents.isEmpty {
             availableData.append("日历日程")
         } else {
             unavailableData.append("日历日程（无日程或未授权）")
@@ -151,7 +158,7 @@ final class GPTContextBuilder {
             return "位置记录：近7天"
         }()
         let calendarEndDate = Calendar.current.date(byAdding: .day, value: 7, to: now) ?? now
-        let calendarBoundary = "日历日程：\(boundaryFmt.string(from: now))~\(boundaryFmt.string(from: calendarEndDate))（未来7天）"
+        let calendarBoundary = "日历日程：\(boundaryFmt.string(from: dataStartDate))~\(boundaryFmt.string(from: calendarEndDate))（过去7天+未来7天）"
         let lifeEventBoundary: String = {
             let timestamps = lifeEvents.compactMap { $0.timestamp }
             if let earliest = timestamps.min(), let latest = timestamps.max() {
@@ -250,7 +257,7 @@ final class GPTContextBuilder {
         }
 
         // CALENDAR
-        parts.append(calendarSection(todayEvents: todayEvents, upcoming: upcomingEvents))
+        parts.append(calendarSection(todayEvents: todayEvents, upcoming: upcomingEvents, past: pastEvents))
 
         // LOCATION
         if !locationRecords.isEmpty {
@@ -390,8 +397,47 @@ final class GPTContextBuilder {
         return lines.joined(separator: "\n")
     }
 
-    private func calendarSection(todayEvents: [CalendarEventItem], upcoming: [CalendarEventItem]) -> String {
+    private func calendarSection(todayEvents: [CalendarEventItem], upcoming: [CalendarEventItem], past: [CalendarEventItem] = []) -> String {
+        let cal = Calendar.current
+        let df = DateFormatter(); df.dateFormat = "M月d日"
+        df.locale = Locale(identifier: "zh_CN")
+        let timeFmt = DateFormatter(); timeFmt.dateFormat = "HH:mm"
+
         var lines = ["[日历日程]"]
+
+        // Past events grouped by day — enables "what did I do yesterday?" queries
+        if !past.isEmpty {
+            // Group by day
+            var dayGroups: [Date: [CalendarEventItem]] = [:]
+            for e in past {
+                let dayStart = cal.startOfDay(for: e.startDate)
+                dayGroups[dayStart, default: []].append(e)
+            }
+            let sortedDays = dayGroups.keys.sorted(by: >)  // newest first
+
+            let dayNameFmt = DateFormatter()
+            dayNameFmt.locale = Locale(identifier: "zh_CN")
+            dayNameFmt.dateFormat = "M月d日（EEEE）"
+
+            lines.append("过去7天日程：")
+            for day in sortedDays.prefix(7) {
+                guard let dayEvents = dayGroups[day] else { continue }
+                let dayLabel = cal.isDateInYesterday(day) ? "昨天" : dayNameFmt.string(from: day)
+                let eventDescs = dayEvents.prefix(5).map { e -> String in
+                    let timeStr = e.isAllDay ? "全天" : "\(timeFmt.string(from: e.startDate))–\(timeFmt.string(from: e.endDate))"
+                    var desc = "\(timeStr) \(e.title)"
+                    if !e.location.isEmpty { desc += "（\(e.location)）" }
+                    if let label = e.attendeeLabel { desc += " \(label)" }
+                    return desc
+                }
+                lines.append("  \(dayLabel)：\(eventDescs.joined(separator: "；"))")
+                if dayEvents.count > 5 {
+                    lines.append("    …还有\(dayEvents.count - 5)项")
+                }
+            }
+        }
+
+        // Today's events
         if todayEvents.isEmpty {
             lines.append("今天：无日程")
         } else {
@@ -403,12 +449,11 @@ final class GPTContextBuilder {
                 lines.append(line)
             }
         }
-        let cal = Calendar.current
+
+        // Upcoming events (future, excluding today)
         let futureEvents = upcoming.filter { !cal.isDateInToday($0.startDate) }.prefix(10)
         if !futureEvents.isEmpty {
             lines.append("近期：")
-            let df = DateFormatter(); df.dateFormat = "M月d日"
-            let timeFmt = DateFormatter(); timeFmt.dateFormat = "HH:mm"
             for e in futureEvents {
                 let dateStr = df.string(from: e.startDate)
                 let timeStr = e.isAllDay ? "全天" : "\(timeFmt.string(from: e.startDate))–\(timeFmt.string(from: e.endDate))"

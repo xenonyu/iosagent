@@ -100,18 +100,56 @@ final class GPTContextBuilder {
         dateFmt.dateFormat = "yyyy年M月d日 EEEE HH:mm"
         let weekday = dateFmt.string(from: now)
 
+        // Build data availability summary so GPT knows what's available at a glance
+        var availableData: [String] = []
+        var unavailableData: [String] = []
+        if todayHealth.steps > 0 || todayHealth.exerciseMinutes > 0 || todayHealth.sleepHours > 0 || todayHealth.heartRate > 0 {
+            availableData.append("健康数据")
+        } else {
+            unavailableData.append("健康数据（未授权或未同步）")
+        }
+        if !todayEvents.isEmpty || !upcomingEvents.isEmpty {
+            availableData.append("日历日程")
+        } else {
+            unavailableData.append("日历日程（无日程或未授权）")
+        }
+        if !locationRecords.isEmpty {
+            availableData.append("位置记录")
+        } else {
+            unavailableData.append("位置记录（暂无记录或未授权）")
+        }
+        if !recentPhotos.isEmpty {
+            availableData.append("照片统计")
+        } else {
+            unavailableData.append("照片统计（暂无照片或未授权）")
+        }
+        if !lifeEvents.isEmpty {
+            availableData.append("生活记录")
+        } else {
+            unavailableData.append("生活记录（暂无记录）")
+        }
+
+        let availSummary = availableData.isEmpty ? "无" : availableData.joined(separator: "、")
+        let unavailSummary = unavailableData.isEmpty ? "" : "\n不可用：\(unavailableData.joined(separator: "、"))"
+
         parts.append("""
         [SYSTEM]
-        你是 iosclaw，运行在用户 iPhone 上的私人 AI 助理。你可以访问用户的健康、位置、日历、照片、生活记录等本地数据。
+        你是 iosclaw，运行在用户 iPhone 上的私人 AI 助理。你可以读取用户的健康、位置、日历、照片、生活记录等本地数据。
         当前时间：\(weekday)
+        可用数据源：\(availSummary)\(unavailSummary)
+
+        能力边界：
+        - 你只能读取数据，不能创建、修改或保存任何记录。如果用户想记录事情，告诉他可以在 App 的生活记录页面手动添加。
+        - 你不能发送消息、设置闹钟、打电话等操作类任务。
 
         回复要求：
         - 用自然、友好、简洁的中文回答。如果用户用英文提问，用英文回答。
         - 引用具体数据时，必须使用下方提供的真实数据，不要编造任何数字。
         - 如果某项数据为 0 或为空，坦诚说明「暂无该数据」或「尚未授权」，不要猜测。
-        - 回答健康、运动相关问题时，优先引用准确数值，再给出简短解读。
-        - 涉及多天数据时，可引用「近7天趋势」表格进行对比分析。
+        - 回答健康、运动相关问题时，优先引用准确数值，再给出简短解读或鼓励。
+        - 涉及多天数据时，可引用「近7天趋势」进行对比分析，指出趋势变化。
         - 不要重复罗列所有数据，只回答用户问到的内容。
+        - 回答要有温度感，像一个了解用户的私人助手，不是冰冷的数据报表。
         """)
 
         // USER PROFILE
@@ -153,10 +191,14 @@ final class GPTContextBuilder {
             parts.append(lifeEventsSection(lifeEvents))
         }
 
-        // CONVERSATION HISTORY
+        // CONVERSATION HISTORY (truncated to save tokens)
         if !conversationHistory.isEmpty {
-            let historyLines = conversationHistory.suffix(10).map { msg in
-                (msg.isUser ? "用户：" : "助理：") + msg.content
+            let historyLines = conversationHistory.suffix(6).map { msg in
+                let prefix = msg.isUser ? "用户：" : "助理："
+                let content = msg.content
+                // Truncate long assistant replies to save tokens
+                let truncated = content.count > 150 ? String(content.prefix(150)) + "…" : content
+                return prefix + truncated
             }
             parts.append("[对话历史]\n" + historyLines.joined(separator: "\n"))
         }

@@ -10,6 +10,7 @@ final class GPTContextBuilder {
     private let calendarService: CalendarService
     private let photoService: PhotoMetadataService
     private let locationService: LocationService
+    private let photoSearchService: PhotoSearchService
     private var profile: UserProfileData
 
     init(context: NSManagedObjectContext,
@@ -23,6 +24,7 @@ final class GPTContextBuilder {
         self.calendarService = calendarService
         self.photoService = photoService
         self.locationService = locationService
+        self.photoSearchService = PhotoSearchService(context: context)
         self.profile = profile
     }
 
@@ -65,6 +67,9 @@ final class GPTContextBuilder {
             let locationRecords = CDLocationRecord.fetchRecent(days: 7, in: self.coreDataContext)
             let lifeEvents = CDLifeEvent.fetchRecent(limit: 15, in: self.coreDataContext)
 
+            // Run photo search when query looks photo-related so GPT can describe results
+            let photoResults = self.searchPhotosIfNeeded(query: userQuery)
+
             let prompt = self.assemble(
                 userQuery: userQuery,
                 conversationHistory: conversationHistory,
@@ -74,7 +79,8 @@ final class GPTContextBuilder {
                 upcomingEvents: upcomingEvents,
                 recentPhotos: recentPhotos,
                 locationRecords: locationRecords,
-                lifeEvents: lifeEvents
+                lifeEvents: lifeEvents,
+                photoSearchResults: photoResults
             )
             completion(prompt)
         }
@@ -90,7 +96,8 @@ final class GPTContextBuilder {
                           upcomingEvents: [CalendarEventItem],
                           recentPhotos: [PhotoMetadataItem],
                           locationRecords: [CDLocationRecord],
-                          lifeEvents: [CDLifeEvent]) -> String {
+                          lifeEvents: [CDLifeEvent],
+                          photoSearchResults: [PhotoSearchService.SearchResult] = []) -> String {
         var parts: [String] = []
 
         // SYSTEM
@@ -184,6 +191,11 @@ final class GPTContextBuilder {
         // PHOTO STATS
         if !recentPhotos.isEmpty {
             parts.append(photoSection(recentPhotos))
+        }
+
+        // PHOTO SEARCH RESULTS (when user asks about specific photos)
+        if !photoSearchResults.isEmpty {
+            parts.append(photoSearchSection(photoSearchResults))
         }
 
         // LIFE EVENTS
@@ -376,6 +388,78 @@ final class GPTContextBuilder {
             }
             lines.append(line)
         }
+        return lines.joined(separator: "\n")
+    }
+
+    // MARK: - Photo Search
+
+    /// Detects photo-related queries and runs a local photo search.
+    private func searchPhotosIfNeeded(query: String) -> [PhotoSearchService.SearchResult] {
+        let lower = query.lowercased()
+        let photoKeywords = [
+            "找照片", "搜照片", "找图片", "搜图片", "找找照片", "照片搜索",
+            "帮我找", "给我找", "搜一下", "找一下",
+            "find photo", "search photo", "show me photo",
+            "的照片", "的图片", "的相片",
+            "photo of", "picture of",
+            "拍的", "拍了", "拍过"
+        ]
+        guard photoKeywords.contains(where: { lower.contains($0) }) else { return [] }
+
+        let parsed = photoSearchService.parseQuery(query)
+        // Only search if we have meaningful criteria (keywords or location)
+        guard !parsed.keywords.isEmpty || parsed.location != nil || parsed.isSelfie == true else { return [] }
+        return photoSearchService.search(query: parsed, limit: 20)
+    }
+
+    private func photoSearchSection(_ results: [PhotoSearchService.SearchResult]) -> String {
+        let dateFmt = DateFormatter()
+        dateFmt.dateFormat = "M月d日"
+        let total = results.count
+        let withLocation = results.filter { $0.latitude != 0 }.count
+
+        var lines = ["[照片搜索结果]"]
+        lines.append("找到 \(total) 张匹配的照片" + (total >= 20 ? "（显示前20张）" : ""))
+
+        // Date range of results
+        let dates = results.compactMap { $0.date }
+        if let earliest = dates.min(), let latest = dates.max() {
+            if Calendar.current.isDate(earliest, inSameDayAs: latest) {
+                lines.append("拍摄日期：\(dateFmt.string(from: earliest))")
+            } else {
+                lines.append("拍摄日期范围：\(dateFmt.string(from: earliest)) ~ \(dateFmt.string(from: latest))")
+            }
+        }
+
+        if withLocation > 0 {
+            lines.append("含地理位置：\(withLocation) 张")
+        }
+
+        // Top tags across all results for context
+        var tagCounts: [String: Int] = [:]
+        for r in results {
+            for tag in r.tags where !tag.isEmpty {
+                tagCounts[tag, default: 0] += 1
+            }
+        }
+        let topTags = tagCounts.sorted { $0.value > $1.value }.prefix(8).map { $0.key }
+        if !topTags.isEmpty {
+            lines.append("主要标签：\(topTags.joined(separator: "、"))")
+        }
+
+        // Brief per-photo details (first 5)
+        if results.count <= 5 {
+            lines.append("详情：")
+            for (i, r) in results.enumerated() {
+                var detail = "  \(i + 1). "
+                if let d = r.date { detail += "\(dateFmt.string(from: d)) " }
+                if !r.tags.prefix(3).isEmpty { detail += "[\(r.tags.prefix(3).joined(separator: ","))]" }
+                if r.faceCount > 0 { detail += " \(r.faceCount)人" }
+                lines.append(detail)
+            }
+        }
+
+        lines.append("提示：照片已在 App 界面以图片网格展示给用户，你只需用文字描述搜索结果概况。")
         return lines.joined(separator: "\n")
     }
 

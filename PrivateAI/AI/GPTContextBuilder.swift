@@ -358,6 +358,7 @@ final class GPTContextBuilder {
         - 日历数据中包含预计算的「空闲时段」（今天剩余空闲 / 明天空闲时段）。用户问「有空吗」「什么时候能约」「忙不忙」时，直接引用这些空闲时段回答，不需要自己计算事件间隔。空闲时段仅覆盖8:00–22:00的活跃时间。
         - 日程中带有 🔄 标记的是重复日程（如每周例会、每天站会），「固定日程」汇总列出了所有重复事件及其频率。用户问「这个会每周都有吗」「有哪些固定会议」「下周还有这个会吗」时，直接引用重复频率回答。注意：重复日程的未来实例已包含在未来日程中，无需额外推测。
         - 对话历史中的内容是之前的对话，注意用户可能会用「那…呢」「昨天的呢」「详细说说」等方式追问。如果用户的问题很短且含指代词（如「那个」「它」「上面说的」），结合对话历史推断用户指的是什么。
+        - 如果[特别日期提醒]中有即将到来的生日（≤3天），在问候性对话（「你好」「今天怎么样」「有什么特别的吗」等）中可以自然地主动提及，但不要在无关话题中硬塞。生日当天应热情祝贺。
 
         回复格式：
         - 简单问题（如「今天几步」「心率多少」）：直接回答数值+一句话点评，不超过2-3行。
@@ -397,6 +398,17 @@ final class GPTContextBuilder {
 
         if !profileParts.isEmpty {
             parts.append("[用户信息]\n\(profileParts.joined(separator: "\n"))")
+        }
+
+        // SPECIAL DATE REMINDERS — birthdays of user and family members within 7 days.
+        // This is the "personal mirror" differentiator: GPT can proactively say "你妈妈
+        // 后天过生日" in a morning greeting, or respond to "这周有什么特别的" with birthday
+        // context. Without explicit proximity hints, GPT only sees "生日：5月15日" in the
+        // profile section and has to mentally compute how close that is to today — which it
+        // often doesn't bother doing, missing a huge personalization opportunity.
+        let specialDates = buildSpecialDateReminders(now: now)
+        if !specialDates.isEmpty {
+            parts.append(specialDates)
         }
 
         // HEALTH REFERENCE BENCHMARKS — age-adjusted so GPT can give personalized insights
@@ -1294,6 +1306,105 @@ final class GPTContextBuilder {
         return "[时间聚焦]\n\(hints.joined(separator: "\n"))"
     }
 
+    // MARK: - Special Date Reminders
+
+    /// Checks the user's and family members' birthdays against the current date
+    /// and surfaces upcoming birthdays within 7 days. Also detects "today is the
+    /// birthday" so GPT can proactively congratulate.
+    ///
+    /// This is a core personalization feature: the assistant should feel like it
+    /// "knows" the user. A generic AI can't tell you your mom's birthday is in
+    /// 2 days — iosclaw can, because it has the profile data.
+    private func buildSpecialDateReminders(now: Date) -> String {
+        let cal = Calendar.current
+        let dateFmt = DateFormatter(); dateFmt.dateFormat = "M月d日"
+        dateFmt.locale = Locale(identifier: "zh_CN")
+        let weekdayFmt = DateFormatter()
+        weekdayFmt.locale = Locale(identifier: "zh_CN")
+        weekdayFmt.dateFormat = "EEEE"
+
+        var reminders: [String] = []
+
+        /// Computes how many days until the next occurrence of a birthday (month+day)
+        /// relative to `now`. Returns 0 if today is the birthday, 1–7 for upcoming,
+        /// or nil if >7 days away.
+        func daysUntilBirthday(_ birthday: Date) -> Int? {
+            let bdComponents = cal.dateComponents([.month, .day], from: birthday)
+            guard let bdMonth = bdComponents.month, let bdDay = bdComponents.day else { return nil }
+
+            let todayComponents = cal.dateComponents([.year, .month, .day], from: now)
+            guard let thisYear = todayComponents.year else { return nil }
+
+            // Build this year's birthday date
+            var targetComponents = DateComponents()
+            targetComponents.year = thisYear
+            targetComponents.month = bdMonth
+            targetComponents.day = bdDay
+            guard let thisYearBD = cal.date(from: targetComponents) else { return nil }
+
+            let todayStart = cal.startOfDay(for: now)
+            let bdStart = cal.startOfDay(for: thisYearBD)
+            let diff = cal.dateComponents([.day], from: todayStart, to: bdStart).day ?? 999
+
+            if diff >= 0 && diff <= 7 {
+                return diff
+            }
+
+            // Birthday may have passed this year — check next year
+            if diff < 0 {
+                targetComponents.year = thisYear + 1
+                if let nextYearBD = cal.date(from: targetComponents) {
+                    let nextDiff = cal.dateComponents([.day], from: todayStart, to: cal.startOfDay(for: nextYearBD)).day ?? 999
+                    if nextDiff >= 0 && nextDiff <= 7 {
+                        return nextDiff
+                    }
+                }
+            }
+            return nil
+        }
+
+        // Check user's own birthday
+        if let userBD = profile.birthday, let daysAway = daysUntilBirthday(userBD) {
+            let age = cal.dateComponents([.year], from: userBD, to: now).year ?? 0
+            // For "today", the age is already incremented; for upcoming, it will be next age
+            let upcomingAge = daysAway == 0 ? age : age + 1
+            let ageNote = upcomingAge > 0 ? "（\(upcomingAge)岁）" : ""
+
+            if daysAway == 0 {
+                reminders.append("🎂 今天是你的生日！\(ageNote)生日快乐！GPT 可以主动送上祝福。")
+            } else if daysAway == 1 {
+                reminders.append("🎂 明天是你的生日\(ageNote)")
+            } else if daysAway == 2 {
+                reminders.append("🎂 后天是你的生日\(ageNote)")
+            } else {
+                let bdDate = cal.date(byAdding: .day, value: daysAway, to: cal.startOfDay(for: now))!
+                reminders.append("🎂 \(daysAway)天后（\(dateFmt.string(from: bdDate))，\(weekdayFmt.string(from: bdDate))）是你的生日\(ageNote)")
+            }
+        }
+
+        // Check family members' birthdays
+        for member in profile.familyMembers {
+            guard let bd = member.birthday, let daysAway = daysUntilBirthday(bd) else { continue }
+
+            let relation = member.relation.isEmpty ? member.name : member.relation
+            let name = member.name
+
+            if daysAway == 0 {
+                reminders.append("🎂 今天是\(relation)\(name)的生日！可以提醒用户送祝福或准备礼物。")
+            } else if daysAway == 1 {
+                reminders.append("🎂 明天是\(relation)\(name)的生日，可以提醒用户提前准备。")
+            } else if daysAway == 2 {
+                reminders.append("🎂 后天是\(relation)\(name)的生日。")
+            } else {
+                let bdDate = cal.date(byAdding: .day, value: daysAway, to: cal.startOfDay(for: now))!
+                reminders.append("🎂 \(daysAway)天后（\(dateFmt.string(from: bdDate))，\(weekdayFmt.string(from: bdDate))）是\(relation)\(name)的生日。")
+            }
+        }
+
+        guard !reminders.isEmpty else { return "" }
+        return "[特别日期提醒]\n以下日期在未来7天内，在问候、总结、或用户问「有什么特别的」时可主动提及：\n" + reminders.joined(separator: "\n")
+    }
+
     // MARK: - Section Builders
 
     /// Generates age-adjusted health reference benchmarks so GPT can provide
@@ -1943,6 +2054,39 @@ final class GPTContextBuilder {
             items.append("\(exDays.count)/\(days.count)天运动共\(totalMin)分钟（日均\(avgMin)分钟）")
         } else {
             items.append("无运动记录")
+        }
+
+        // Per-workout-type breakdown — lets GPT directly answer "这周跑步了几次？"
+        // or "上周游泳了多长时间？" without scanning the separate [运动记录] section.
+        // GPT frequently miscounts when manually searching through 15 individual workout
+        // entries; pre-aggregating by type eliminates this error class entirely.
+        let allWorkouts = days.flatMap(\.workouts)
+        if !allWorkouts.isEmpty {
+            // Group by typeName (e.g. "跑步", "游泳") and aggregate count + duration + calories
+            var typeStats: [String: (emoji: String, count: Int, totalMins: Int, totalCal: Int, totalDistM: Double)] = [:]
+            var typeOrder: [String] = []
+            for w in allWorkouts {
+                let name = w.typeName
+                if typeStats[name] == nil {
+                    typeOrder.append(name)
+                    typeStats[name] = (emoji: w.typeEmoji, count: 0, totalMins: 0, totalCal: 0, totalDistM: 0)
+                }
+                typeStats[name]!.count += 1
+                typeStats[name]!.totalMins += Int(w.duration / 60)
+                typeStats[name]!.totalCal += Int(w.totalCalories)
+                typeStats[name]!.totalDistM += w.totalDistance
+            }
+            // Format each type: "🏃跑步3次共45分钟12.5km 850kcal"
+            let typeParts = typeOrder.prefix(6).compactMap { name -> String? in
+                guard let s = typeStats[name] else { return nil }
+                var part = "\(s.emoji)\(name)\(s.count)次\(s.totalMins)分钟"
+                if s.totalDistM > 100 {
+                    part += "\(String(format: "%.1f", s.totalDistM / 1000))km"
+                }
+                if s.totalCal > 0 { part += " \(s.totalCal)kcal" }
+                return part
+            }
+            items.append("运动详情：\(typeParts.joined(separator: "、"))")
         }
 
         // Stand time — third Activity Ring

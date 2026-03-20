@@ -213,7 +213,8 @@ struct LocationSkill: ClawSkill {
             } else if daysSince <= 7 {
                 lines.append("⏰ \(daysSince) 天前去过")
             } else if daysSince <= 30 {
-                lines.append("⏰ \(daysSince / 7) 周前去过")
+                let weeks = (daysSince + 3) / 7  // round to nearest week instead of truncating
+                lines.append("⏰ 约 \(max(weeks, 1)) 周前去过")
             } else {
                 lines.append("⏰ 已经 \(daysSince) 天没去了")
             }

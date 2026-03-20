@@ -572,12 +572,10 @@ struct PhotoSkill: ClawSkill {
             if result.faceCount > 0 {
                 parts.append("\(result.faceCount)人")
             }
-            // Show top 2 readable tags
-            let readableTags = result.tags.prefix(3)
-                .filter { !$0.isEmpty }
-                .joined(separator: "/")
-            if !readableTags.isEmpty {
-                parts.append("[\(readableTags)]")
+            // Show top readable tags, translated to Chinese
+            let localizedTags = Self.localizeTags(Array(result.tags.prefix(3)))
+            if !localizedTags.isEmpty {
+                parts.append("[\(localizedTags.joined(separator: "/"))]")
             }
             let relevance = result.relevanceScore > 15 ? "⭐" : (result.relevanceScore > 5 ? "✓" : "")
             lines.append("  · \(parts.joined(separator: " "))\(relevance.isEmpty ? "" : " \(relevance)")")
@@ -593,15 +591,22 @@ struct PhotoSkill: ClawSkill {
         return lines.joined(separator: "\n")
     }
 
-    /// Summarizes the most common tags across search results.
+    /// Summarizes the most common tags across search results, localized to Chinese.
     private func buildTagSummary(results: [PhotoSearchService.SearchResult]) -> String {
+        // Count raw tags first, then localize for display
         var tagCounts: [String: Int] = [:]
         for result in results {
             for tag in result.tags where !tag.isEmpty {
                 tagCounts[tag.lowercased(), default: 0] += 1
             }
         }
-        let topTags = tagCounts.sorted { $0.value > $1.value }
+        // Localize and merge: "ocean"(5) + "sea"(3) both map to "大海" → 8
+        var localizedCounts: [String: Int] = [:]
+        for (tag, count) in tagCounts {
+            let localized = Self.localizeTag(tag)
+            localizedCounts[localized, default: 0] += count
+        }
+        let topTags = localizedCounts.sorted { $0.value > $1.value }
             .prefix(5)
             .map { $0.key }
         return topTags.joined(separator: "、")
@@ -993,5 +998,79 @@ struct PhotoSkill: ClawSkill {
 
     private func containsAny(_ text: String, _ keywords: [String]) -> Bool {
         keywords.contains { text.contains($0) }
+    }
+
+    // MARK: - Vision Tag Localization
+
+    /// Maps raw English Vision Framework tags to user-friendly Chinese labels.
+    /// Tags not in the dictionary are returned as-is (already Chinese or unknown).
+    private static let tagLocalization: [String: String] = [
+        // People
+        "person": "人物", "people": "人物", "face": "人脸", "portrait": "人像",
+        "selfie": "自拍", "group": "合影", "crowd": "人群", "baby": "婴儿", "child": "小孩",
+        // Animals
+        "cat": "猫", "kitten": "小猫", "dog": "狗", "puppy": "小狗",
+        "bird": "鸟", "fish": "鱼", "animal": "动物", "pet": "宠物",
+        "horse": "马", "rabbit": "兔子", "insect": "昆虫", "butterfly": "蝴蝶",
+        // Nature & Scenery
+        "landscape": "风景", "scenery": "风景", "nature": "自然",
+        "mountain": "山", "hill": "山丘", "valley": "山谷",
+        "beach": "海滩", "ocean": "大海", "sea": "大海", "coast": "海岸", "wave": "海浪",
+        "lake": "湖", "river": "河流", "water": "水", "waterfall": "瀑布",
+        "sky": "天空", "cloud": "云", "sunset": "日落", "sunrise": "日出",
+        "tree": "树", "forest": "森林", "flower": "花", "plant": "植物", "garden": "花园",
+        "field": "田野", "grass": "草地", "park": "公园",
+        "snow": "雪", "winter": "冬景", "ice": "冰", "skiing": "滑雪",
+        "rain": "雨", "fog": "雾",
+        // Urban & Architecture
+        "building": "建筑", "architecture": "建筑", "house": "房屋", "tower": "塔",
+        "bridge": "桥", "church": "教堂", "temple": "寺庙", "castle": "城堡",
+        "city": "城市", "street": "街道", "urban": "城市", "road": "道路", "traffic": "交通",
+        "night": "夜景", "light": "灯光", "neon": "霓虹",
+        // Food & Drink
+        "food": "美食", "meal": "餐食", "restaurant": "餐厅", "dish": "菜品",
+        "dessert": "甜品", "cake": "蛋糕", "coffee": "咖啡", "drink": "饮品", "fruit": "水果",
+        "bread": "面包", "wine": "酒", "tea": "茶",
+        // Transport
+        "car": "汽车", "vehicle": "车辆", "bus": "公交", "train": "火车",
+        "airplane": "飞机", "boat": "船", "bicycle": "自行车", "motorcycle": "摩托车",
+        // Indoor / Outdoor
+        "indoor": "室内", "room": "房间", "interior": "室内",
+        "outdoor": "户外", "hiking": "徒步", "camping": "露营",
+        // Activities & Objects
+        "sport": "运动", "gym": "健身", "swimming": "游泳", "running": "跑步",
+        "book": "书", "screen": "屏幕", "text": "文字", "sign": "标牌",
+        "art": "艺术", "painting": "画作", "music": "音乐",
+        "toy": "玩具", "gift": "礼物", "clothing": "服装", "hat": "帽子",
+    ]
+
+    /// Translates a single Vision tag to Chinese. Returns the original if no mapping exists
+    /// and the tag is already non-ASCII (likely Chinese), otherwise returns the English tag
+    /// with parenthetical hint.
+    private static func localizeTag(_ tag: String) -> String {
+        let key = tag.lowercased().trimmingCharacters(in: .whitespaces)
+        if let localized = tagLocalization[key] {
+            return localized
+        }
+        // If the tag already contains CJK characters, keep it as-is
+        if key.unicodeScalars.contains(where: { $0.value >= 0x4E00 && $0.value <= 0x9FFF }) {
+            return tag
+        }
+        return tag
+    }
+
+    /// Translates an array of Vision tags to Chinese, removing duplicates that map
+    /// to the same Chinese label (e.g. "ocean" and "sea" both → "大海").
+    private static func localizeTags(_ tags: [String]) -> [String] {
+        var seen = Set<String>()
+        var result: [String] = []
+        for tag in tags where !tag.isEmpty {
+            let localized = localizeTag(tag)
+            if !seen.contains(localized) {
+                seen.insert(localized)
+                result.append(localized)
+            }
+        }
+        return result
     }
 }

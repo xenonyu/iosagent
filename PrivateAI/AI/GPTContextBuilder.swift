@@ -299,6 +299,7 @@ final class GPTContextBuilder {
         - 引用具体数据时，必须使用下方提供的真实数据，不要编造任何数字。
         - 如果某项数据为 0 或为空，坦诚说明「暂无该数据」或「尚未授权」，不要猜测。
         - 回答健康、运动相关问题时，优先引用准确数值，再结合[健康参考标准]给出个性化解读（如「离建议的7000步还差1500步」），不要只说数字。
+        - ⚠️ 今日健康数据标注了「截至X点」。如果现在还在上午或下午，今天的步数/运动/卡路里等数据还会继续增长，不要过早下结论说「今天步数偏少」「运动不够」。应该说「截至目前…」或「到目前为止…」，必要时可鼓励用户继续保持。只有晚上10点之后的数据才接近当天最终值。
         - 涉及多天数据时，可引用「近7天趋势」进行对比分析，指出趋势变化。
         - 周统计中会标注「X天中Y天有运动」，回答时要如实反映活跃天数，不要把少数几天的数据当作每天都达到了。例如7天中2天运动共60分钟，应该说「这周运动了2天，共60分钟」，而不是「日均运动30分钟」。
         - 不要重复罗列所有数据，只回答用户问到的内容。
@@ -581,7 +582,22 @@ final class GPTContextBuilder {
     private func healthSection(_ h: HealthSummary,
                                weeklyHealth: [HealthSummary] = [],
                                hourOfDay: Int = Calendar.current.component(.hour, from: Date())) -> String {
-        var lines = ["[今日健康数据]"]
+        // Add time-of-day context so GPT knows this is partial-day data.
+        // Without this, GPT sees "步数：5000" at 10am and might say "偏少",
+        // when actually 5000 steps by 10am is excellent progress.
+        let timeContext: String
+        if hourOfDay < 8 {
+            timeContext = "清晨，数据刚开始积累"
+        } else if hourOfDay < 12 {
+            timeContext = "截至上午\(hourOfDay)点，数据持续更新中"
+        } else if hourOfDay < 18 {
+            timeContext = "截至下午\(hourOfDay > 12 ? hourOfDay - 12 : hourOfDay)点，今天还在继续"
+        } else if hourOfDay < 22 {
+            timeContext = "截至晚上\(hourOfDay > 12 ? hourOfDay - 12 : hourOfDay)点，接近一天结束"
+        } else {
+            timeContext = "截至晚\(hourOfDay > 12 ? hourOfDay - 12 : hourOfDay)点，今天即将结束"
+        }
+        var lines = ["[今日健康数据]（\(timeContext)）"]
 
         // Determine if HealthKit is authorized by checking for any data today or
         // in the weekly trend. When authorized, we explicitly show zero-value key
@@ -700,12 +716,17 @@ final class GPTContextBuilder {
         // Show oldest→newest so GPT can naturally read the trend direction
         let chronological = Array(summaries.prefix(7).reversed())
         for s in chronological {
-            // Include weekday name (周一~周日) so GPT can answer "周三运动了吗？" without date math
+            // Include weekday name (周一~周日) so GPT can answer "周三运动了吗？" without date math.
+            // Also include "前天" for consistency with calendar/location/life-event sections —
+            // when user asks "前天走了多少步", GPT can directly match the label.
             let dayName: String
             if cal.isDateInToday(s.date) {
                 dayName = "今天"
             } else if cal.isDateInYesterday(s.date) {
                 dayName = "昨天"
+            } else if let twoDaysAgo = cal.date(byAdding: .day, value: -2, to: cal.startOfDay(for: Date())),
+                      cal.isDate(s.date, inSameDayAs: twoDaysAgo) {
+                dayName = "前天"
             } else {
                 dayName = weekdayFmt.string(from: s.date)
             }
@@ -1196,6 +1217,9 @@ final class GPTContextBuilder {
                 dayLabel = "今天"
             } else if cal.isDateInYesterday(item.date) {
                 dayLabel = "昨天"
+            } else if let twoDaysAgo = cal.date(byAdding: .day, value: -2, to: cal.startOfDay(for: Date())),
+                      cal.isDate(item.date, inSameDayAs: twoDaysAgo) {
+                dayLabel = "前天"
             } else {
                 dayLabel = "\(dateFmt.string(from: item.date))(\(weekdayFmt.string(from: item.date)))"
             }
@@ -1255,6 +1279,9 @@ final class GPTContextBuilder {
                 dayName = "昨晚"
             } else if cal.isDateInYesterday(s.date) {
                 dayName = "前晚"
+            } else if let threeDaysAgo = cal.date(byAdding: .day, value: -2, to: cal.startOfDay(for: Date())),
+                      cal.isDate(s.date, inSameDayAs: threeDaysAgo) {
+                dayName = "大前晚"
             } else {
                 dayName = weekdayFmt.string(from: prevDay) + "晚"
             }

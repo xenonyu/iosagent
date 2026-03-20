@@ -2602,8 +2602,12 @@ final class GPTContextBuilder {
         // Sleep schedule metrics — average bedtime, wake time, and regularity.
         // Pre-computed so GPT can directly answer "我一般几点睡？几点起？" and
         // "我睡眠规律吗？" without manually averaging 14 data points.
-        let onsets = daysWithSleep.compactMap { $0.sleepOnset }
-        let wakes = daysWithSleep.compactMap { $0.wakeTime }
+        // IMPORTANT: Use `chronological` (oldest→newest) not `daysWithSleep` (newest→oldest).
+        // The bedtime drift analysis below compares first-half (older) vs second-half (newer)
+        // averages, so the order must be chronological. Using daysWithSleep inverts the
+        // trend direction — GPT would say "入睡渐早" when the user is actually sleeping later.
+        let onsets = chronological.compactMap { $0.sleepOnset }
+        let wakes = chronological.compactMap { $0.wakeTime }
 
         // Helper: convert time to minutes-since-18:00 (handles cross-midnight bedtimes)
         let toNormalizedMinutes: (Date) -> Double = { time in

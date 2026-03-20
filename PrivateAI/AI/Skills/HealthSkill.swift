@@ -3846,20 +3846,160 @@ struct HealthSkill: ClawSkill {
                 lines.append("📝 目前只有 1 条记录，持续记录后我可以帮你分析体重趋势。")
             }
 
-            // Insight: correlate with exercise if weight trend is notable
+            // --- Sparkline weight trend ---
+            if weightDays.count >= 3 {
+                let sorted = weightDays.sorted { $0.date < $1.date }
+                let sparkChars: [Character] = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"]
+                let weights = sorted.map { $0.bodyMassKg }
+                let minW = weights.min() ?? 0
+                let maxW = weights.max() ?? 1
+                let range_ = maxW - minW
+                let spark: [Character]
+                if range_ < 0.1 {
+                    // Almost no variation — flat line
+                    spark = sorted.map { _ in sparkChars[4] }
+                } else {
+                    spark = weights.map { w -> Character in
+                        let normalized = min(max((w - minW) / range_, 0), 1)
+                        let idx = min(Int(normalized * 7), 7)
+                        return sparkChars[idx]
+                    }
+                }
+                lines.append("\n📈 体重趋势：\(String(spark))  \(String(format: "%.1f", minW))~\(String(format: "%.1f", maxW)) kg")
+            }
+
+            // --- Sleep × Weight correlation ---
+            // Research shows poor sleep disrupts hunger hormones (ghrelin/leptin),
+            // leading to weight gain. Surface this personal pattern from HealthKit data.
+            if weightDays.count >= 5 {
+                // Match weight days with their previous night's sleep
+                let sleepWeightPairs: [(sleep: Double, weight: Double)] = weightDays.compactMap { day in
+                    // Find the sleep data from the day before (sleep is recorded on wake-up day)
+                    let prevDay = allSummaries.first { s in
+                        cal.isDate(s.date, inSameDayAs: cal.date(byAdding: .day, value: -1, to: day.date) ?? day.date)
+                    }
+                    guard let sleepHours = prevDay?.sleepHours, sleepHours > 0 else { return nil }
+                    return (sleep: sleepHours, weight: day.bodyMassKg)
+                }
+
+                if sleepWeightPairs.count >= 4 {
+                    let goodSleep = sleepWeightPairs.filter { $0.sleep >= 7 }
+                    let poorSleep = sleepWeightPairs.filter { $0.sleep < 6 }
+
+                    if goodSleep.count >= 2 && poorSleep.count >= 2 {
+                        let goodAvgWeight = goodSleep.reduce(0.0) { $0 + $1.weight } / Double(goodSleep.count)
+                        let poorAvgWeight = poorSleep.reduce(0.0) { $0 + $1.weight } / Double(poorSleep.count)
+                        let diff = poorAvgWeight - goodAvgWeight
+
+                        lines.append("")
+                        lines.append("😴↔️⚖️ 睡眠与体重关联")
+                        if diff > 0.2 {
+                            lines.append("   睡眠不足 (<6h) 的日子体重平均高 \(String(format: "%.1f", diff)) kg")
+                            lines.append("   充足睡眠有助于控制食欲和代谢，建议保持 7h+ 睡眠。")
+                        } else if diff < -0.2 {
+                            lines.append("   你的数据显示睡眠时长与体重波动暂无明显关联。")
+                        } else {
+                            lines.append("   睡眠充足与不足时体重差异不大，代谢状态较稳定。👍")
+                        }
+                    }
+                }
+            }
+
+            // --- Weekday vs Weekend pattern ---
+            if weightDays.count >= 7 {
+                let weekdayWeights = weightDays.filter {
+                    let wd = cal.component(.weekday, from: $0.date)
+                    return wd >= 2 && wd <= 6 // Mon-Fri
+                }
+                let weekendWeights = weightDays.filter {
+                    let wd = cal.component(.weekday, from: $0.date)
+                    return wd == 1 || wd == 7 // Sun, Sat
+                }
+
+                if weekdayWeights.count >= 3 && weekendWeights.count >= 2 {
+                    let wdAvg = weekdayWeights.reduce(0.0) { $0 + $1.bodyMassKg } / Double(weekdayWeights.count)
+                    let weAvg = weekendWeights.reduce(0.0) { $0 + $1.bodyMassKg } / Double(weekendWeights.count)
+                    let diff = weAvg - wdAvg
+
+                    if abs(diff) >= 0.3 {
+                        lines.append("")
+                        if diff > 0 {
+                            lines.append("📅 周末体重平均比工作日高 \(String(format: "%.1f", diff)) kg — 周末可能饮食更放松或活动量下降。")
+                        } else {
+                            lines.append("📅 工作日体重平均比周末高 \(String(format: "%.1f", abs(diff))) kg — 工作日可能久坐或压力饮食较多。")
+                        }
+                    }
+                }
+            }
+
+            // --- Exercise × Weight correlation (richer than before) ---
             if weightDays.count >= 5 {
                 let newest = weightDays.last!
                 let oldest = weightDays.first!
                 let change = newest.bodyMassKg - oldest.bodyMassKg
-                let exerciseDays = summaries.filter { $0.exerciseMinutes > 0 }
 
-                if abs(change) > 0.5 && !exerciseDays.isEmpty {
-                    let avgExercise = exerciseDays.reduce(0.0) { $0 + $1.exerciseMinutes } / Double(exerciseDays.count)
+                // Correlate exercise TYPES with weight change direction
+                let allWorkouts = allSummaries.flatMap { $0.workouts }
+                if allWorkouts.count >= 3 {
+                    let byType = Dictionary(grouping: allWorkouts) { $0.typeName }
+                    let topTypes = byType.sorted { $0.value.count > $1.value.count }.prefix(3)
+                    let typeStr = topTypes.map { "\($0.key)(\($0.value.count)次)" }.joined(separator: "、")
+
                     lines.append("")
-                    if change < 0 && avgExercise > 20 {
-                        lines.append("💪 同期日均运动 \(Int(avgExercise)) 分钟，运动配合减重效果不错！")
-                    } else if change > 0 && avgExercise < 15 {
-                        lines.append("💡 同期运动较少（日均 \(Int(avgExercise)) 分钟），增加运动量可能有帮助。")
+                    lines.append("🏋️ 同期运动构成：\(typeStr)")
+
+                    let exerciseDays = allSummaries.filter { $0.exerciseMinutes > 0 }
+                    let avgExercise = exerciseDays.isEmpty ? 0.0 : exerciseDays.reduce(0.0) { $0 + $1.exerciseMinutes } / Double(exerciseDays.count)
+
+                    if abs(change) > 0.5 {
+                        if change < 0 && avgExercise > 20 {
+                            lines.append("💪 日均运动 \(Int(avgExercise)) 分钟，运动配合减重效果不错！")
+                        } else if change > 0 && avgExercise < 15 {
+                            lines.append("💡 日均运动仅 \(Int(avgExercise)) 分钟，增加运动量可能有帮助。")
+                        } else if change < 0 && avgExercise <= 15 {
+                            lines.append("📊 运动量不大但体重下降，可能与饮食调整有关。")
+                        }
+                    }
+                } else {
+                    // Fallback: original simple exercise correlation
+                    let exerciseDays = summaries.filter { $0.exerciseMinutes > 0 }
+                    if abs(change) > 0.5 && !exerciseDays.isEmpty {
+                        let avgExercise = exerciseDays.reduce(0.0) { $0 + $1.exerciseMinutes } / Double(exerciseDays.count)
+                        lines.append("")
+                        if change < 0 && avgExercise > 20 {
+                            lines.append("💪 同期日均运动 \(Int(avgExercise)) 分钟，运动配合减重效果不错！")
+                        } else if change > 0 && avgExercise < 15 {
+                            lines.append("💡 同期运动较少（日均 \(Int(avgExercise)) 分钟），增加运动量可能有帮助。")
+                        }
+                    }
+                }
+            }
+
+            // --- Recording consistency ---
+            if weightDays.count >= 2 {
+                let sorted = weightDays.sorted { $0.date < $1.date }
+                let totalSpan = max(cal.dateComponents([.day], from: sorted.first!.date, to: sorted.last!.date).day ?? 1, 1)
+                let recordingRate = Double(sorted.count) / Double(totalSpan) * 100
+
+                if totalSpan >= 7 {
+                    // Find longest gap between recordings
+                    var maxGap = 0
+                    for i in 1..<sorted.count {
+                        let gap = cal.dateComponents([.day], from: sorted[i-1].date, to: sorted[i].date).day ?? 0
+                        maxGap = max(maxGap, gap)
+                    }
+
+                    lines.append("")
+                    if recordingRate >= 80 {
+                        lines.append("✅ 记录频率很好！\(totalSpan) 天内记录了 \(sorted.count) 次（\(Int(recordingRate))%），坚持记录是体重管理的第一步。")
+                    } else if recordingRate >= 40 {
+                        if maxGap >= 5 {
+                            lines.append("📝 最长间隔 \(maxGap) 天没有记录 — 尝试固定每天早晨称重，数据更准确。")
+                        } else {
+                            lines.append("📝 \(totalSpan) 天内记录 \(sorted.count) 次，继续保持！更频繁的记录有助于发现真实趋势。")
+                        }
+                    } else {
+                        lines.append("📝 记录较稀疏（\(totalSpan) 天仅 \(sorted.count) 次），建议每天同一时间称重，减少波动干扰。")
                     }
                 }
             }

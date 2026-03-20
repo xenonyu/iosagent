@@ -134,26 +134,48 @@ final class GPTContextBuilder {
             || $0.sleepHours > 0 || $0.heartRate > 0 }
         let hourOfDay = Calendar.current.component(.hour, from: now)
 
+        // Health — Apple doesn't expose read-only auth status, so we infer from data
         if todayHasHealth || weekHasHealth {
             availableData.append("健康数据")
+        } else if self.healthService.isHealthDataAvailable {
+            unavailableData.append("健康数据（HealthKit 可用但近7天无数据，可能未授权或设备未佩戴）")
         } else {
-            unavailableData.append("健康数据（未授权或未同步）")
+            unavailableData.append("健康数据（此设备不支持 HealthKit，如 iPad）")
         }
+
+        // Calendar — use explicit auth check to distinguish "no events" from "not authorized"
         if !todayEvents.isEmpty || !upcomingEvents.isEmpty || !pastEvents.isEmpty {
             availableData.append("日历日程")
+        } else if self.calendarService.isAuthorized {
+            unavailableData.append("日历日程（已授权，近期确实无日程安排）")
         } else {
-            unavailableData.append("日历日程（无日程或未授权）")
+            unavailableData.append("日历日程（未授权，用户需在 iPhone 设置 → iosclaw → 日历 中开启权限）")
         }
+
+        // Location — use CLAuthorizationStatus for precise feedback
         if !locationRecords.isEmpty {
             availableData.append("位置记录")
         } else {
-            unavailableData.append("位置记录（暂无记录或未授权）")
+            let locAuth = self.locationService.authorizationStatus
+            switch locAuth {
+            case .authorizedAlways, .authorizedWhenInUse:
+                unavailableData.append("位置记录（已授权，但近7天暂无记录，可能尚未产生显著位置变化）")
+            case .denied, .restricted:
+                unavailableData.append("位置记录（未授权，用户需在 iPhone 设置 → iosclaw → 位置 中开启权限）")
+            default:
+                unavailableData.append("位置记录（尚未请求位置权限）")
+            }
         }
+
+        // Photos — use PHPhotoLibrary auth status
         if !recentPhotos.isEmpty {
             availableData.append("照片统计")
+        } else if self.photoService.isAuthorized {
+            unavailableData.append("照片统计（已授权，近7天无新照片）")
         } else {
-            unavailableData.append("照片统计（暂无照片或未授权）")
+            unavailableData.append("照片统计（未授权，用户需在 iPhone 设置 → iosclaw → 照片 中开启权限）")
         }
+
         if !lifeEvents.isEmpty {
             availableData.append("生活记录")
         } else {
@@ -216,6 +238,8 @@ final class GPTContextBuilder {
         能力边界：
         - 你只能读取数据，不能创建、修改或保存任何记录。如果用户想记录事情，告诉他可以在 App 的生活记录页面手动添加。
         - 你不能发送消息、设置闹钟、打电话等操作类任务。
+        - 如果用户询问的数据标注为「未授权」，请明确告诉用户需要在 iPhone 的「设置 → iosclaw」中开启对应权限，而不是模糊地说「可能未授权」。
+        - 如果数据标注为「已授权但无数据」，则说明权限正常，只是该时间段内确实没有相关数据，不需要建议用户去开权限。
 
         回复要求：
         - \(toneInstruction)

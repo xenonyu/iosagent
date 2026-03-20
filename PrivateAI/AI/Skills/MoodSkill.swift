@@ -66,8 +66,16 @@ struct MoodSkill: ClawSkill {
                         response += "\n\n" + clues.joined(separator: "\n\n")
                     }
 
-                    // Suggest recording with a natural phrasing
-                    let emotionWord = self.extractDominantEmotion(from: query) ?? "心情"
+                    // Suggest recording with a natural phrasing.
+                    // If the emotion is negated (recovery), use a positive phrase instead of
+                    // the raw negative emotion word.
+                    let isRecovery = !empathy.isNegative && self.detectNegatedEmotion(query: query) != nil
+                    let emotionWord: String
+                    if isRecovery {
+                        emotionWord = "心情好转了"
+                    } else {
+                        emotionWord = self.extractDominantEmotion(from: query) ?? "心情"
+                    }
                     response += "\n\n📝 说「记录一下，\(emotionWord)」我会帮你保存。积累几天后就能发现你的心情规律。"
                     completion(response)
                 }
@@ -514,9 +522,100 @@ struct MoodSkill: ClawSkill {
         return .moderate
     }
 
+    /// Detects whether a negative emotion word is negated in the query, indicating a
+    /// **recovery** or **positive state change** rather than the negative emotion itself.
+    ///
+    /// Chinese negation patterns for emotions:
+    /// - "不X了": "不累了", "不焦虑了", "不难过了" — state change, no longer in that state
+    /// - "没X了": "没压力了", "没那么累了"
+    /// - "不X": "不烦", "不紧张" — simple negation
+    /// - "没那么X": "没那么焦虑" — partial recovery
+    /// - "不那么X": "不那么难过" — partial recovery
+    /// - "不怎么X": "不怎么累" — mostly recovered
+    /// - "没有X": "没有压力" — absence of negative state
+    /// - "not X": "not tired", "not anxious" — English negation
+    ///
+    /// Returns a recovery-appropriate response if negation is detected, otherwise nil.
+    private func detectNegatedEmotion(query: String) -> EmpathyResult? {
+        // Negative emotion categories with their recovery responses
+        let negativeEmotionGroups: [(words: [String], recoveryResponse: String)] = [
+            (["累", "疲惫", "没精神", "困"],
+             "不累了就好！✨ 状态恢复的感觉很棒吧。"),
+            (["压力", "崩溃", "扛不住", "受不了"],
+             "压力缓解了就好！💪 能扛过来说明你比想象中更强。"),
+            (["焦虑", "紧张", "不安", "慌"],
+             "不焦虑了就好！😊 紧绷的弦终于松下来了。"),
+            (["难过", "伤心", "沮丧", "郁闷", "低落", "丧"],
+             "心情好转了？🌤️ 低谷总会过去的，你做到了。"),
+            (["烦", "烦躁", "恼火", "生气", "愤怒"],
+             "不烦了就好！☀️ 心情转晴的感觉不错吧。"),
+            (["孤独", "寂寞", "空虚", "无聊"],
+             "不无聊了就好！😊 找到有趣的事了吗？"),
+            (["emo", "破防", "裂开"],
+             "从 emo 里走出来了？✨ 情绪波动是正常的，恢复了就好。"),
+            (["麻了", "无语", "心塞"],
+             "不心塞了就好！☀️ 有些事过去了就别往心里放。"),
+            (["摆烂", "躺平"],
+             "躺够了站起来了？💪 休息够了就是最好的重启。"),
+            (["闹心", "心烦", "烦闷", "揪心", "心累"],
+             "心不累了就好！🌿 给自己一个大大的赞。"),
+            (["窒息"],
+             "喘过气来了就好！🌬️ 深呼吸，一切都在好转。"),
+            (["憋屈", "委屈"],
+             "不委屈了就好！🤗 你值得被好好对待。"),
+            (["抓狂", "暴躁"],
+             "冷静下来了？☀️ 情绪平复后看事情会更清楚。"),
+            (["虚弱", "乏力", "没力气", "浑身无力", "提不起劲", "不在状态"],
+             "状态恢复了！💪 身体是最诚实的，恢复了就好。"),
+            (["迷茫", "困惑", "纠结", "犹豫", "不知所措", "彷徨"],
+             "想清楚了？🌱 迷茫之后的清晰特别珍贵。"),
+        ]
+
+        // Chinese negation prefixes that negate a following emotion word
+        let negationPrefixes = ["不", "没", "不那么", "没那么", "不怎么", "没有", "没再", "不再"]
+        // English negation patterns
+        let englishNegations = ["not ", "no longer ", "don't feel ", "no more "]
+
+        for group in negativeEmotionGroups {
+            for emotionWord in group.words {
+                guard query.contains(emotionWord) else { continue }
+
+                // Check Chinese negation: prefix immediately before or near the emotion word
+                for prefix in negationPrefixes {
+                    if query.contains(prefix + emotionWord) {
+                        return EmpathyResult(text: group.recoveryResponse, isNegative: false)
+                    }
+                }
+                // Check "X好了" / "X好多了" pattern (recovery from state)
+                if query.contains(emotionWord + "好了") || query.contains(emotionWord + "好多了") ||
+                   query.contains(emotionWord + "好很多") {
+                    return EmpathyResult(text: group.recoveryResponse, isNegative: false)
+                }
+            }
+            // English negation
+            for emotionWord in group.words {
+                for neg in englishNegations {
+                    if query.contains(neg + emotionWord) {
+                        return EmpathyResult(text: group.recoveryResponse, isNegative: false)
+                    }
+                }
+            }
+        }
+
+        return nil
+    }
+
     /// Build empathy that mirrors the user's actual emotion word AND intensity level.
     /// "有点累" gets gentle acknowledgment; "累死了" gets strong validation.
+    /// Negated emotions ("不累了", "没那么焦虑") get positive recovery responses.
     private func buildPersonalizedEmpathy(query: String) -> EmpathyResult {
+        // PRIORITY: Check for negation first.
+        // "不累了" / "没那么焦虑了" / "不难过了" express recovery, NOT the negative emotion.
+        // Without this check, "不累了" would match "累" and respond with "辛苦了" — very wrong.
+        if let recoveryResult = detectNegatedEmotion(query: query) {
+            return recoveryResult
+        }
+
         // Fatigue / Exhaustion
         if SkillRouter.containsAny(query, ["累", "疲惫", "没精神", "困"]) {
             let intensity = detectIntensity(query: query, emotionWord: query.contains("疲惫") ? "疲惫" : "累")

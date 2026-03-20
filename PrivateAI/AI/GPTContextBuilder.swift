@@ -2040,21 +2040,39 @@ final class GPTContextBuilder {
         // Exercise streak — consecutive days with exercise ending at today/yesterday.
         // Directly answers "我连续运动了几天？" / "运动连胜多少天？" which GPT
         // frequently gets wrong when manually scanning 14 trend rows.
-        // Use ALL summaries (not just completedDays) because today's partial data
-        // still counts toward an active streak — the user DID exercise today.
+        //
+        // IMPORTANT: Skip today if it has no exercise data, because today's data is
+        // still accumulating. At 9am the user hasn't exercised yet — exerciseMinutes=0
+        // does NOT mean "rest day", it means "the day hasn't happened yet". Without
+        // this skip, a user who exercised 7 days straight would see streak=0 every
+        // morning, only recovering to streak=8 after their evening workout.
+        // This matches healthInsightAlerts() which also skips today for gap detection.
         let allChronological = summaries.sorted { $0.date < $1.date }
         var currentStreak = 0
+        var streakIncludesToday = false
         for s in allChronological.reversed() { // newest first
-            if s.exerciseMinutes > 0 || !s.workouts.isEmpty {
+            let hasExercise = s.exerciseMinutes > 0 || !s.workouts.isEmpty
+            if cal.isDateInToday(s.date) && !hasExercise {
+                // Today has no exercise data yet — skip rather than break the streak.
+                // If the user exercises later, the streak will include today on next query.
+                continue
+            }
+            if hasExercise {
                 currentStreak += 1
+                if cal.isDateInToday(s.date) { streakIncludesToday = true }
             } else {
                 break
             }
         }
         if currentStreak >= 2 {
-            let streakNote = cal.isDateInToday(allChronological.last?.date ?? Date())
-                && (todaySummary?.exerciseMinutes ?? 0) > 0
-                ? "（含今天，仍在进行中 🔥）" : ""
+            let streakNote: String
+            if streakIncludesToday {
+                streakNote = "（含今天，仍在进行中 🔥）"
+            } else if cal.isDateInToday(allChronological.last?.date ?? Date()) {
+                streakNote = "（今天还未运动，继续保持可延续连胜 💪）"
+            } else {
+                streakNote = ""
+            }
             avgParts.append("当前运动连续\(currentStreak)天\(streakNote)")
         }
 

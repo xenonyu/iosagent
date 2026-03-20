@@ -2927,7 +2927,21 @@ struct HealthSkill: ClawSkill {
     private func respondHeartRate(summaries: [HealthSummary], allSummaries: [HealthSummary] = [], range: QueryTimeRange, completion: @escaping (String) -> Void) {
         let hrDays = summaries.filter { $0.heartRate > 0 }
         guard !hrDays.isEmpty else {
-            completion("❤️ \(range.label)暂无心率数据。\n需要 Apple Watch 来追踪心率。")
+            var msg = "❤️ \(range.label)暂无心率数据。\n"
+            msg += "\n心率数据需要 Apple Watch 才能自动追踪。"
+            msg += "\nApple Watch 会全天记录心率，包括静息心率和运动心率。"
+            // Show recent heart rate data if available
+            let recentHR = allSummaries.filter { $0.heartRate > 0 }.sorted { $0.date > $1.date }
+            if let recent = recentHR.first {
+                let fmt = DateFormatter()
+                fmt.dateFormat = "M月d日"
+                fmt.locale = Locale(identifier: "zh_CN")
+                msg += "\n\n📋 最近一次记录（\(fmt.string(from: recent.date))）：\(Int(recent.heartRate)) BPM"
+                if recent.restingHeartRate > 0 {
+                    msg += "（静息 \(Int(recent.restingHeartRate))）"
+                }
+            }
+            completion(msg)
             return
         }
 
@@ -3219,7 +3233,27 @@ struct HealthSkill: ClawSkill {
     private func respondSteps(summaries: [HealthSummary], allSummaries: [HealthSummary] = [], range: QueryTimeRange, completion: @escaping (String) -> Void) {
         let stepDays = summaries.filter { $0.steps > 0 }
         guard !stepDays.isEmpty else {
-            completion("👟 \(range.label)暂无步数记录。")
+            var msg = "👟 \(range.label)暂无步数记录。\n"
+            // Check if other data exists — if yes, steps specifically are missing
+            let hasOtherData = summaries.contains { $0.heartRate > 0 || $0.exerciseMinutes > 0 || $0.sleepHours > 0 }
+            if range == .today {
+                // Show most recent step data from allSummaries for context
+                let recentSteps = allSummaries.filter { $0.steps > 0 }.sorted { $0.date > $1.date }
+                if let recent = recentSteps.first {
+                    let fmt = DateFormatter()
+                    fmt.dateFormat = "M月d日"
+                    fmt.locale = Locale(identifier: "zh_CN")
+                    msg += "\n📋 最近一次记录（\(fmt.string(from: recent.date))）：\(Int(recent.steps).formatted()) 步"
+                    msg += "\n💡 今天的步数还在积累中，稍后再来看看。"
+                } else if hasOtherData {
+                    msg += "其他健康数据正常记录中，步数可能需要携带 iPhone 行走才会开始计数。"
+                } else {
+                    msg += "请确认已在「设置 → iosclaw → 健康」中开启步数权限。\niPhone 会自动记录日常步数，无需 Apple Watch。"
+                }
+            } else if range.interval.duration < 86400 * 3 {
+                msg += "💡 试试扩大范围查看：「这周步数怎么样」"
+            }
+            completion(msg)
             return
         }
 
@@ -3641,7 +3675,20 @@ struct HealthSkill: ClawSkill {
         let cal = Calendar.current
         let distanceDays = summaries.filter { $0.distanceKm > 0.01 }
         guard !distanceDays.isEmpty else {
-            completion("📏 \(range.label)暂无步行距离数据。\n开启健康权限后可以自动追踪步行和跑步距离。")
+            var msg = "📏 \(range.label)暂无步行距离数据。\n"
+            let recentDist = allSummaries.filter { $0.distanceKm > 0.01 }.sorted { $0.date > $1.date }
+            if let recent = recentDist.first {
+                let fmt = DateFormatter()
+                fmt.dateFormat = "M月d日"
+                fmt.locale = Locale(identifier: "zh_CN")
+                msg += "\n📋 最近记录（\(fmt.string(from: recent.date))）：\(String(format: "%.1f", recent.distanceKm)) 公里"
+                if range == .today {
+                    msg += "\n💡 今天的距离还在积累中，带着 iPhone 走一走再来看。"
+                }
+            } else {
+                msg += "iPhone 会自动追踪步行和跑步距离，确保已开启健康权限。"
+            }
+            completion(msg)
             return
         }
 
@@ -3913,7 +3960,20 @@ struct HealthSkill: ClawSkill {
     private func respondCalories(summaries: [HealthSummary], allSummaries: [HealthSummary] = [], range: QueryTimeRange, completion: @escaping (String) -> Void) {
         let calDays = summaries.filter { $0.activeCalories > 0 }
         guard !calDays.isEmpty else {
-            completion("🔥 \(range.label)暂无热量消耗数据。\n开启健康权限后可以自动追踪每日活动消耗。")
+            var msg = "🔥 \(range.label)暂无热量消耗数据。\n"
+            let recentCals = allSummaries.filter { $0.activeCalories > 0 }.sorted { $0.date > $1.date }
+            if let recent = recentCals.first {
+                let fmt = DateFormatter()
+                fmt.dateFormat = "M月d日"
+                fmt.locale = Locale(identifier: "zh_CN")
+                msg += "\n📋 最近记录（\(fmt.string(from: recent.date))）：\(Int(recent.activeCalories).formatted()) 千卡"
+                if range == .today {
+                    msg += "\n💡 随着今天活动增加，消耗数据会逐渐更新。"
+                }
+            } else {
+                msg += "开启健康权限后，iPhone 和 Apple Watch 会自动追踪每日活动消耗。"
+            }
+            completion(msg)
             return
         }
 
@@ -6156,6 +6216,18 @@ struct HealthSkill: ClawSkill {
             lines.append("💡 最容易提升的维度：\(weak.emoji) \(weak.name) — \(weak.tip)")
         }
 
+        // --- Proactive Health Alerts (multi-metric anomaly scan) ---
+        // The health overview should surface concerning patterns without the user
+        // having to explicitly ask "有什么异常". This transforms the overview from
+        // a passive dashboard into an intelligent health monitor.
+        // Shows top 3 severity≥2 alerts in compact form to keep overview concise.
+        let allData = allSummaries ?? summaries
+        let compactAlerts = buildCompactHealthAlerts(summaries: summaries, allSummaries: allData, range: range)
+        if !compactAlerts.isEmpty {
+            lines.append("")
+            lines.append(contentsOf: compactAlerts)
+        }
+
         // --- Today: Calendar-Aware Readiness ---
         // When showing today's health overview, cross-reference with calendar events
         // to give a holistic "readiness" verdict. This connects "how your body is"
@@ -6273,6 +6345,129 @@ struct HealthSkill: ClawSkill {
             }
         }
 
+        return lines
+    }
+
+    // MARK: - Compact Health Alerts for Overview
+
+    /// Runs a quick multi-metric anomaly scan and returns a compact alert section.
+    /// Unlike the full `respondHealthAlert` (which is a standalone response), this
+    /// produces a brief summary suitable for embedding at the bottom of the overview.
+    /// Only surfaces severity ≥ 2 alerts, limited to top 3 to keep overview concise.
+    private func buildCompactHealthAlerts(summaries: [HealthSummary],
+                                          allSummaries: [HealthSummary],
+                                          range: QueryTimeRange) -> [String] {
+        let cal = Calendar.current
+        // Need at least 3 days for meaningful anomaly detection
+        let candidates = summaries.filter { $0.hasData }
+        guard candidates.count >= 3 else { return [] }
+
+        let baseline = allSummaries.filter { $0.hasData }
+        var alerts: [(emoji: String, severity: Int, message: String)] = []
+
+        // --- Sleep ---
+        let sleepDays = candidates.filter { $0.sleepHours > 0 }
+        if !sleepDays.isEmpty {
+            let avgSleep = sleepDays.reduce(0) { $0 + $1.sleepHours } / Double(sleepDays.count)
+            let severeInsomniaDays = sleepDays.filter { $0.sleepHours < 5 }.count
+            let insufficientDays = sleepDays.filter { $0.sleepHours < 6 }.count
+
+            if severeInsomniaDays >= 2 {
+                alerts.append(("🔴", 3, "\(severeInsomniaDays) 天睡眠不到 5h，严重不足，建议尽快调整"))
+            } else if insufficientDays >= 3 {
+                alerts.append(("🟡", 2, "\(insufficientDays) 天睡眠<6h（均 \(String(format: "%.1f", avgSleep))h），睡眠债在累积"))
+            }
+
+            // Sleep regularity
+            if sleepDays.count >= 4 {
+                let stdDev = standardDeviation(of: sleepDays.map { $0.sleepHours })
+                if stdDev >= 1.5 {
+                    alerts.append(("🟡", 2, "睡眠波动大（±\(Int(stdDev * 60))min），比短睡更伤生物钟"))
+                }
+            }
+
+            // Late bedtime
+            let lateNights = sleepDays.compactMap { $0.sleepOnset }.filter { onset in
+                let h = cal.component(.hour, from: onset)
+                return h >= 1 && h < 6
+            }
+            if lateNights.count >= 3 {
+                alerts.append(("🟡", 2, "\(lateNights.count) 天凌晨 1 点后入睡，深睡比例会受影响"))
+            }
+        }
+
+        // --- Resting Heart Rate ---
+        let rhrDays = candidates.filter { $0.restingHeartRate > 0 }
+        if rhrDays.count >= 3 {
+            let avgRHR = rhrDays.reduce(0) { $0 + $1.restingHeartRate } / Double(rhrDays.count)
+            if avgRHR > 85 {
+                alerts.append(("🔴", 3, "静息心率 \(Int(avgRHR)) BPM 偏高，排除运动/咖啡因后建议关注"))
+            }
+
+            // Sudden spike vs personal baseline
+            let latestRHR = rhrDays.sorted { $0.date > $1.date }.first?.restingHeartRate ?? 0
+            let baselineRHR = baseline.filter { $0.restingHeartRate > 0 }
+            if !baselineRHR.isEmpty && latestRHR > 0 {
+                let baseAvg = baselineRHR.reduce(0) { $0 + $1.restingHeartRate } / Double(baselineRHR.count)
+                if latestRHR - baseAvg >= 8 {
+                    alerts.append(("🟡", 2, "静息心率 \(Int(latestRHR)) BPM，比基线（\(Int(baseAvg))）高 \(Int(latestRHR - baseAvg))"))
+                }
+            }
+        }
+
+        // --- HRV ---
+        let hrvDays = candidates.filter { $0.hrv > 0 }
+        if hrvDays.count >= 3 {
+            let latestHRV = hrvDays.sorted { $0.date > $1.date }.first?.hrv ?? 0
+            let baselineHRV = baseline.filter { $0.hrv > 0 }
+            if !baselineHRV.isEmpty && latestHRV > 0 {
+                let baseAvg = baselineHRV.reduce(0) { $0 + $1.hrv } / Double(baselineHRV.count)
+                let pctDrop = baseAvg > 0 ? (baseAvg - latestHRV) / baseAvg * 100 : 0
+                if pctDrop >= 30 {
+                    alerts.append(("🟡", 2, "HRV \(Int(latestHRV))ms，比基线下降 \(Int(pctDrop))%，身体可能在应对压力"))
+                }
+            }
+            let avgHRV = hrvDays.reduce(0) { $0 + $1.hrv } / Double(hrvDays.count)
+            if avgHRV < 20 {
+                alerts.append(("🔴", 3, "HRV 均值 \(Int(avgHRV))ms 很低，优先休息，避免高强度训练"))
+            }
+        }
+
+        // --- Blood Oxygen ---
+        let spo2Days = candidates.filter { $0.oxygenSaturation > 0 }
+        if spo2Days.count >= 2 {
+            let lowDays = spo2Days.filter { $0.oxygenSaturation < 94 }
+            if !lowDays.isEmpty {
+                let minSpO2 = spo2Days.min(by: { $0.oxygenSaturation < $1.oxygenSaturation })!.oxygenSaturation
+                let severity = minSpO2 < 90 ? 3 : 2
+                alerts.append((severity == 3 ? "🔴" : "🟡", severity, "血氧低至 \(String(format: "%.0f", minSpO2))%（\(lowDays.count) 天<94%），正常应≥95%"))
+            }
+        }
+
+        // --- Weight rapid change ---
+        let weightDays = candidates.filter { $0.bodyMassKg > 0 }.sorted { $0.date < $1.date }
+        if weightDays.count >= 3 {
+            let first = weightDays.first!.bodyMassKg
+            let last = weightDays.last!.bodyMassKg
+            let span = cal.dateComponents([.day], from: weightDays.first!.date, to: weightDays.last!.date).day ?? 1
+            let weeklyRate = span > 0 ? (last - first) / Double(span) * 7 : 0
+            if abs(weeklyRate) >= 1.0 {
+                let dir = weeklyRate > 0 ? "增" : "减"
+                alerts.append(("🟡", 2, "体重周变化 \(String(format: "%.1f", abs(weeklyRate)))kg（\(dir)），建议控制在 0.5kg/周内"))
+            }
+        }
+
+        // Filter to severity ≥ 2, sort by severity desc, take top 3
+        let significant = alerts.filter { $0.severity >= 2 }
+            .sorted { $0.severity > $1.severity }
+            .prefix(3)
+        guard !significant.isEmpty else { return [] }
+
+        var lines: [String] = ["⚠️ 需要关注"]
+        for alert in significant {
+            lines.append("  \(alert.emoji) \(alert.message)")
+        }
+        lines.append("  📋 说「健康异常」查看完整分析")
         return lines
     }
 

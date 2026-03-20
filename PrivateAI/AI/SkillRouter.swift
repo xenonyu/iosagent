@@ -404,6 +404,37 @@ struct SkillRouter {
                                 "dance", "climbing", "skiing", "rowing", "elliptical",
                                 "meditation", "tai chi"]) {
             let filter = extractWorkoutFilter(from: lower)
+
+            // --- Metric-specific redirect ---
+            // When the query is about a specific metric (步数, 卡路里, 距离) and NOT a general
+            // exercise question, route to the dedicated health metric handler instead.
+            // "步数多少" → health.steps (deep analysis: trends, goals, distribution)
+            // "消耗了多少卡路里" → health.calories (detailed calorie breakdown)
+            // "走了多远" → health.distance (distance analysis)
+            // BUT "运动了多少" → exercise overview (user wants all metrics)
+            // BUT "跑了多少" → exercise.running (user wants workout-specific data)
+            if filter == nil {
+                let generalExerciseWords = ["运动", "锻炼", "健身", "训练", "有氧",
+                                            "运动量", "活动量", "运动类型",
+                                            "做了什么运动", "什么运动", "哪些运动",
+                                            "练了什么",
+                                            "exercise", "workout", "fitness"]
+                if !containsAny(lower, generalExerciseWords) {
+                    let metric = extractHealthMetric(from: lower)
+                    if metric != "general" {
+                        let metricRange: QueryTimeRange
+                        if hasExplicitTimeReference(lower) {
+                            metricRange = range
+                        } else if isHabitualPatternQuery(lower) {
+                            metricRange = .thisWeek
+                        } else {
+                            metricRange = .today
+                        }
+                        return .health(metric: metric, range: metricRange)
+                    }
+                }
+            }
+
             // Exercise queries without explicit time words (e.g. "走了多少步", "运动了吗")
             // intuitively mean today, not last week. Same pattern as calendar.
             // EXCEPT habitual queries ("平均走多少步", "我一般运动多久", "每天走多少步")
@@ -1991,7 +2022,7 @@ struct SkillRouter {
         if containsAny(text, ["心率", "心跳", "脉搏", "heart rate", "heartbeat",
                               "静息心率", "resting heart"]) { return "heartRate" }
         if containsAny(text, ["步数", "走路", "步行", "多少步", "几步", "steps", "walk"]) { return "steps" }
-        if containsAny(text, ["卡路里", "热量", "千卡", "大卡", "calories", "burned", "energy"]) { return "calories" }
+        if containsAny(text, ["卡路里", "热量", "千卡", "大卡", "消耗", "calories", "burned", "energy"]) { return "calories" }
         if containsAny(text, ["爬楼", "楼层", "几层", "爬了", "flights", "climbed", "floor"]) { return "flights" }
         if containsAny(text, ["多远", "距离", "公里", "几公里", "distance", "km", "far"]) { return "distance" }
         // Weight: includes diet/weight-loss keywords that imply weight tracking interest

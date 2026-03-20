@@ -890,12 +890,17 @@ struct SkillRouter {
             "今年", "最近", "近期",
             // Relative day patterns: "5天前", "3天内", "过去五天"
             "天前", "天内", "天里", "过去",
+            // Relative week patterns: "两周前", "三周内", "两个星期"
+            "周前", "周内", "个星期", "个礼拜",
+            // Relative month patterns: "两个月前", "三个月内", "半个月"
+            "个月前", "个月内", "半个月", "半月",
             "today", "yesterday", "tomorrow",
             "this week", "last week", "next week",
             "weekend", "this weekend", "next weekend", "last weekend",
             "this month", "last month",
             "recently", "lately",
-            "days ago", "past"
+            "days ago", "weeks ago", "months ago",
+            "week ago", "month ago", "past"
         ]
         // Also check for specific weekday patterns (周一, 星期三, monday, etc.)
         let weekdayPatterns = ["周一", "周二", "周三", "周四", "周五", "周六", "周日", "周天",
@@ -1083,15 +1088,122 @@ struct SkillRouter {
             }
         }
 
+        // --- Chinese patterns: prefix + N + "周" / "个星期" (week ranges) ---
+        // "最近两周", "过去三周", "这两周", "近2周"
+        for prefix in prefixes {
+            if let prefixRange = lower.range(of: prefix) {
+                let afterPrefix = prefixRange.upperBound
+                if let (n, endIdx) = extractNumber(from: lower, at: afterPrefix) {
+                    if endIdx < lower.endIndex {
+                        let rest = String(lower[endIdx...])
+                        if rest.hasPrefix("周") || rest.hasPrefix("个星期") || rest.hasPrefix("个礼拜") {
+                            return .recentDays(n * 7)
+                        }
+                    }
+                }
+            }
+        }
+
+        // --- Chinese patterns: N + "周前" / "个星期前" (specific week ago) ---
+        for suffix in ["周前", "个星期前", "个礼拜前"] {
+            if let suffixRange = lower.range(of: suffix) {
+                let beforeSuffix = suffixRange.lowerBound
+                var searchIdx = lower.startIndex
+                while searchIdx < beforeSuffix {
+                    if let (n, endIdx) = extractNumber(from: lower, at: searchIdx) {
+                        if endIdx == beforeSuffix && n > 0 {
+                            let cal = Calendar.current
+                            let targetDate = cal.date(byAdding: .weekOfYear, value: -n, to: cal.startOfDay(for: Date()))!
+                            return .specificDate(targetDate)
+                        }
+                    }
+                    searchIdx = lower.index(after: searchIdx)
+                }
+            }
+        }
+
+        // --- Chinese patterns: N + "周内" (recent week range) ---
+        for suffix in ["周内", "个星期内", "个礼拜内"] {
+            if let suffixRange = lower.range(of: suffix) {
+                let beforeSuffix = suffixRange.lowerBound
+                var searchIdx = lower.startIndex
+                while searchIdx < beforeSuffix {
+                    if let (n, endIdx) = extractNumber(from: lower, at: searchIdx) {
+                        if endIdx == beforeSuffix && n > 0 {
+                            return .recentDays(n * 7)
+                        }
+                    }
+                    searchIdx = lower.index(after: searchIdx)
+                }
+            }
+        }
+
+        // --- Chinese patterns: prefix + N + "个月" (month ranges) ---
+        // "最近两个月", "过去三个月", "这两个月", "近6个月"
+        for prefix in prefixes {
+            if let prefixRange = lower.range(of: prefix) {
+                let afterPrefix = prefixRange.upperBound
+                if let (n, endIdx) = extractNumber(from: lower, at: afterPrefix) {
+                    if endIdx < lower.endIndex {
+                        let rest = String(lower[endIdx...])
+                        if rest.hasPrefix("个月") {
+                            return .recentDays(n * 30)
+                        }
+                    }
+                }
+            }
+        }
+
+        // --- Chinese patterns: N + "个月前" (specific month ago) ---
+        if let suffixRange = lower.range(of: "个月前") {
+            let beforeSuffix = suffixRange.lowerBound
+            var searchIdx = lower.startIndex
+            while searchIdx < beforeSuffix {
+                if let (n, endIdx) = extractNumber(from: lower, at: searchIdx) {
+                    if endIdx == beforeSuffix && n > 0 {
+                        let cal = Calendar.current
+                        let targetDate = cal.date(byAdding: .month, value: -n, to: cal.startOfDay(for: Date()))!
+                        return .specificDate(targetDate)
+                    }
+                }
+                searchIdx = lower.index(after: searchIdx)
+            }
+        }
+
+        // --- Chinese pattern: "半个月" / "半月" (≈15 days) ---
+        // Extremely common Chinese expression, must be handled explicitly
+        if containsAny(lower, ["最近半个月", "近半个月", "过去半个月", "这半个月",
+                                "最近半月", "近半月", "过去半月", "这半月"]) {
+            return .recentDays(15)
+        }
+        // "半个月前" → specific date 15 days ago
+        if containsAny(lower, ["半个月前", "半月前"]) {
+            let cal = Calendar.current
+            let targetDate = cal.date(byAdding: .day, value: -15, to: cal.startOfDay(for: Date()))!
+            return .specificDate(targetDate)
+        }
+        // "半个月内" → recent 15 days
+        if containsAny(lower, ["半个月内", "半月内"]) {
+            return .recentDays(15)
+        }
+
         // --- English patterns: "last N days", "past N days" ---
         for prefix in ["last ", "past "] {
             if let prefixRange = lower.range(of: prefix) {
                 let afterPrefix = prefixRange.upperBound
                 if let (n, endIdx) = extractNumber(from: lower, at: afterPrefix) {
-                    // Check for " day" or " days"
                     let remainder = String(lower[endIdx...])
+                    // "last N days" / "past N days"
                     if remainder.hasPrefix(" day") {
                         return .recentDays(n)
+                    }
+                    // "last N weeks" / "past N weeks"
+                    if remainder.hasPrefix(" week") {
+                        return .recentDays(n * 7)
+                    }
+                    // "last N months" / "past N months"
+                    if remainder.hasPrefix(" month") {
+                        return .recentDays(n * 30)
                     }
                 }
             }
@@ -1100,11 +1212,32 @@ struct SkillRouter {
         // --- English pattern: "N days ago" ---
         if let agoRange = lower.range(of: " days ago") ?? lower.range(of: " day ago") {
             let beforeAgo = String(lower[lower.startIndex..<agoRange.lowerBound])
-            // Extract last number from the text before " days ago"
             let words = beforeAgo.split(separator: " ")
             if let lastWord = words.last, let n = Int(lastWord), n > 0 && n <= 365 {
                 let cal = Calendar.current
                 let targetDate = cal.date(byAdding: .day, value: -n, to: cal.startOfDay(for: Date()))!
+                return .specificDate(targetDate)
+            }
+        }
+
+        // --- English pattern: "N weeks ago" ---
+        if let agoRange = lower.range(of: " weeks ago") ?? lower.range(of: " week ago") {
+            let beforeAgo = String(lower[lower.startIndex..<agoRange.lowerBound])
+            let words = beforeAgo.split(separator: " ")
+            if let lastWord = words.last, let n = Int(lastWord), n > 0 && n <= 52 {
+                let cal = Calendar.current
+                let targetDate = cal.date(byAdding: .weekOfYear, value: -n, to: cal.startOfDay(for: Date()))!
+                return .specificDate(targetDate)
+            }
+        }
+
+        // --- English pattern: "N months ago" ---
+        if let agoRange = lower.range(of: " months ago") ?? lower.range(of: " month ago") {
+            let beforeAgo = String(lower[lower.startIndex..<agoRange.lowerBound])
+            let words = beforeAgo.split(separator: " ")
+            if let lastWord = words.last, let n = Int(lastWord), n > 0 && n <= 12 {
+                let cal = Calendar.current
+                let targetDate = cal.date(byAdding: .month, value: -n, to: cal.startOfDay(for: Date()))!
                 return .specificDate(targetDate)
             }
         }

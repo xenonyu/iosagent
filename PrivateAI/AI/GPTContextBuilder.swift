@@ -1012,10 +1012,15 @@ final class GPTContextBuilder {
         let hasWeightData = trendDays.contains { $0.bodyMassKg > 0 }
 
         let hasStandData = trendDays.contains { $0.standMinutes > 0 }
+        // Distance column — only show when there's data (same pattern as weight/stand).
+        // Walking+running distance is one of the most-asked metrics ("这周走了多远?")
+        // but was previously only available in [今日健康数据], not the trend table.
+        let hasDistanceData = trendDays.contains { $0.distanceKm > 0.01 }
         let headerWeight = hasWeightData ? " | 体重(kg)" : ""
         let headerStand = hasStandData ? " | 站立(分)" : ""
+        let headerDistance = hasDistanceData ? " | 距离(km)" : ""
         let dayCount = trendDays.count
-        var lines = ["[近\(dayCount)天健康趋势]", "日期  | 步数  | 运动(分) | 活动kcal | 总消耗kcal | 睡眠(h)（对应哪晚） | 心率avg(min~max)bpm\(headerStand)\(headerWeight)"]
+        var lines = ["[近\(dayCount)天健康趋势]", "日期  | 步数  | 运动(分) | 活动kcal | 总消耗kcal | 睡眠(h)（对应哪晚） | 心率avg(min~max)bpm\(headerDistance)\(headerStand)\(headerWeight)"]
         // Show oldest→newest so GPT can naturally read the trend direction
         let chronological = trendDays
         for s in chronological {
@@ -1059,9 +1064,10 @@ final class GPTContextBuilder {
             } else {
                 hr = "-"
             }
+            let distCol = hasDistanceData ? (s.distanceKm > 0.01 ? "  | \(String(format: "%.1f", s.distanceKm))" : "  | -") : ""
             let standCol = hasStandData ? (s.standMinutes > 0 ? "  | \(Int(s.standMinutes))" : "  | -") : ""
             let weightCol = hasWeightData ? (s.bodyMassKg > 0 ? "  | \(String(format: "%.1f", s.bodyMassKg))" : "  | -") : ""
-            lines.append("\(dateLabel)  | \(steps)  | \(ex)  | \(activeCal)  | \(totalCal)  | \(sl)  | \(hr)\(standCol)\(weightCol)")
+            lines.append("\(dateLabel)  | \(steps)  | \(ex)  | \(activeCal)  | \(totalCal)  | \(sl)  | \(hr)\(distCol)\(standCol)\(weightCol)")
         }
         // Add weekly totals and averages with active-day counts so GPT can give
         // honest answers. E.g. "6天中有3天运动，共90分钟" is more useful than "日均30分钟"
@@ -1107,6 +1113,13 @@ final class GPTContextBuilder {
             } else {
                 avgParts.append("周活动消耗\(totalActive)kcal")
             }
+        }
+        // Distance — total walking+running km for the period.
+        // Common queries: "这周走了多远？" / "最近跑了多少公里？"
+        let validDistDays = completedDays.filter { $0.distanceKm > 0.01 }
+        if !validDistDays.isEmpty {
+            let totalKm = validDistDays.map(\.distanceKm).reduce(0, +)
+            avgParts.append("总距离\(String(format: "%.1f", totalKm))km")
         }
         if !validSleepDays.isEmpty {
             let total = validSleepDays.map(\.sleepHours).reduce(0, +)
@@ -1253,6 +1266,15 @@ final class GPTContextBuilder {
             let totalStand = Int(standDays.map(\.standMinutes).reduce(0, +))
             let avgStand = Int(Double(totalStand) / Double(days.count))
             items.append("日均站立\(avgStand)分钟")
+        }
+
+        // Distance — walking+running total for the period.
+        // Commonly asked: "这周走了多远？" / "上周跑了多少公里？"
+        let distanceDays = days.filter { $0.distanceKm > 0.01 }
+        if !distanceDays.isEmpty {
+            let totalKm = distanceDays.map(\.distanceKm).reduce(0, +)
+            let avgKm = totalKm / Double(days.count)
+            items.append("总距离\(String(format: "%.1f", totalKm))km（日均\(String(format: "%.1f", avgKm))km）")
         }
 
         let sleepDays = days.filter { $0.sleepHours > 0 }

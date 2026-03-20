@@ -1744,40 +1744,86 @@ final class GPTContextBuilder {
             }
         }
 
-        // Upcoming events (future, excluding today) — include weekday names
-        // so GPT can answer "下周三有什么会？" without needing date math
-        let futureEvents = upcoming.filter { !cal.isDateInToday($0.startDate) }.prefix(10)
+        // Upcoming events (future, excluding today) — grouped by day for clarity.
+        // Matches the past-events pattern: GPT can directly answer "明天有什么安排？"
+        // by reading a grouped day block instead of scanning a flat list with
+        // redundant per-event date prefixes.
+        let futureEvents = Array(upcoming.filter { !cal.isDateInToday($0.startDate) })
         if !futureEvents.isEmpty {
             let weekdayFmt = DateFormatter()
             weekdayFmt.locale = Locale(identifier: "zh_CN")
             weekdayFmt.dateFormat = "EEEE"
-            lines.append("近期：")
+
+            // Group by day
+            var futureDayGroups: [Date: [CalendarEventItem]] = [:]
             for e in futureEvents {
-                // Add relative labels (明天/后天) and weekday for all future dates
-                let eventDay = cal.startOfDay(for: e.startDate)
+                let dayStart = cal.startOfDay(for: e.startDate)
+                futureDayGroups[dayStart, default: []].append(e)
+            }
+            let sortedFutureDays = futureDayGroups.keys.sorted() // chronological: nearest first
+
+            // Overall count so GPT can answer "接下来忙吗？"
+            let totalFutureEvents = futureEvents.count
+            let dayCount = sortedFutureDays.count
+            lines.append("近期（未来\(dayCount)天有日程，共\(totalFutureEvents)项）：")
+
+            for day in sortedFutureDays.prefix(7) {
+                guard let dayEvents = futureDayGroups[day] else { continue }
+
+                // Build relative day label
                 let relativeLabel: String
                 if let tomorrow = cal.date(byAdding: .day, value: 1, to: cal.startOfDay(for: now)),
-                   cal.isDate(eventDay, inSameDayAs: tomorrow) {
+                   cal.isDate(day, inSameDayAs: tomorrow) {
                     relativeLabel = "明天"
                 } else if let dayAfter = cal.date(byAdding: .day, value: 2, to: cal.startOfDay(for: now)),
-                          cal.isDate(eventDay, inSameDayAs: dayAfter) {
+                          cal.isDate(day, inSameDayAs: dayAfter) {
                     relativeLabel = "后天"
                 } else {
-                    relativeLabel = weekdayFmt.string(from: e.startDate)
+                    relativeLabel = weekdayFmt.string(from: day)
                 }
-                let dateStr = "\(df.string(from: e.startDate))(\(relativeLabel))"
-                let timeStr = e.isAllDay ? "全天" : "\(timeFmt.string(from: e.startDate))–\(timeFmt.string(from: e.endDate))"
-                var line = "  \(dateStr) \(timeStr) \(e.title)"
-                if !e.calendar.isEmpty { line += " [\(e.calendar)]" }
-                if !e.location.isEmpty { line += "（\(e.location)）" }
-                if let label = e.attendeeLabel { line += " \(label)" }
-                // Include notes for upcoming events too — helps GPT answer "what's that meeting about?"
-                let trimmedNotes = e.notes.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !trimmedNotes.isEmpty {
-                    let preview = trimmedNotes.count > 80 ? String(trimmedNotes.prefix(80)) + "…" : trimmedNotes
-                    line += " 备注：\(preview)"
+                let dayHeader = "\(df.string(from: day))(\(relativeLabel))"
+
+                // Detail for near days (tomorrow/day-after), compact for further out
+                let isNearFuture: Bool = {
+                    guard let twoDaysLater = cal.date(byAdding: .day, value: 3, to: cal.startOfDay(for: now)) else { return false }
+                    return day < twoDaysLater
+                }()
+
+                if isNearFuture {
+                    // Full detail — GPT can answer "明天那个会议几点？在哪开？"
+                    let eventDescs = dayEvents.prefix(8).map { e -> String in
+                        let timeStr = e.isAllDay ? "全天" : "\(timeFmt.string(from: e.startDate))–\(timeFmt.string(from: e.endDate))"
+                        var desc = "\(timeStr) \(e.title)"
+                        if !e.calendar.isEmpty { desc += " [\(e.calendar)]" }
+                        if !e.location.isEmpty { desc += "（\(e.location)）" }
+                        if let label = e.attendeeLabel { desc += " \(label)" }
+                        let trimmedNotes = e.notes.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if !trimmedNotes.isEmpty {
+                            let preview = trimmedNotes.count > 80 ? String(trimmedNotes.prefix(80)) + "…" : trimmedNotes
+                            desc += " 备注：\(preview)"
+                        }
+                        return desc
+                    }
+                    lines.append("  \(dayHeader)：\(eventDescs.joined(separator: "；"))")
+                    if dayEvents.count > 8 {
+                        lines.append("    …还有\(dayEvents.count - 8)项")
+                    }
+                } else {
+                    // Compact summary for further-out days — saves tokens while keeping
+                    // enough info for GPT to answer "下周三有什么？"
+                    let titles = dayEvents.prefix(4).map { e -> String in
+                        let timePrefix = e.isAllDay ? "全天" : timeFmt.string(from: e.startDate)
+                        var entry = "\(timePrefix) \(e.title)"
+                        if !e.calendar.isEmpty { entry += "[\(e.calendar)]" }
+                        return entry
+                    }
+                    var compactLine = "  \(dayHeader)：\(dayEvents.count)项"
+                    compactLine += "（\(titles.joined(separator: "、"))）"
+                    if dayEvents.count > 4 {
+                        compactLine += "等"
+                    }
+                    lines.append(compactLine)
                 }
-                lines.append(line)
             }
         }
         return lines.joined(separator: "\n")

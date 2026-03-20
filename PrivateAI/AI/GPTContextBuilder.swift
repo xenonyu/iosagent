@@ -1568,10 +1568,30 @@ final class GPTContextBuilder {
 
         var parts: [String] = []
 
-        // This week stats (completed days only — today excluded)
+        // Today's summary — used to supplement "本周" stats so GPT can answer
+        // "这周运动了几次？" including today's ongoing data. Without this, GPT
+        // sees "本周3天中2天运动" but misses that today also had a workout,
+        // leading to undercounts. On Monday, thisWeekDays is empty and the "本周"
+        // section was previously skipped entirely, leaving GPT with no week-level
+        // reference at all for "这周" queries.
+        let todaySummary = summaries.first { cal.isDateInToday($0.date) }
+        let hourOfDay = cal.component(.hour, from: now)
+
+        // This week stats (completed days only — today excluded from aggregates)
+        // but supplemented with today's snapshot for completeness.
         if !thisWeekDays.isEmpty {
             let label = "本周（周一至昨天，\(thisWeekDays.count)天）"
-            parts.append("\(label)：\(weekSubTotal(thisWeekDays))")
+            var line = "\(label)：\(weekSubTotal(thisWeekDays))"
+            // Append today's key metrics so GPT includes them in week-level answers
+            if let today = todaySummary, today.hasData {
+                line += "\n  + 今天（截至\(hourOfDay)点，仍在积累）：\(todaySnapshot(today))"
+            }
+            parts.append(line)
+        } else if let today = todaySummary, today.hasData {
+            // Monday (or first day of week): no completed days yet, but today has data.
+            // Show a "本周" section with just today's snapshot so GPT has a week-level
+            // reference. Without this, "这周运动了几次" on Monday gets no "本周" section.
+            parts.append("本周（仅今天，截至\(hourOfDay)点，数据仍在积累中）：\(todaySnapshot(today))")
         }
 
         // Last week stats — with 14-day fetch, this should always have 7 days
@@ -1758,6 +1778,32 @@ final class GPTContextBuilder {
         }
 
         return items.joined(separator: "，")
+    }
+
+    /// Generates a compact snapshot of today's key health metrics for inclusion
+    /// in per-week stats. Unlike weekSubTotal (which aggregates multiple days),
+    /// this shows a single day's raw values so GPT can add them to the week's
+    /// picture without double-counting or confusion.
+    private func todaySnapshot(_ s: HealthSummary) -> String {
+        var items: [String] = []
+        if s.steps > 0 { items.append("\(Int(s.steps))步") }
+        if s.exerciseMinutes > 0 { items.append("运动\(Int(s.exerciseMinutes))分钟") }
+        if !s.workouts.isEmpty {
+            let names = s.workouts.prefix(3).map { "\($0.typeEmoji)\($0.typeName)" }
+            items.append("\(s.workouts.count)次健身（\(names.joined(separator: "、"))）")
+        }
+        if s.activeCalories > 0 {
+            let total = Int(s.activeCalories + s.basalCalories)
+            if s.basalCalories > 0 {
+                items.append("消耗\(total)kcal")
+            } else {
+                items.append("活动\(Int(s.activeCalories))kcal")
+            }
+        }
+        if s.distanceKm > 0.01 { items.append("\(String(format: "%.1f", s.distanceKm))km") }
+        if s.sleepHours > 0 { items.append("睡眠\(String(format: "%.1f", s.sleepHours))h") }
+        if s.standMinutes > 0 { items.append("站立\(Int(s.standMinutes))分钟") }
+        return items.isEmpty ? "暂无数据" : items.joined(separator: "，")
     }
 
     private func calendarSection(todayEvents: [CalendarEventItem], upcoming: [CalendarEventItem], past: [CalendarEventItem] = []) -> String {

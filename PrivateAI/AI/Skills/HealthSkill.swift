@@ -180,10 +180,22 @@ struct HealthSkill: ClawSkill {
                 }
             }
 
+            // --- Day-by-Day Activity Chart ---
+            // Visual overview of each day's exercise: shows steps + exercise minutes
+            // with goal markers so the user can immediately spot active vs rest days.
+            if daysWithData.count >= 3 {
+                lines.append(contentsOf: self.buildDailyExerciseChart(daysWithData))
+            }
+
             // Workout type breakdown (from HKWorkout sessions)
             let allWorkouts = filtered.flatMap { $0.workouts }
             if !allWorkouts.isEmpty {
                 lines.append(contentsOf: workoutBreakdown(allWorkouts))
+
+                // Training balance: check if exercise is too one-dimensional
+                if allWorkouts.count >= 3 {
+                    lines.append(contentsOf: self.trainingBalanceInsight(allWorkouts))
+                }
             }
 
             // Workout schedule pattern: time-of-day preference + rest day rhythm
@@ -238,6 +250,181 @@ struct HealthSkill: ClawSkill {
 
             completion(lines.joined(separator: "\n"))
         }
+    }
+
+    // MARK: - Day-by-Day Exercise Chart
+
+    /// Builds a compact day-by-day exercise visualization for multi-day exercise queries.
+    /// Combines steps + exercise minutes into a visual bar per day, with goal markers
+    /// and rest-day detection, so the user immediately sees their activity rhythm.
+    private func buildDailyExerciseChart(_ days: [HealthSummary]) -> [String] {
+        let sorted = days.sorted { $0.date < $1.date }
+        guard sorted.count >= 3 else { return [] }
+
+        let dayFmt = DateFormatter()
+        dayFmt.dateFormat = "E"
+        dayFmt.locale = Locale(identifier: "zh_CN")
+
+        let maxExercise = sorted.map(\.exerciseMinutes).max() ?? 1
+        let maxSteps = sorted.map(\.steps).max() ?? 1
+        // Use exercise minutes as primary bar metric; fall back to steps if no exercise data
+        let hasExerciseData = maxExercise >= 5
+        var restDayCount = 0
+
+        var lines: [String] = ["", "📅 每日运动节奏"]
+
+        for day in sorted {
+            let dayLabel = dayFmt.string(from: day.date)
+            let ex = day.exerciseMinutes
+            let steps = day.steps
+
+            // Determine bar length (0-8 blocks)
+            let barLen: Int
+            if hasExerciseData {
+                barLen = maxExercise > 0 ? max(0, min(8, Int(ex / maxExercise * 8))) : 0
+            } else {
+                barLen = maxSteps > 0 ? max(0, min(8, Int(steps / maxSteps * 8))) : 0
+            }
+
+            // Rest day detection: <5 min exercise AND <3000 steps
+            let isRestDay = ex < 5 && steps < 3000
+
+            // Goal markers: exercise ≥30min AND steps ≥8000
+            let stepGoal = steps >= 8000
+            let exerciseGoal = ex >= 30
+            let goalMark: String
+            if stepGoal && exerciseGoal {
+                goalMark = "🏅" // both goals met
+            } else if stepGoal || exerciseGoal {
+                goalMark = "✅" // one goal met
+            } else if isRestDay {
+                goalMark = "💤"
+                restDayCount += 1
+            } else {
+                goalMark = "  "
+            }
+
+            let bar = barLen > 0
+                ? String(repeating: "▓", count: barLen) + String(repeating: "░", count: 8 - barLen)
+                : String(repeating: "░", count: 8)
+
+            // Show both exercise min and steps compactly
+            var detail = ""
+            if ex >= 1 {
+                detail += "\(Int(ex))min"
+                if steps >= 1000 {
+                    detail += " · \(Int(steps / 1000))k步"
+                }
+            } else if steps > 0 {
+                detail += "\(Int(steps).formatted())步"
+            } else {
+                detail += "无数据"
+            }
+
+            lines.append("   \(dayLabel) \(bar) \(detail) \(goalMark)")
+        }
+
+        // Summary: active days ratio + rest day insight
+        let activeDays = sorted.filter { $0.exerciseMinutes >= 15 || $0.steps >= 5000 }.count
+        let totalDays = sorted.count
+        if restDayCount > 0 && activeDays > 0 {
+            let ratio = "\(activeDays)天活跃 · \(restDayCount)天休息"
+            if restDayCount >= 1 && restDayCount <= 2 && totalDays >= 5 {
+                lines.append("   ✅ \(ratio) — 运动与恢复的节奏不错")
+            } else if restDayCount == 0 {
+                lines.append("   ⚠️ 连续 \(totalDays) 天都在运动，记得安排休息日")
+            } else if restDayCount > totalDays / 2 {
+                lines.append("   💡 \(ratio) — 试试增加运动频率到每周 3-4 天")
+            } else {
+                lines.append("   📊 \(ratio)")
+            }
+        }
+
+        return lines
+    }
+
+    // MARK: - Training Balance Insight
+
+    /// Analyzes workout type diversity and provides training balance feedback.
+    /// Detects over-reliance on a single exercise type and suggests complementary activities.
+    private func trainingBalanceInsight(_ workouts: [WorkoutRecord]) -> [String] {
+        // Group by broad category
+        let byType = Dictionary(grouping: workouts) { $0.activityType }
+        guard byType.count >= 1 else { return [] }
+
+        let total = workouts.count
+        let totalDuration = workouts.reduce(0) { $0 + $1.duration }
+        guard totalDuration > 0 else { return [] }
+
+        // Find dominant type
+        let dominantEntry = byType.max(by: { $0.value.reduce(0) { $0 + $1.duration } < $1.value.reduce(0) { $0 + $1.duration } })!
+        let dominantDuration = dominantEntry.value.reduce(0) { $0 + $1.duration }
+        let dominantPct = dominantDuration / totalDuration * 100
+
+        // Categorize all workout types into broad groups
+        // Cardio: running(37), cycling(13), swimming(46), walking(52), hiking(24), elliptical(57), stairStepper(40)
+        // Strength: traditionalStrengthTraining(50), functionalStrengthTraining(20), coreTraining(1)
+        // Flexibility: yoga(3014), pilates(3021), flexibility(3041)
+        // HIIT/Functional: highIntensityIntervalTraining(63), crossTraining(3015), mixedCardio(3033)
+        let cardioTypes: Set<UInt> = [37, 13, 46, 52, 24, 57, 40, 3033]
+        let strengthTypes: Set<UInt> = [50, 20, 1, 3015]
+        let flexibilityTypes: Set<UInt> = [3014, 3021, 3041]
+
+        var cardioMin = 0.0, strengthMin = 0.0, flexMin = 0.0
+        for w in workouts {
+            let mins = w.duration / 60
+            if cardioTypes.contains(w.activityType) {
+                cardioMin += mins
+            } else if strengthTypes.contains(w.activityType) {
+                strengthMin += mins
+            } else if flexibilityTypes.contains(w.activityType) {
+                flexMin += mins
+            }
+        }
+        let totalCategorized = cardioMin + strengthMin + flexMin
+        guard totalCategorized > 10 else { return [] } // Need meaningful data
+
+        var lines: [String] = []
+
+        // Only provide balance insight if we have enough variety context
+        if byType.count == 1 && total >= 3 {
+            // All sessions are the same type
+            let typeName = dominantEntry.value.first?.typeName ?? "运动"
+            lines.append("")
+            lines.append("🔄 训练多样性")
+            lines.append("   所有 \(total) 次运动都是\(typeName)")
+            if cardioTypes.contains(dominantEntry.key) {
+                lines.append("   💡 加入力量训练（如举铁、核心训练）可以更全面地提升体能")
+            } else if strengthTypes.contains(dominantEntry.key) {
+                lines.append("   💡 配合有氧运动（如跑步、骑行）有助于心肺健康")
+            }
+        } else if dominantPct >= 80 && byType.count >= 2 && total >= 4 {
+            // One type dominates 80%+ duration
+            let typeName = dominantEntry.value.first?.typeName ?? "运动"
+            lines.append("")
+            lines.append("🔄 训练多样性")
+            lines.append("   \(typeName)占了 \(Int(dominantPct))% 的运动时间")
+            if strengthMin < totalCategorized * 0.1 && cardioMin > 0 {
+                lines.append("   💡 有氧为主，适当增加力量训练（每周 1-2 次）提升综合体能")
+            } else if cardioMin < totalCategorized * 0.1 && strengthMin > 0 {
+                lines.append("   💡 力量为主，适当增加有氧运动保护心血管健康")
+            }
+        } else if byType.count >= 3 {
+            // Good variety — acknowledge it
+            let typeNames = Array(Set(workouts.map { $0.typeName })).prefix(4)
+            lines.append("")
+            lines.append("🔄 训练多样性")
+            lines.append("   涵盖 \(typeNames.joined(separator: "、")) 等 \(byType.count) 种运动")
+            // Check balance across cardio/strength/flexibility
+            if cardioMin > 0 && strengthMin > 0 {
+                lines.append("   ✅ 有氧 + 力量搭配合理，训练比较全面")
+            }
+            if flexMin > 0 {
+                lines.append("   🧘 有柔韧性训练，注重恢复很好")
+            }
+        }
+
+        return lines
     }
 
     // MARK: - Last Workout Occurrence
@@ -2510,6 +2697,23 @@ struct HealthSkill: ClawSkill {
             }
         }
 
+        // --- Day-by-day visual trend chart ---
+        if calDays.count >= 3 {
+            let sorted = calDays.sorted { $0.date < $1.date }
+            lines.append("")
+            lines.append("📈 逐日趋势")
+            let dayFmt = DateFormatter()
+            dayFmt.dateFormat = "E"
+            dayFmt.locale = Locale(identifier: "zh_CN")
+            let maxCalVal = sorted.map(\.activeCalories).max() ?? 1
+            for day in sorted {
+                let blocks = max(1, min(8, Int((day.activeCalories / maxCalVal) * 8)))
+                let bar = String(repeating: "▓", count: blocks) + String(repeating: "░", count: 8 - blocks)
+                let color = day.activeCalories >= goalKcal ? "🟢" : (day.activeCalories >= goalKcal * 0.7 ? "🟡" : "🔴")
+                lines.append("   \(dayFmt.string(from: day.date)) \(color) \(bar) \(Int(day.activeCalories).formatted()) kcal")
+            }
+        }
+
         // Weekday vs weekend pattern
         if calDays.count >= 5 {
             let weekdays = calDays.filter { !cal.isDateInWeekend($0.date) }
@@ -2522,6 +2726,19 @@ struct HealthSkill: ClawSkill {
                     let more = weAvg > wdAvg ? "周末" : "工作日"
                     lines.append("\n🗓 工作日均 \(Int(wdAvg).formatted()) · 周末均 \(Int(weAvg).formatted()) 千卡（\(more)更活跃）")
                 }
+            }
+        }
+
+        // --- Consistency analysis (coefficient of variation) ---
+        if calDays.count >= 3 {
+            let cv = coefficient(of: calDays.map { $0.activeCalories })
+            lines.append("")
+            if cv < 0.2 {
+                lines.append("🎯 热量消耗非常规律（波动仅 \(Int(cv * 100))%），运动习惯很稳定！")
+            } else if cv < 0.4 {
+                lines.append("📊 消耗比较规律（波动 \(Int(cv * 100))%），偶有高低起伏。")
+            } else {
+                lines.append("🎢 消耗波动较大（\(Int(cv * 100))%），固定每天的运动时间有助于稳定消耗。")
             }
         }
 
@@ -2540,6 +2757,30 @@ struct HealthSkill: ClawSkill {
                     lines.append("\n\(trend)")
                 } else {
                     lines.append("\n📊 消耗量保持稳定，节奏不错。")
+                }
+            }
+        }
+
+        // --- Cross-metric: calories vs sleep correlation ---
+        if calDays.count >= 4 {
+            let paired = summaries.filter { $0.activeCalories > 0 && $0.sleepHours > 0 }
+            if paired.count >= 3 {
+                let calMedian = paired.map(\.activeCalories).sorted()[paired.count / 2]
+                let highCalDays = paired.filter { $0.activeCalories >= calMedian }
+                let lowCalDays = paired.filter { $0.activeCalories < calMedian }
+                if !highCalDays.isEmpty && !lowCalDays.isEmpty {
+                    let sleepOnHigh = highCalDays.reduce(0) { $0 + $1.sleepHours } / Double(highCalDays.count)
+                    let sleepOnLow = lowCalDays.reduce(0) { $0 + $1.sleepHours } / Double(lowCalDays.count)
+                    let sleepDiff = sleepOnHigh - sleepOnLow
+                    if abs(sleepDiff) >= 0.3 {
+                        lines.append("")
+                        lines.append("🔗 消耗与睡眠的关联")
+                        if sleepDiff > 0 {
+                            lines.append("   高消耗日平均多睡 \(String(format: "%.1f", sleepDiff)) 小时 — 活动量大有助于提升睡眠质量。")
+                        } else {
+                            lines.append("   低消耗日反而多睡 \(String(format: "%.1f", -sleepDiff)) 小时 — 可能在休息日补觉较多。")
+                        }
+                    }
                 }
             }
         }

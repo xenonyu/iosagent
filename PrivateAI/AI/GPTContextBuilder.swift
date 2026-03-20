@@ -356,12 +356,34 @@ final class GPTContextBuilder {
                     cleaned.append(msg)
                 }
             }
-            let historyToShow = cleaned.suffix(6)
+            // Drop messages older than 48 hours — they're almost never relevant
+            // and waste tokens while potentially confusing GPT with stale context.
+            let cutoff = now.addingTimeInterval(-48 * 3600)
+            let timeBounded = cleaned.filter { $0.timestamp > cutoff }
+            let historyToShow = timeBounded.suffix(6)
             if !historyToShow.isEmpty {
                 let histTimeFmt = DateFormatter(); histTimeFmt.dateFormat = "HH:mm"
                 let histDateFmt = DateFormatter(); histDateFmt.dateFormat = "M月d日 HH:mm"
                 let histCal = Calendar.current
-                let historyLines = historyToShow.map { msg in
+
+                // Build history lines with session gap markers.
+                // When there's a >2 hour gap between consecutive messages, insert
+                // a "--- 新对话 ---" separator so GPT understands the context shifted
+                // and doesn't try to maintain continuity from the old session.
+                let sessionGapThreshold: TimeInterval = 2 * 3600 // 2 hours
+                var historyLines: [String] = []
+                let histArray = Array(historyToShow)
+
+                for (idx, msg) in histArray.enumerated() {
+                    // Check for session gap before this message
+                    if idx > 0 {
+                        let prevTime = histArray[idx - 1].timestamp
+                        let gap = msg.timestamp.timeIntervalSince(prevTime)
+                        if gap > sessionGapThreshold {
+                            historyLines.append("--- 新对话 ---")
+                        }
+                    }
+
                     let prefix = msg.isUser ? "用户" : "助理"
                     let content = msg.content
                     // Truncate long assistant replies to save tokens, but keep enough
@@ -380,9 +402,20 @@ final class GPTContextBuilder {
                     } else {
                         timeLabel = histDateFmt.string(from: msg.timestamp)
                     }
-                    return "[\(timeLabel)] \(prefix)：\(truncated)"
+                    historyLines.append("[\(timeLabel)] \(prefix)：\(truncated)")
                 }
-                parts.append("[对话历史（用于理解上下文，回答时参考最近的话题）]\n" + historyLines.joined(separator: "\n"))
+
+                // Check if the most recent history message is far from "now" —
+                // if so, tell GPT this is likely a fresh conversation
+                let lastHistoryTime = histArray.last?.timestamp ?? now
+                let timeSinceLast = now.timeIntervalSince(lastHistoryTime)
+                let headerNote: String
+                if timeSinceLast > sessionGapThreshold {
+                    headerNote = "（上次对话已是较久之前，当前可能是新话题）"
+                } else {
+                    headerNote = "（用于理解上下文，回答时参考最近的话题）"
+                }
+                parts.append("[对话历史\(headerNote)]\n" + historyLines.joined(separator: "\n"))
             }
         }
 

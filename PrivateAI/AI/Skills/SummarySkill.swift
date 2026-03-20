@@ -739,11 +739,11 @@ struct SummarySkill: ClawSkill {
                 }
             }
 
-            // --- Locations ---
+            // --- Locations: Day Timeline ---
             if !locations.isEmpty {
                 hasData = true
-                let places = Set(locations.map { $0.displayName })
-                lines.append("\n📍 **去过** \(places.prefix(3).joined(separator: "、"))")
+                let timelineLines = self.buildDayLocationTimeline(locations: locations, cal: cal)
+                lines.append(contentsOf: timelineLines)
             }
 
             // --- Photos Today ---
@@ -2497,6 +2497,153 @@ struct SummarySkill: ClawSkill {
         ("户外",   "⛰️", ["outdoor", "hiking", "camping", "park"]),
         ("雪景",   "❄️", ["snow", "winter", "skiing", "ice"]),
     ]
+
+    // MARK: - Day Location Timeline
+
+    /// Builds a chronological timeline of places visited during the day.
+    /// Clusters nearby records (same displayName), estimates dwell time from gaps,
+    /// and presents the day's movement as a narrative.
+    ///
+    /// Example output:
+    ///   📍 **足迹**  3 个地方
+    ///     09:15  🏠 家（约 2 小时）
+    ///     11:30  🏢 公司（约 5 小时 30 分钟）
+    ///     17:20  ☕ 星巴克（约 40 分钟）
+    ///   📏 活动半径约 8.2 公里
+    private func buildDayLocationTimeline(locations: [LocationRecord], cal: Calendar) -> [String] {
+        let sorted = locations.sorted { $0.timestamp < $1.timestamp }
+        guard !sorted.isEmpty else { return [] }
+
+        // --- Step 1: Cluster consecutive records at the same place ---
+        struct PlaceVisit {
+            let name: String
+            var arrivalTime: Date
+            var departureTime: Date
+            let lat: Double
+            let lon: Double
+        }
+
+        var visits: [PlaceVisit] = []
+        for record in sorted {
+            let name = record.displayName
+            if let last = visits.last, last.name == name {
+                // Extend the current visit's departure time
+                visits[visits.count - 1].departureTime = record.timestamp
+            } else {
+                visits.append(PlaceVisit(
+                    name: name,
+                    arrivalTime: record.timestamp,
+                    departureTime: record.timestamp,
+                    lat: record.latitude,
+                    lon: record.longitude
+                ))
+            }
+        }
+
+        let uniquePlaces = Set(visits.map { $0.name })
+        var lines: [String] = []
+        lines.append("\n📍 **足迹**  \(uniquePlaces.count) 个地方")
+
+        // --- Step 2: Estimate dwell time ---
+        // For each visit, dwell = time until next visit's arrival (or a cap).
+        // For the last visit, use a modest default.
+        let timeFmt = DateFormatter()
+        timeFmt.dateFormat = "HH:mm"
+        let maxDwellMinutes = 720.0 // 12-hour cap for single stay
+
+        for (i, visit) in visits.enumerated() {
+            let dwellMinutes: Double
+            if i < visits.count - 1 {
+                let nextArrival = visits[i + 1].arrivalTime
+                dwellMinutes = min(nextArrival.timeIntervalSince(visit.arrivalTime) / 60.0, maxDwellMinutes)
+            } else {
+                // Last visit: use gap from arrival to departure if meaningful,
+                // otherwise show without duration
+                let gap = visit.departureTime.timeIntervalSince(visit.arrivalTime) / 60.0
+                dwellMinutes = gap >= 5 ? gap : 0
+            }
+
+            let arrivalStr = timeFmt.string(from: visit.arrivalTime)
+            let dwellStr: String
+            if dwellMinutes >= 60 {
+                let h = Int(dwellMinutes / 60)
+                let m = Int(dwellMinutes.truncatingRemainder(dividingBy: 60))
+                dwellStr = m > 0 ? "约 \(h) 小时 \(m) 分钟" : "约 \(h) 小时"
+            } else if dwellMinutes >= 5 {
+                dwellStr = "约 \(Int(dwellMinutes)) 分钟"
+            } else {
+                dwellStr = ""
+            }
+
+            let durationTag = dwellStr.isEmpty ? "" : "（\(dwellStr)）"
+            lines.append("  \(arrivalStr)  \(visit.name)\(durationTag)")
+        }
+
+        // --- Step 3: Movement summary ---
+        // Compute activity radius: max distance between any two visited places
+        if visits.count >= 2 {
+            var maxDistance = 0.0
+            for i in 0..<visits.count {
+                for j in (i + 1)..<visits.count {
+                    let d = Self.haversineDistance(
+                        lat1: visits[i].lat, lon1: visits[i].lon,
+                        lat2: visits[j].lat, lon2: visits[j].lon
+                    )
+                    if d > maxDistance { maxDistance = d }
+                }
+            }
+            if maxDistance >= 500 { // Only show if meaningful (>500m)
+                let km = maxDistance / 1000.0
+                if km >= 1 {
+                    lines.append("  📏 活动半径约 \(String(format: "%.1f", km)) 公里")
+                } else {
+                    lines.append("  📏 活动半径约 \(Int(maxDistance)) 米")
+                }
+            }
+
+            // Transitions count insight
+            let transitions = visits.count - 1
+            if transitions >= 3 {
+                lines.append("  🔄 移动了 \(transitions) 次，今天比较奔波")
+            }
+        }
+
+        // Find main location (longest dwell time)
+        if visits.count >= 2 {
+            var longestVisit = visits[0]
+            var longestDwell = 0.0
+            for (i, visit) in visits.enumerated() {
+                let dwell: Double
+                if i < visits.count - 1 {
+                    dwell = visits[i + 1].arrivalTime.timeIntervalSince(visit.arrivalTime) / 60.0
+                } else {
+                    dwell = visit.departureTime.timeIntervalSince(visit.arrivalTime) / 60.0
+                }
+                if dwell > longestDwell {
+                    longestDwell = dwell
+                    longestVisit = visit
+                }
+            }
+            if longestDwell >= 60 {
+                let h = Int(longestDwell / 60)
+                lines.append("  🏠 主要待在「\(longestVisit.name)」约 \(h) 小时")
+            }
+        }
+
+        return lines
+    }
+
+    /// Haversine distance in meters between two coordinates.
+    private static func haversineDistance(lat1: Double, lon1: Double, lat2: Double, lon2: Double) -> Double {
+        let R = 6371000.0 // Earth radius in meters
+        let dLat = (lat2 - lat1) * .pi / 180.0
+        let dLon = (lon2 - lon1) * .pi / 180.0
+        let a = sin(dLat / 2) * sin(dLat / 2) +
+                cos(lat1 * .pi / 180.0) * cos(lat2 * .pi / 180.0) *
+                sin(dLon / 2) * sin(dLon / 2)
+        let c = 2 * atan2(sqrt(a), sqrt(1 - a))
+        return R * c
+    }
 
     /// Queries CDPhotoIndex for the given date interval and returns a compact content breakdown line.
     /// Returns nil if no indexed photos exist for the period.

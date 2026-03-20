@@ -187,6 +187,8 @@ final class ContextMemory {
     }
 
     /// Extracts the QueryTimeRange from an existing intent, if it carries one.
+    /// For intents that don't carry an explicit range but have a natural time context,
+    /// returns a sensible default so follow-up queries can inherit it.
     private func extractRange(from intent: QueryIntent) -> QueryTimeRange? {
         switch intent {
         case .exercise(let r, _): return r
@@ -199,7 +201,13 @@ final class ContextMemory {
         case .calendar(let r):   return r
         case .photos(let r):     return r
         case .comparison(let r): return r
-        default:                 return nil
+        // Rangeless intents: return their implicit time context so follow-ups
+        // can inherit a meaningful range instead of falling back to .lastWeek.
+        case .calendarNext:                return .today
+        case .exerciseLastOccurrence:      return .lastWeek
+        case .streak:                      return .thisWeek
+        case .weeklyInsight:               return .thisWeek
+        default:                           return nil
         }
     }
 
@@ -232,9 +240,14 @@ final class ContextMemory {
         case .health(let m, _): return .health(metric: m, range: range)
         case .calendar:         return .calendar(range: range)
         case .photos:           return .photos(range: range)
-        case .streak:           return .streak
-        case .weeklyInsight:    return .weeklyInsight
         case .comparison:       return .comparison(range: range)
+        // Rangeless intents: upgrade to their parent intent type with the new range.
+        // e.g. calendarNext → "那明天呢" should become .calendar(range: .tomorrow),
+        //      not stay stuck on calendarNext which ignores the time change.
+        case .calendarNext:                     return .calendar(range: range)
+        case .exerciseLastOccurrence(let f):    return .exercise(range: range, workoutFilter: f)
+        case .streak:                           return .exercise(range: range, workoutFilter: nil)
+        case .weeklyInsight:                    return .summary(range: range)
         default:                return intent
         }
     }

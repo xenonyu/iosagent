@@ -357,16 +357,35 @@ final class GPTContextBuilder {
                                hourOfDay: Int = Calendar.current.component(.hour, from: Date())) -> String {
         var lines = ["[今日健康数据]"]
 
+        // Determine if HealthKit is authorized by checking for any data today or
+        // in the weekly trend. When authorized, we explicitly show zero-value key
+        // metrics (steps, exercise, sleep) so GPT can correctly say "you haven't
+        // exercised today" instead of being silent about it (which GPT interprets
+        // as "data unavailable").
+        let todayHasAny = h.steps > 0 || h.exerciseMinutes > 0
+            || h.sleepHours > 0 || h.heartRate > 0
+        let weekHasAnyData = weeklyHealth.contains { $0.steps > 0 || $0.exerciseMinutes > 0
+            || $0.sleepHours > 0 || $0.heartRate > 0 }
+        let healthAuthorized = todayHasAny || weekHasAnyData
+
+        // Steps — show explicit 0 when authorized so GPT can say "还没走路"
         if h.steps > 0 {
             var line = "步数：\(Int(h.steps))步"
             if h.distanceKm > 0 { line += "，距离：\(String(format: "%.1f", h.distanceKm))km" }
             lines.append(line)
+        } else if healthAuthorized && hourOfDay >= 8 {
+            lines.append("步数：0步（今天还没有步行记录）")
         }
+
+        // Exercise — critical to show 0 so GPT answers "今天运动了吗？" accurately
         if h.exerciseMinutes > 0 {
             var line = "运动时间：\(Int(h.exerciseMinutes))分钟"
             if h.activeCalories > 0 { line += "，活动卡路里：\(Int(h.activeCalories))kcal" }
             lines.append(line)
+        } else if healthAuthorized && hourOfDay >= 8 {
+            lines.append("运动时间：0分钟（今天还没有运动记录）")
         }
+
         if h.heartRate > 0 {
             var line = "心率：均值\(Int(h.heartRate))bpm"
             if h.restingHeartRate > 0 { line += "，静息\(Int(h.restingHeartRate))bpm" }
@@ -377,6 +396,8 @@ final class GPTContextBuilder {
         if h.oxygenSaturation > 0 { lines.append("血氧：\(Int(h.oxygenSaturation))%") }
         if h.vo2Max > 0 { lines.append("VO2 Max：\(String(format: "%.1f", h.vo2Max)) ml/kg·min") }
         if h.bodyMassKg > 0 { lines.append("体重：\(String(format: "%.1f", h.bodyMassKg))kg") }
+
+        // Sleep — show explicit 0 so GPT can answer "昨晚睡了吗？" accurately
         if h.sleepHours > 0 {
             var line = "睡眠：\(String(format: "%.1f", h.sleepHours))小时"
             var phases: [String] = []
@@ -394,7 +415,10 @@ final class GPTContextBuilder {
                 line += "，入睡\(fmt.string(from: onset))，起床\(fmt.string(from: wake))"
             }
             lines.append(line)
+        } else if healthAuthorized {
+            lines.append("睡眠：无记录（未检测到睡眠数据，可能未佩戴手表睡觉）")
         }
+
         if !h.workouts.isEmpty {
             let wLines = h.workouts.prefix(5).map { w in
                 let name = "\(w.typeEmoji) \(w.typeName)"
@@ -405,15 +429,17 @@ final class GPTContextBuilder {
                 return s
             }
             lines.append("今日运动：" + wLines.joined(separator: "；"))
+        } else if h.exerciseMinutes > 0 {
+            // Has exercise minutes (from Move ring) but no workout sessions —
+            // user was active but didn't start a formal workout
+            lines.append("今日运动：无正式运动记录（但有\(Int(h.exerciseMinutes))分钟活动，可能是日常活动计入）")
         }
 
         if lines.count == 1 {
-            // Distinguish "early morning, no data yet" from "HealthKit not authorized"
-            let weekHasAnyData = weeklyHealth.contains { $0.steps > 0 || $0.exerciseMinutes > 0
-                || $0.sleepHours > 0 || $0.heartRate > 0 }
-            if weekHasAnyData && hourOfDay < 8 {
+            // No data at all and no zero-value lines were added
+            if healthAuthorized && hourOfDay < 8 {
                 lines.append("（现在是清晨，今日数据还在积累中，HealthKit 已授权正常）")
-            } else if weekHasAnyData {
+            } else if healthAuthorized {
                 lines.append("（今日暂无健康数据，但近日有记录——可能数据尚未同步，HealthKit 已授权正常）")
             } else {
                 lines.append("（今日暂无健康数据，可能尚未授权 HealthKit 或设备未佩戴）")

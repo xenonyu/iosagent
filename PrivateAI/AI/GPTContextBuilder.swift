@@ -285,6 +285,12 @@ final class GPTContextBuilder {
             parts.append(trendSection(weeklyHealth))
         }
 
+        // 7-DAY SLEEP QUALITY (per-day phase breakdown for sleep analysis)
+        let sleepAnalysis = weeklySleepSection(weeklyHealth)
+        if !sleepAnalysis.isEmpty {
+            parts.append(sleepAnalysis)
+        }
+
         // 7-DAY WORKOUT HISTORY (individual sessions GPT can reference)
         let workoutHistory = weeklyWorkoutSection(weeklyHealth)
         if !workoutHistory.isEmpty {
@@ -986,6 +992,118 @@ final class GPTContextBuilder {
                 .map { "\($0.key)\($0.value)次" }
             lines.append("运动类型：\(breakdown.joined(separator: "、"))")
         }
+
+        return lines.joined(separator: "\n")
+    }
+
+    // MARK: - Weekly Sleep Analysis
+
+    /// Builds a per-day sleep quality breakdown for the past 7 days.
+    /// Enables GPT to answer "最近睡眠质量怎么样？", "哪天睡得最好？",
+    /// "我入睡时间规律吗？" with precise phase-level data.
+    /// Returns empty string if fewer than 2 days have sleep data.
+    private func weeklySleepSection(_ summaries: [HealthSummary]) -> String {
+        let cal = Calendar.current
+        let dateFmt = DateFormatter(); dateFmt.dateFormat = "M/d"
+        let weekdayFmt = DateFormatter()
+        weekdayFmt.locale = Locale(identifier: "zh_CN")
+        weekdayFmt.dateFormat = "EEE"
+        let timeFmt = DateFormatter(); timeFmt.dateFormat = "HH:mm"
+
+        // Only include days that have sleep data
+        let daysWithSleep = summaries.prefix(7).filter { $0.sleepHours > 0 }
+        guard daysWithSleep.count >= 2 else { return "" }
+
+        var lines = ["[近7天睡眠质量分析]"]
+
+        // Show oldest → newest for natural trend reading
+        let chronological = Array(daysWithSleep.reversed())
+
+        for s in chronological {
+            let dayName: String
+            if cal.isDateInToday(s.date) {
+                dayName = "今天"
+            } else if cal.isDateInYesterday(s.date) {
+                dayName = "昨天"
+            } else {
+                dayName = weekdayFmt.string(from: s.date)
+            }
+            let dateLabel = "\(dateFmt.string(from: s.date))(\(dayName))"
+
+            var parts: [String] = []
+            parts.append("总\(String(format: "%.1f", s.sleepHours))h")
+
+            // Phase breakdown
+            if s.hasSleepPhases {
+                var phases: [String] = []
+                if s.sleepDeepHours > 0 { phases.append("深睡\(String(format: "%.1f", s.sleepDeepHours))h") }
+                if s.sleepREMHours > 0 { phases.append("REM\(String(format: "%.1f", s.sleepREMHours))h") }
+                if s.sleepCoreHours > 0 { phases.append("浅睡\(String(format: "%.1f", s.sleepCoreHours))h") }
+                parts.append(phases.joined(separator: "/"))
+            }
+
+            // Sleep efficiency
+            if s.inBedHours > 0 && s.inBedHours >= s.sleepHours {
+                let efficiency = Int((s.sleepHours / s.inBedHours) * 100)
+                parts.append("效率\(efficiency)%")
+            }
+
+            // Onset and wake times for circadian regularity analysis
+            if let onset = s.sleepOnset {
+                parts.append("入睡\(timeFmt.string(from: onset))")
+            }
+            if let wake = s.wakeTime {
+                parts.append("起床\(timeFmt.string(from: wake))")
+            }
+
+            lines.append("\(dateLabel)：\(parts.joined(separator: "，"))")
+        }
+
+        // Weekly sleep quality summary
+        let totalDays = daysWithSleep.count
+        let avgSleep = daysWithSleep.map(\.sleepHours).reduce(0, +) / Double(totalDays)
+        var summaryParts: [String] = []
+        summaryParts.append("\(totalDays)天有睡眠数据，均\(String(format: "%.1f", avgSleep))h")
+
+        // Average deep sleep ratio — key quality metric
+        let daysWithPhases = daysWithSleep.filter { $0.hasSleepPhases }
+        if !daysWithPhases.isEmpty {
+            let avgDeep = daysWithPhases.map(\.sleepDeepHours).reduce(0, +) / Double(daysWithPhases.count)
+            let avgREM = daysWithPhases.map(\.sleepREMHours).reduce(0, +) / Double(daysWithPhases.count)
+            summaryParts.append("均深睡\(String(format: "%.1f", avgDeep))h/REM\(String(format: "%.1f", avgREM))h")
+
+            // Deep sleep ratio — healthy is 15-25% of total sleep
+            let avgTotal = daysWithPhases.map(\.sleepHours).reduce(0, +) / Double(daysWithPhases.count)
+            if avgTotal > 0 {
+                let deepRatio = Int((avgDeep / avgTotal) * 100)
+                summaryParts.append("深睡占比\(deepRatio)%")
+            }
+        }
+
+        // Sleep regularity — std dev of onset times
+        let onsets = daysWithSleep.compactMap { $0.sleepOnset }
+        if onsets.count >= 3 {
+            // Convert onset to minutes-since-18:00 for comparison (handles cross-midnight)
+            let onsetMinutes = onsets.map { onset -> Double in
+                let comps = cal.dateComponents([.hour, .minute], from: onset)
+                var mins = Double((comps.hour ?? 0) * 60 + (comps.minute ?? 0))
+                // Normalize: times before 18:00 are next-day (e.g. 01:00 = 25*60)
+                if mins < 18 * 60 { mins += 24 * 60 }
+                return mins
+            }
+            let mean = onsetMinutes.reduce(0, +) / Double(onsetMinutes.count)
+            let variance = onsetMinutes.map { ($0 - mean) * ($0 - mean) }.reduce(0, +) / Double(onsetMinutes.count)
+            let stdDevMins = Int(variance.squareRoot())
+            if stdDevMins <= 30 {
+                summaryParts.append("入睡时间较规律（波动≈\(stdDevMins)分钟）")
+            } else if stdDevMins <= 60 {
+                summaryParts.append("入睡时间有些波动（波动≈\(stdDevMins)分钟）")
+            } else {
+                summaryParts.append("入睡时间不太规律（波动≈\(stdDevMins)分钟）")
+            }
+        }
+
+        lines.append("周睡眠概要：\(summaryParts.joined(separator: "，"))")
 
         return lines.joined(separator: "\n")
     }

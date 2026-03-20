@@ -35,6 +35,9 @@ final class GPTContextBuilder {
     // MARK: - Build Prompt
 
     /// Gathers all local data in parallel then assembles a structured prompt.
+    /// Includes a safety timeout (10s) for HealthKit queries — if they hang
+    /// (system daemon unresponsive, corrupted DB, etc.), the prompt is built
+    /// without health data rather than blocking the UI indefinitely.
     func buildPrompt(userQuery: String,
                      conversationHistory: [ChatMessage],
                      completion: @escaping (String) -> Void) {
@@ -54,47 +57,67 @@ final class GPTContextBuilder {
             group.leave()
         }
 
-        group.notify(queue: .main) { [weak self] in
-            guard let self else { return }
+        // Wait on a background queue with a timeout, then dispatch back to main.
+        // HealthKit queries go through a system daemon — if it's unresponsive,
+        // the DispatchGroup would never notify, leaving the user stuck in
+        // "thinking" state indefinitely. The 10s timeout ensures we always
+        // respond, even if health data is unavailable.
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let waitResult = group.wait(timeout: .now() + 10)
 
-            let now = Date()
-            let cal = Calendar.current
-            // Use startOfDay to ensure we capture full calendar days, matching
-            // how health data is fetched (per-day summaries for days 0..6).
-            // Without startOfDay, a query at 3pm would miss data before 3pm on
-            // the earliest day — e.g., photos taken Wednesday morning would vanish
-            // if it's now Wednesday 3pm, 7 days later.
-            let dataRangeStart = cal.startOfDay(for: cal.date(byAdding: .day, value: -6, to: now) ?? now)
-            let sevenDaysAhead = cal.date(byAdding: .day, value: 7, to: now) ?? now
+            DispatchQueue.main.async {
+                guard let self else { return }
 
-            let todayEvents = self.calendarService.todayEvents()
-            let upcomingEvents = self.calendarService.fetchEvents(from: now, to: sevenDaysAhead)
-            // Also fetch past 7 days of calendar events so GPT can answer
-            // "what meetings did I have yesterday?" or "last week's schedule"
-            let pastStartOfToday = cal.startOfDay(for: now)
-            let pastEvents = self.calendarService.fetchEvents(from: dataRangeStart, to: pastStartOfToday)
-            let recentPhotos = self.photoService.fetchAllMedia(from: dataRangeStart, to: now)
-            let locationRecords = CDLocationRecord.fetchRecent(in: self.coreDataContext, since: dataRangeStart)
-            let lifeEvents = CDLifeEvent.fetchRecent(limit: 15, in: self.coreDataContext)
+                var healthTimedOut = false
+                if waitResult == .timedOut {
+                    // HealthKit queries didn't complete in time — proceed with empty data.
+                    // The callbacks may still fire later on main, but the local vars won't
+                    // be read again, so there's no race condition.
+                    todayHealth = HealthSummary()
+                    weeklyHealth = []
+                    healthTimedOut = true
+                }
 
-            // Run photo search when query looks photo-related so GPT can describe results
-            let (photoResults, photoQuery) = self.searchPhotosIfNeeded(query: userQuery)
+                let now = Date()
+                let cal = Calendar.current
+                // Use startOfDay to ensure we capture full calendar days, matching
+                // how health data is fetched (per-day summaries for days 0..6).
+                // Without startOfDay, a query at 3pm would miss data before 3pm on
+                // the earliest day — e.g., photos taken Wednesday morning would vanish
+                // if it's now Wednesday 3pm, 7 days later.
+                let dataRangeStart = cal.startOfDay(for: cal.date(byAdding: .day, value: -6, to: now) ?? now)
+                let sevenDaysAhead = cal.date(byAdding: .day, value: 7, to: now) ?? now
 
-            let prompt = self.assemble(
-                userQuery: userQuery,
-                conversationHistory: conversationHistory,
-                todayHealth: todayHealth,
-                weeklyHealth: weeklyHealth,
-                todayEvents: todayEvents,
-                upcomingEvents: upcomingEvents,
-                pastEvents: pastEvents,
-                recentPhotos: recentPhotos,
-                locationRecords: locationRecords,
-                lifeEvents: lifeEvents,
-                photoSearchResults: photoResults,
-                photoSearchQuery: photoQuery
-            )
-            completion(prompt)
+                let todayEvents = self.calendarService.todayEvents()
+                let upcomingEvents = self.calendarService.fetchEvents(from: now, to: sevenDaysAhead)
+                // Also fetch past 7 days of calendar events so GPT can answer
+                // "what meetings did I have yesterday?" or "last week's schedule"
+                let pastStartOfToday = cal.startOfDay(for: now)
+                let pastEvents = self.calendarService.fetchEvents(from: dataRangeStart, to: pastStartOfToday)
+                let recentPhotos = self.photoService.fetchAllMedia(from: dataRangeStart, to: now)
+                let locationRecords = CDLocationRecord.fetchRecent(in: self.coreDataContext, since: dataRangeStart)
+                let lifeEvents = CDLifeEvent.fetchRecent(limit: 15, in: self.coreDataContext)
+
+                // Run photo search when query looks photo-related so GPT can describe results
+                let (photoResults, photoQuery) = self.searchPhotosIfNeeded(query: userQuery)
+
+                let prompt = self.assemble(
+                    userQuery: userQuery,
+                    conversationHistory: conversationHistory,
+                    todayHealth: todayHealth,
+                    weeklyHealth: weeklyHealth,
+                    todayEvents: todayEvents,
+                    upcomingEvents: upcomingEvents,
+                    pastEvents: pastEvents,
+                    recentPhotos: recentPhotos,
+                    locationRecords: locationRecords,
+                    lifeEvents: lifeEvents,
+                    photoSearchResults: photoResults,
+                    photoSearchQuery: photoQuery,
+                    healthTimedOut: healthTimedOut
+                )
+                completion(prompt)
+            }
         }
     }
 
@@ -111,7 +134,8 @@ final class GPTContextBuilder {
                           locationRecords: [CDLocationRecord],
                           lifeEvents: [CDLifeEvent],
                           photoSearchResults: [PhotoSearchService.SearchResult] = [],
-                          photoSearchQuery: PhotoSearchService.PhotoQuery? = nil) -> String {
+                          photoSearchQuery: PhotoSearchService.PhotoQuery? = nil,
+                          healthTimedOut: Bool = false) -> String {
         var parts: [String] = []
 
         // SYSTEM
@@ -135,7 +159,9 @@ final class GPTContextBuilder {
         let hourOfDay = Calendar.current.component(.hour, from: now)
 
         // Health — Apple doesn't expose read-only auth status, so we infer from data
-        if todayHasHealth || weekHasHealth {
+        if healthTimedOut {
+            unavailableData.append("健康数据（读取超时，HealthKit 暂时无响应，请稍后再试）")
+        } else if todayHasHealth || weekHasHealth {
             availableData.append("健康数据")
         } else if self.healthService.isHealthDataAvailable {
             unavailableData.append("健康数据（HealthKit 可用但近7天无数据，可能未授权或设备未佩戴）")

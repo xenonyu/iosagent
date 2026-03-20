@@ -1715,6 +1715,25 @@ final class GPTContextBuilder {
             parts.append("\(label)：\(weekSubTotal(weekBeforeLastDays))")
         }
 
+        // Week-over-week comparison — pre-computed deltas so GPT doesn't have to
+        // mentally compare two separate stat blocks. Users frequently ask "这周和
+        // 上周比怎么样？" and GPT often miscalculates when doing arithmetic across
+        // two text paragraphs (e.g. mixing up totals vs averages, or comparing
+        // 4-day totals with 7-day totals). Pre-computing with daily averages for
+        // fair comparison eliminates this entire class of errors.
+        // Require ≥2 completed days this week so the comparison is meaningful —
+        // on Monday with only today's partial data, week comparison would be misleading.
+        if thisWeekDays.count >= 2 && !lastWeekDays.isEmpty {
+            let comparison = weekOverWeekComparison(
+                thisWeek: thisWeekDays,
+                lastWeek: lastWeekDays,
+                todaySummary: todaySummary
+            )
+            if !comparison.isEmpty {
+                parts.append(comparison)
+            }
+        }
+
         guard !parts.isEmpty else { return "" }
         return parts.joined(separator: "\n")
     }
@@ -1898,6 +1917,140 @@ final class GPTContextBuilder {
         if s.sleepHours > 0 { items.append("睡眠\(String(format: "%.1f", s.sleepHours))h") }
         if s.standMinutes > 0 { items.append("站立\(Int(s.standMinutes))分钟") }
         return items.isEmpty ? "暂无数据" : items.joined(separator: "，")
+    }
+
+    /// Pre-computes week-over-week deltas using daily averages for fair comparison.
+    /// GPT frequently miscalculates when comparing two separate per-week stat blocks:
+    ///   - Compares 4-day totals with 7-day totals (unfair)
+    ///   - Mixes up which number belongs to which week
+    ///   - Gets percentage changes wrong
+    /// By providing explicit "↑步数日均多1200步(+18%)" style deltas, GPT can directly
+    /// quote the comparison without any arithmetic.
+    private func weekOverWeekComparison(thisWeek: [HealthSummary],
+                                         lastWeek: [HealthSummary],
+                                         todaySummary: HealthSummary?) -> String {
+        var deltas: [String] = []
+
+        // Helper: format a delta with direction arrow and percentage
+        func formatDelta(_ label: String, thisVal: Double, lastVal: Double, unit: String, higherIsBetter: Bool = true) {
+            guard thisVal > 0 || lastVal > 0 else { return }
+            let diff = thisVal - lastVal
+            // Skip negligible changes (< 3% of max value)
+            let maxVal = max(thisVal, lastVal)
+            guard maxVal > 0 && abs(diff) / maxVal >= 0.03 else {
+                deltas.append("\(label)：持平")
+                return
+            }
+            let pct = Int((diff / lastVal) * 100)
+            let arrow: String
+            let qualifier: String
+            if diff > 0 {
+                arrow = "↑"
+                qualifier = higherIsBetter ? "" : "⚠️"
+            } else {
+                arrow = "↓"
+                qualifier = higherIsBetter ? "" : ""
+            }
+            // Show absolute delta + percentage for clear communication
+            let absDiff: String
+            if unit == "h" {
+                absDiff = String(format: "%.1f", abs(diff))
+            } else {
+                absDiff = "\(Int(abs(diff)))"
+            }
+            deltas.append("\(label)：\(arrow)\(absDiff)\(unit)（\(pct >= 0 ? "+" : "")\(pct)%）\(qualifier)")
+        }
+
+        let thisCount = Double(thisWeek.count)
+        let lastCount = Double(lastWeek.count)
+
+        // Steps — daily average
+        let thisStepsAvg = thisWeek.map(\.steps).reduce(0, +) / thisCount
+        let lastStepsAvg = lastWeek.map(\.steps).reduce(0, +) / lastCount
+        formatDelta("日均步数", thisVal: thisStepsAvg, lastVal: lastStepsAvg, unit: "步")
+
+        // Exercise — active days and daily average minutes
+        let thisExDays = thisWeek.filter { $0.exerciseMinutes > 0 }
+        let lastExDays = lastWeek.filter { $0.exerciseMinutes > 0 }
+        let thisExTotal = thisExDays.map(\.exerciseMinutes).reduce(0, +)
+        let lastExTotal = lastExDays.map(\.exerciseMinutes).reduce(0, +)
+        if thisExTotal > 0 || lastExTotal > 0 {
+            let thisExAvg = thisExTotal / thisCount
+            let lastExAvg = lastExTotal / lastCount
+            formatDelta("日均运动", thisVal: thisExAvg, lastVal: lastExAvg, unit: "分钟")
+            // Active day ratio — "4/6天 vs 3/7天" is more informative than just averages
+            let thisRatio = Double(thisExDays.count) / thisCount
+            let lastRatio = Double(lastExDays.count) / lastCount
+            if abs(thisRatio - lastRatio) > 0.1 {
+                let thisRatioStr = "\(thisExDays.count)/\(thisWeek.count)天"
+                let lastRatioStr = "\(lastExDays.count)/\(lastWeek.count)天"
+                let dir = thisRatio > lastRatio ? "↑更频繁" : "↓减少"
+                deltas.append("运动频率：本周\(thisRatioStr) vs 上周\(lastRatioStr) \(dir)")
+            }
+        }
+
+        // Sleep — average hours and deep sleep ratio
+        let thisSleepDays = thisWeek.filter { $0.sleepHours > 0 }
+        let lastSleepDays = lastWeek.filter { $0.sleepHours > 0 }
+        if !thisSleepDays.isEmpty && !lastSleepDays.isEmpty {
+            let thisSleepAvg = thisSleepDays.map(\.sleepHours).reduce(0, +) / Double(thisSleepDays.count)
+            let lastSleepAvg = lastSleepDays.map(\.sleepHours).reduce(0, +) / Double(lastSleepDays.count)
+            formatDelta("均睡眠时长", thisVal: thisSleepAvg, lastVal: lastSleepAvg, unit: "h")
+
+            // Deep sleep comparison — critical quality metric
+            let thisDeepDays = thisSleepDays.filter { $0.hasSleepPhases }
+            let lastDeepDays = lastSleepDays.filter { $0.hasSleepPhases }
+            if !thisDeepDays.isEmpty && !lastDeepDays.isEmpty {
+                let thisDeepAvg = thisDeepDays.map(\.sleepDeepHours).reduce(0, +) / Double(thisDeepDays.count)
+                let lastDeepAvg = lastDeepDays.map(\.sleepDeepHours).reduce(0, +) / Double(lastDeepDays.count)
+                formatDelta("均深睡", thisVal: thisDeepAvg, lastVal: lastDeepAvg, unit: "h")
+            }
+        }
+
+        // Calories — daily average total expenditure
+        let thisCalDays = thisWeek.filter { $0.activeCalories > 0 || $0.basalCalories > 0 }
+        let lastCalDays = lastWeek.filter { $0.activeCalories > 0 || $0.basalCalories > 0 }
+        if !thisCalDays.isEmpty && !lastCalDays.isEmpty {
+            let thisHasBasal = thisCalDays.contains { $0.basalCalories > 0 }
+            let lastHasBasal = lastCalDays.contains { $0.basalCalories > 0 }
+            if thisHasBasal && lastHasBasal {
+                // Compare total expenditure (active + basal) — this is what users mean by "消耗"
+                let thisTotalAvg = thisCalDays.map { $0.activeCalories + $0.basalCalories }.reduce(0, +) / thisCount
+                let lastTotalAvg = lastCalDays.map { $0.activeCalories + $0.basalCalories }.reduce(0, +) / lastCount
+                formatDelta("日均总消耗", thisVal: thisTotalAvg, lastVal: lastTotalAvg, unit: "kcal")
+            } else {
+                // Only active calories available — compare those, but label clearly
+                let thisActiveAvg = thisCalDays.map(\.activeCalories).reduce(0, +) / thisCount
+                let lastActiveAvg = lastCalDays.map(\.activeCalories).reduce(0, +) / lastCount
+                formatDelta("日均活动消耗", thisVal: thisActiveAvg, lastVal: lastActiveAvg, unit: "kcal")
+            }
+        }
+
+        // Resting heart rate — lower is generally better (inverted comparison)
+        let thisRHRDays = thisWeek.filter { $0.restingHeartRate > 0 }
+        let lastRHRDays = lastWeek.filter { $0.restingHeartRate > 0 }
+        if !thisRHRDays.isEmpty && !lastRHRDays.isEmpty {
+            let thisRHR = thisRHRDays.map(\.restingHeartRate).reduce(0, +) / Double(thisRHRDays.count)
+            let lastRHR = lastRHRDays.map(\.restingHeartRate).reduce(0, +) / Double(lastRHRDays.count)
+            // For resting HR, lower is better — so "higher is NOT better"
+            formatDelta("均静息心率", thisVal: thisRHR, lastVal: lastRHR, unit: "bpm", higherIsBetter: false)
+        }
+
+        // Distance — daily average km
+        let thisDistDays = thisWeek.filter { $0.distanceKm > 0.01 }
+        let lastDistDays = lastWeek.filter { $0.distanceKm > 0.01 }
+        if !thisDistDays.isEmpty && !lastDistDays.isEmpty {
+            let thisDistAvg = thisDistDays.map(\.distanceKm).reduce(0, +) / thisCount
+            let lastDistAvg = lastDistDays.map(\.distanceKm).reduce(0, +) / lastCount
+            formatDelta("日均距离", thisVal: thisDistAvg, lastVal: lastDistAvg, unit: "km")
+        }
+
+        guard !deltas.isEmpty else { return "" }
+
+        // Note: comparison is always based on daily averages, which is the only fair
+        // way to compare weeks of different lengths (this week may have 3 completed days
+        // vs last week's full 7 days). This is stated explicitly so GPT quotes it properly.
+        return "周环比（本周\(thisWeek.count)天日均 vs 上周\(lastWeek.count)天日均）：\(deltas.joined(separator: "，"))"
     }
 
     private func calendarSection(todayEvents: [CalendarEventItem], upcoming: [CalendarEventItem], past: [CalendarEventItem] = []) -> String {

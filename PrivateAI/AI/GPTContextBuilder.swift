@@ -209,6 +209,14 @@ final class GPTContextBuilder {
         - 涉及多天数据时，可引用「近7天趋势」进行对比分析，指出趋势变化。
         - 不要重复罗列所有数据，只回答用户问到的内容。
         - 如果用户提到家人（如"我妈"、"我爸"等），参考下方[用户信息]中的家庭成员数据来回答。
+
+        回复格式：
+        - 简单问题（如「今天几步」「心率多少」）：直接回答数值+一句话点评，不超过2-3行。
+        - 中等问题（如「睡眠怎么样」「今天运动情况」）：数据+简要分析，3-5行即可。
+        - 复杂问题（如「总结这周」「对比分析」）：可以用结构化格式，但控制在10行以内。
+        - 闲聊/问候（如「你好」「谢谢」）：自然回复即可，1-2句话。
+        - 不要使用 Markdown 标题（# ## ###），不要使用粗体（**）。可以适当使用 emoji 和换行来组织内容。
+        - 这是手机 App 聊天界面，保持回复紧凑、适合手机阅读。
         """)
 
         // USER PROFILE
@@ -293,8 +301,11 @@ final class GPTContextBuilder {
                 let historyLines = historyToShow.map { msg in
                     let prefix = msg.isUser ? "用户：" : "助理："
                     let content = msg.content
-                    // Truncate long assistant replies to save tokens
-                    let truncated = content.count > 150 ? String(content.prefix(150)) + "…" : content
+                    // Truncate long assistant replies to save tokens, but keep enough
+                    // context for meaningful follow-up conversations (300 chars).
+                    // User messages are kept in full (usually short).
+                    let limit = msg.isUser ? 200 : 300
+                    let truncated = content.count > limit ? String(content.prefix(limit)) + "…" : content
                     return prefix + truncated
                 }
                 parts.append("[对话历史]\n" + historyLines.joined(separator: "\n"))

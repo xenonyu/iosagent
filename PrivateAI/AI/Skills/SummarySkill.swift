@@ -662,9 +662,21 @@ struct SummarySkill: ClawSkill {
             // Surface trends from recent 7-day data that the user wouldn't notice on their own.
             // This is the core "mirror" value: iosclaw tells you what's happening over time.
             let patternAlerts = self.buildMultiDayPatternAlerts(recentSummaries: recentSummaries, cal: cal)
-            if !patternAlerts.isEmpty {
+
+            // --- Cross-Domain Insights (Calendar × Health) ---
+            // Connect calendar busyness to health outcomes — insights only iosclaw can provide
+            // because it sees both your schedule and your body data.
+            let crossAlerts = self.buildCrossDomainAlerts(
+                recentSummaries: recentSummaries,
+                context: context,
+                cal: cal
+            )
+
+            let allAlerts = patternAlerts + crossAlerts
+            if !allAlerts.isEmpty {
                 lines.append("\n📊 **近期趋势**")
-                patternAlerts.forEach { lines.append("  \($0)") }
+                // Cap combined alerts at 4 to stay digestible
+                allAlerts.prefix(4).forEach { lines.append("  \($0)") }
             }
 
             // --- Habits ---
@@ -1496,6 +1508,147 @@ struct SummarySkill: ClawSkill {
 
         // Cap at 3 alerts to avoid overwhelming the daily review
         return Array(alerts.prefix(3))
+    }
+
+    // MARK: - Cross-Domain Insights (Calendar × Health)
+
+    /// Detects patterns that span multiple iOS data sources.
+    /// This is what makes iosclaw unique: connecting calendar busyness to health outcomes
+    /// reveals insights no single-domain app can provide.
+    private func buildCrossDomainAlerts(
+        recentSummaries: [HealthSummary],
+        context: SkillContext,
+        cal: Calendar
+    ) -> [String] {
+        let pastDays = recentSummaries
+            .filter { !cal.isDateInToday($0.date) && $0.hasData }
+            .sorted { $0.date < $1.date }
+
+        guard pastDays.count >= 3, context.calendarService.isAuthorized else { return [] }
+
+        var alerts: [String] = []
+
+        // Fetch calendar events for the same period as health data
+        guard let earliest = pastDays.first?.date,
+              let latestDate = pastDays.last?.date,
+              let rangeEnd = cal.date(byAdding: .day, value: 1, to: cal.startOfDay(for: latestDate))
+        else { return [] }
+        let allEvents = context.calendarService.fetchEvents(from: cal.startOfDay(for: earliest), to: rangeEnd)
+
+        // Group timed events by day
+        let timedEvents = allEvents.filter { !$0.isAllDay }
+        var eventsByDay: [Date: [CalendarEventItem]] = [:]
+        for event in timedEvents {
+            let day = cal.startOfDay(for: event.startDate)
+            eventsByDay[day, default: []].append(event)
+        }
+
+        // --- 1. Meeting-heavy days vs exercise ---
+        // Classify each health day as "busy" (3+ meetings or 3h+ scheduled) vs "light"
+        var busyDayExercise: [Double] = []
+        var lightDayExercise: [Double] = []
+        var busyDaySteps: [Double] = []
+        var lightDaySteps: [Double] = []
+
+        for day in pastDays {
+            let dayStart = cal.startOfDay(for: day.date)
+            let dayEvents = eventsByDay[dayStart] ?? []
+            let meetingMinutes = dayEvents.reduce(0.0) { $0 + $1.duration } / 60.0
+            let isBusy = dayEvents.count >= 3 || meetingMinutes >= 180
+
+            if isBusy {
+                busyDayExercise.append(day.exerciseMinutes)
+                busyDaySteps.append(day.steps)
+            } else {
+                lightDayExercise.append(day.exerciseMinutes)
+                lightDaySteps.append(day.steps)
+            }
+        }
+
+        if busyDayExercise.count >= 2 && lightDayExercise.count >= 2 {
+            let avgBusyEx = busyDayExercise.reduce(0, +) / Double(busyDayExercise.count)
+            let avgLightEx = lightDayExercise.reduce(0, +) / Double(lightDayExercise.count)
+            if avgLightEx > 0 && avgBusyEx < avgLightEx * 0.5 {
+                // Exercise drops by more than half on busy days
+                let dropPct = Int((1.0 - avgBusyEx / avgLightEx) * 100)
+                alerts.append("📅×🏃 会议多的日子运动减少 \(dropPct)%（均 \(Int(avgBusyEx))min vs 空闲日 \(Int(avgLightEx))min），忙碌时更要见缝插针动一动")
+            } else if avgBusyEx > avgLightEx * 1.3 && avgBusyEx >= 30 {
+                // Impressive: exercise is HIGHER on busy days
+                alerts.append("📅×🏃 忙碌的日子反而运动更多（\(Int(avgBusyEx))min vs 空闲日 \(Int(avgLightEx))min），自律节奏很赞！")
+            }
+        }
+
+        // --- 2. Busy day sleep impact ---
+        // Check if sleep quality is worse after meeting-heavy days
+        if pastDays.count >= 4 {
+            var sleepAfterBusy: [Double] = []
+            var sleepAfterLight: [Double] = []
+
+            for i in 1..<pastDays.count {
+                let prevDay = cal.startOfDay(for: pastDays[i - 1].date)
+                let prevEvents = eventsByDay[prevDay] ?? []
+                let prevMeetingMin = prevEvents.reduce(0.0) { $0 + $1.duration } / 60.0
+                let wasBusy = prevEvents.count >= 3 || prevMeetingMin >= 180
+
+                let sleepHours = pastDays[i].sleepHours
+                guard sleepHours > 0 else { continue }
+
+                if wasBusy {
+                    sleepAfterBusy.append(sleepHours)
+                } else {
+                    sleepAfterLight.append(sleepHours)
+                }
+            }
+
+            if sleepAfterBusy.count >= 2 && sleepAfterLight.count >= 2 {
+                let avgSleepBusy = sleepAfterBusy.reduce(0, +) / Double(sleepAfterBusy.count)
+                let avgSleepLight = sleepAfterLight.reduce(0, +) / Double(sleepAfterLight.count)
+                let diff = avgSleepLight - avgSleepBusy
+                if diff >= 0.5 {
+                    alerts.append("📅×😴 忙碌日后的睡眠平均少 \(String(format: "%.1f", diff))h（\(String(format: "%.1f", avgSleepBusy))h vs \(String(format: "%.1f", avgSleepLight))h），工作压力可能影响了休息质量")
+                }
+            }
+        }
+
+        // --- 3. Weekend vs weekday gap ---
+        // Detect if the user's weekend health profile is significantly different
+        var weekdayHealth: (steps: [Double], exercise: [Double], sleep: [Double]) = ([], [], [])
+        var weekendHealth: (steps: [Double], exercise: [Double], sleep: [Double]) = ([], [], [])
+
+        for day in pastDays {
+            let wd = cal.component(.weekday, from: day.date)
+            let isWeekend = (wd == 1 || wd == 7)
+            if isWeekend {
+                if day.steps > 0 { weekendHealth.steps.append(day.steps) }
+                if day.exerciseMinutes > 0 { weekendHealth.exercise.append(day.exerciseMinutes) }
+                if day.sleepHours > 0 { weekendHealth.sleep.append(day.sleepHours) }
+            } else {
+                if day.steps > 0 { weekdayHealth.steps.append(day.steps) }
+                if day.exerciseMinutes > 0 { weekdayHealth.exercise.append(day.exerciseMinutes) }
+                if day.sleepHours > 0 { weekdayHealth.sleep.append(day.sleepHours) }
+            }
+        }
+
+        // Weekend sleep recovery pattern
+        if weekendHealth.sleep.count >= 1 && weekdayHealth.sleep.count >= 2 {
+            let wdAvg = weekdayHealth.sleep.reduce(0, +) / Double(weekdayHealth.sleep.count)
+            let weAvg = weekendHealth.sleep.reduce(0, +) / Double(weekendHealth.sleep.count)
+            let diff = weAvg - wdAvg
+            if diff >= 1.0 {
+                alerts.append("🛌 周末比工作日多睡 \(String(format: "%.1f", diff))h（\(String(format: "%.1f", weAvg))h vs \(String(format: "%.1f", wdAvg))h），工作日睡眠债务在周末补回")
+            }
+        }
+
+        // Weekend exercise difference
+        if weekendHealth.exercise.count >= 1 && weekdayHealth.exercise.count >= 2 {
+            let wdAvg = weekdayHealth.exercise.reduce(0, +) / Double(weekdayHealth.exercise.count)
+            let weAvg = weekendHealth.exercise.reduce(0, +) / Double(weekendHealth.exercise.count)
+            if weAvg > wdAvg * 2.0 && weAvg >= 30 {
+                alerts.append("🏃 周末运动量是工作日的 \(String(format: "%.1f", weAvg / max(1, wdAvg))) 倍，试试工作日午休散步增加日常活动")
+            }
+        }
+
+        return Array(alerts.prefix(2))
     }
 
     // MARK: - Helpers

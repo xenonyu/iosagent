@@ -500,11 +500,19 @@ final class GPTContextBuilder {
 
                     let prefix = msg.isUser ? "用户" : "助理"
                     let content = msg.content
-                    // Truncate long assistant replies to save tokens, but keep enough
-                    // context for meaningful follow-up conversations (300 chars).
-                    // User messages are kept in full (usually short).
-                    let limit = msg.isUser ? 200 : 300
-                    let truncated = content.count > limit ? String(content.prefix(limit)) + "…" : content
+                    // Recency-biased truncation: keep the most recent exchange at a
+                    // higher char limit so GPT has rich context for follow-up questions
+                    // (e.g. "详细说说运动" after a weekly summary). Older messages are
+                    // truncated more aggressively to save tokens.
+                    // "Most recent" = last 2 messages in the array (typically 1 user + 1 assistant).
+                    let isRecent = idx >= histArray.count - 2
+                    let charLimit: Int
+                    if msg.isUser {
+                        charLimit = isRecent ? 300 : 150
+                    } else {
+                        charLimit = isRecent ? 600 : 200
+                    }
+                    let truncated = content.count > charLimit ? String(content.prefix(charLimit)) + "…" : content
                     // Include timestamp so GPT can reason about temporal references
                     // like "刚才说的" or "今天早上聊的". Same-day messages show HH:mm,
                     // older messages show full date to distinguish cross-day context.

@@ -205,6 +205,12 @@ struct SummarySkill: ClawSkill {
                         prevSleepDays: prevSleepDays
                     )
                     lines.append(contentsOf: qualityLines)
+
+                    // Sleep timing regularity for multi-day ranges (≥3 days with onset data)
+                    if spanDays >= 3 {
+                        let timingLines = Self.buildSleepTimingInsight(sleepDays: sleepDays, cal: cal)
+                        lines.append(contentsOf: timingLines)
+                    }
                 }
 
                 // ── Recovery Metrics: HRV + Resting HR ──
@@ -1074,6 +1080,10 @@ struct SummarySkill: ClawSkill {
                         }
                     }
 
+                    // Sleep timing regularity — bedtime/wake time consistency + social jet lag
+                    let timingLines = Self.buildSleepTimingInsight(sleepDays: sleepDays, cal: cal)
+                    lines.append(contentsOf: timingLines)
+
                     // Sleep phase quality summary when Apple Watch data available
                     let phaseDays = sleepDays.filter { $0.hasSleepPhases }
                     if phaseDays.count >= 2 {
@@ -1719,6 +1729,123 @@ struct SummarySkill: ClawSkill {
 
     /// Breaks down sleep quality beyond total hours: deep sleep %, REM %, efficiency.
     /// These phases matter more than raw duration for actual rest quality.
+    /// Analyzes sleep timing regularity: bedtime/wake consistency and social jet lag.
+    /// Social jet lag = the difference between weekday and weekend sleep schedules,
+    /// a well-documented health concern linked to metabolic issues and fatigue.
+    /// This insight uses data no other app surfaces: the user's OWN circadian pattern.
+    private static func buildSleepTimingInsight(sleepDays: [HealthSummary], cal: Calendar) -> [String] {
+        let withOnset = sleepDays.filter { $0.sleepOnset != nil && $0.wakeTime != nil }
+        guard withOnset.count >= 3 else { return [] }
+
+        var lines: [String] = []
+
+        // --- Helper: convert a Date to minutes-since-noon for sleep onset ---
+        // Noon anchor avoids midnight-crossing issues: 23:00 → 660, 01:00 → 780
+        func onsetMinutes(_ date: Date) -> Int {
+            let h = cal.component(.hour, from: date)
+            let m = cal.component(.minute, from: date)
+            return (h < 12 ? (h + 24) * 60 + m : h * 60 + m)
+        }
+        func wakeMinutes(_ date: Date) -> Int {
+            let h = cal.component(.hour, from: date)
+            let m = cal.component(.minute, from: date)
+            return h * 60 + m
+        }
+        func minutesToTimeStr(_ totalMin: Int) -> String {
+            let h = (totalMin / 60) % 24
+            let m = totalMin % 60
+            return String(format: "%d:%02d", h, m)
+        }
+
+        // --- Bedtime regularity (stddev of sleep onset) ---
+        let onsetValues = withOnset.map { onsetMinutes($0.sleepOnset!) }
+        let onsetMean = Double(onsetValues.reduce(0, +)) / Double(onsetValues.count)
+        let onsetVariance = onsetValues.reduce(0.0) { $0 + pow(Double($1) - onsetMean, 2) } / Double(onsetValues.count)
+        let onsetStdDev = sqrt(onsetVariance)
+
+        // --- Wake time regularity ---
+        let wakeValues = withOnset.map { wakeMinutes($0.wakeTime!) }
+        let wakeMean = Double(wakeValues.reduce(0, +)) / Double(wakeValues.count)
+        let wakeVariance = wakeValues.reduce(0.0) { $0 + pow(Double($1) - wakeMean, 2) } / Double(wakeValues.count)
+        let wakeStdDev = sqrt(wakeVariance)
+
+        // Display average bedtime/wake time
+        let avgOnsetDisplay = minutesToTimeStr(Int(onsetMean) % (24 * 60))
+        let avgWakeDisplay = minutesToTimeStr(Int(wakeMean))
+
+        // Build timing regularity line
+        var timingLine = "  🕐 平均入睡 \(avgOnsetDisplay)，起床 \(avgWakeDisplay)"
+
+        // Combine bedtime + wake consistency into one verdict
+        let avgStdDev = (onsetStdDev + wakeStdDev) / 2
+        if avgStdDev < 30 {
+            timingLine += " — 作息时间非常规律 ✅"
+        } else if avgStdDev < 60 {
+            timingLine += " — 时间波动 ±\(Int(avgStdDev))min，尚可"
+        } else {
+            timingLine += " — 时间波动 ±\(Int(avgStdDev))min，生物钟不稳定"
+        }
+        lines.append(timingLine)
+
+        // --- Social Jet Lag Detection ---
+        // Compare weekday (Mon-Fri) vs weekend (Sat-Sun) sleep schedules
+        let weekdayDays = withOnset.filter {
+            let wd = cal.component(.weekday, from: $0.date)
+            return wd >= 2 && wd <= 6  // Mon=2 ... Fri=6
+        }
+        let weekendDays = withOnset.filter {
+            let wd = cal.component(.weekday, from: $0.date)
+            return wd == 1 || wd == 7  // Sun=1, Sat=7
+        }
+
+        if weekdayDays.count >= 2 && weekendDays.count >= 1 {
+            let wdOnsetAvg = Double(weekdayDays.map { onsetMinutes($0.sleepOnset!) }.reduce(0, +)) / Double(weekdayDays.count)
+            let weOnsetAvg = Double(weekendDays.map { onsetMinutes($0.sleepOnset!) }.reduce(0, +)) / Double(weekendDays.count)
+            let wdWakeAvg = Double(weekdayDays.map { wakeMinutes($0.wakeTime!) }.reduce(0, +)) / Double(weekdayDays.count)
+            let weWakeAvg = Double(weekendDays.map { wakeMinutes($0.wakeTime!) }.reduce(0, +)) / Double(weekendDays.count)
+
+            let onsetDiff = weOnsetAvg - wdOnsetAvg  // positive = weekend sleeps later
+            let wakeDiff = weWakeAvg - wdWakeAvg      // positive = weekend wakes later
+            let sleepDiff = Double(weekendDays.reduce(0) { $0 + $1.sleepHours }) / Double(weekendDays.count)
+                - Double(weekdayDays.reduce(0) { $0 + $1.sleepHours }) / Double(weekdayDays.count)
+
+            // Social jet lag is significant when bedtime shifts ≥45 min
+            // or wake time shifts ≥60 min on weekends
+            let hasJetLag = abs(onsetDiff) >= 45 || abs(wakeDiff) >= 60
+
+            if hasJetLag {
+                var jetLagParts: [String] = []
+                if onsetDiff >= 45 {
+                    jetLagParts.append("晚睡 \(Int(onsetDiff))min")
+                } else if onsetDiff <= -45 {
+                    jetLagParts.append("早睡 \(Int(-onsetDiff))min")
+                }
+                if wakeDiff >= 60 {
+                    jetLagParts.append("晚起 \(Int(wakeDiff))min")
+                } else if wakeDiff <= -60 {
+                    jetLagParts.append("早起 \(Int(-wakeDiff))min")
+                }
+
+                let desc = jetLagParts.joined(separator: "、")
+                var jetLagLine = "  ⏰ 社交时差：周末比工作日\(desc)"
+
+                // Provide actionable context
+                if sleepDiff >= 1.0 {
+                    jetLagLine += "\n     💡 周末多睡 \(String(format: "%.1f", sleepDiff))h 像在「还债」— 说明工作日睡眠不足"
+                } else if abs(onsetDiff) >= 90 {
+                    jetLagLine += "\n     💡 作息差异超过 1.5 小时，相当于跨了一个时区，会影响周一的精力"
+                }
+
+                lines.append(jetLagLine)
+            } else if abs(onsetDiff) < 30 && abs(wakeDiff) < 30 {
+                // Very consistent across week — positive feedback
+                lines.append("  ✨ 工作日和周末作息几乎一致，生物钟非常稳定")
+            }
+        }
+
+        return lines
+    }
+
     private static func buildSleepQualityBreakdown(
         sleepDays: [HealthSummary],
         prevSleepDays: [HealthSummary]

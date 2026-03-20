@@ -94,11 +94,24 @@ final class GPTContextBuilder {
         var parts: [String] = []
 
         // SYSTEM
+        let now = Date()
+        let dateFmt = DateFormatter()
+        dateFmt.locale = Locale(identifier: "zh_CN")
+        dateFmt.dateFormat = "yyyy年M月d日 EEEE HH:mm"
+        let weekday = dateFmt.string(from: now)
+
         parts.append("""
         [SYSTEM]
         你是 iosclaw，运行在用户 iPhone 上的私人 AI 助理。你可以访问用户的健康、位置、日历、照片、生活记录等本地数据。
-        请用自然、友好、简洁的中文回答。如果用户用英文提问，请用英文回答。
-        不要编造数据。如果某项数据为空，直接说明暂无该数据。
+        当前时间：\(weekday)
+
+        回复要求：
+        - 用自然、友好、简洁的中文回答。如果用户用英文提问，用英文回答。
+        - 引用具体数据时，必须使用下方提供的真实数据，不要编造任何数字。
+        - 如果某项数据为 0 或为空，坦诚说明「暂无该数据」或「尚未授权」，不要猜测。
+        - 回答健康、运动相关问题时，优先引用准确数值，再给出简短解读。
+        - 涉及多天数据时，可引用「近7天趋势」表格进行对比分析。
+        - 不要重复罗列所有数据，只回答用户问到的内容。
         """)
 
         // USER PROFILE
@@ -209,14 +222,35 @@ final class GPTContextBuilder {
 
     private func trendSection(_ summaries: [HealthSummary]) -> String {
         let fmt = DateFormatter(); fmt.dateFormat = "M/d"
+        let cal = Calendar.current
         var lines = ["[近7天健康趋势]", "日期  | 步数  | 运动(分) | 睡眠(h) | 心率(bpm)"]
-        for (idx, s) in summaries.prefix(7).enumerated() {
-            let dayDate = Calendar.current.date(byAdding: .day, value: -idx, to: Date()) ?? Date()
+        for s in summaries.prefix(7) {
+            let dateLabel = cal.isDateInToday(s.date) ? "\(fmt.string(from: s.date))(今天)" : fmt.string(from: s.date)
             let steps = s.steps > 0 ? "\(Int(s.steps))" : "-"
             let ex = s.exerciseMinutes > 0 ? "\(Int(s.exerciseMinutes))" : "-"
             let sl = s.sleepHours > 0 ? String(format: "%.1f", s.sleepHours) : "-"
             let hr = s.heartRate > 0 ? "\(Int(s.heartRate))" : "-"
-            lines.append("\(fmt.string(from: dayDate))  | \(steps)  | \(ex)  | \(sl)  | \(hr)")
+            lines.append("\(dateLabel)  | \(steps)  | \(ex)  | \(sl)  | \(hr)")
+        }
+        // Add weekly averages for quick reference
+        let validStepsDays = summaries.prefix(7).filter { $0.steps > 0 }
+        let validSleepDays = summaries.prefix(7).filter { $0.sleepHours > 0 }
+        let validExDays = summaries.prefix(7).filter { $0.exerciseMinutes > 0 }
+        var avgParts: [String] = []
+        if !validStepsDays.isEmpty {
+            let avg = validStepsDays.map(\.steps).reduce(0, +) / Double(validStepsDays.count)
+            avgParts.append("日均步数\(Int(avg))")
+        }
+        if !validExDays.isEmpty {
+            let avg = validExDays.map(\.exerciseMinutes).reduce(0, +) / Double(validExDays.count)
+            avgParts.append("日均运动\(Int(avg))分钟")
+        }
+        if !validSleepDays.isEmpty {
+            let avg = validSleepDays.map(\.sleepHours).reduce(0, +) / Double(validSleepDays.count)
+            avgParts.append("日均睡眠\(String(format: "%.1f", avg))h")
+        }
+        if !avgParts.isEmpty {
+            lines.append("周均值：\(avgParts.joined(separator: "，"))")
         }
         return lines.joined(separator: "\n")
     }

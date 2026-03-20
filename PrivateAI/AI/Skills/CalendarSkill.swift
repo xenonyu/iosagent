@@ -750,6 +750,15 @@ struct CalendarSkill: ClawSkill {
             lines.append(contentsOf: recurringInsight)
         }
 
+        // --- Meeting type time analysis (how time is distributed across categories) ---
+        if !isFreeTimeFocus {
+            let meetingDiet = buildMeetingTypeDiet(events: events, spanDays: spanDays)
+            if !meetingDiet.isEmpty {
+                lines.append("")
+                lines.append(contentsOf: meetingDiet)
+            }
+        }
+
         // --- Week-over-week comparison ---
         let comparison = buildPeriodComparison(
             currentEvents: events,
@@ -1251,32 +1260,179 @@ struct CalendarSkill: ClawSkill {
         return min(gapRatio * 0.5 + switchFactor * 0.5, 1.0)
     }
 
-    /// Classifies meeting types by parsing event titles.
+    /// Classifies a single event into a meeting type category by parsing its title.
+    /// Covers common patterns in both Chinese and English work environments.
+    private func classifyEventType(_ title: String) -> String {
+        let t = title.lowercased()
+        // Standup / daily sync
+        if t.contains("standup") || t.contains("站会") || t.contains("晨会")
+            || t.contains("daily") || t.contains("早会") || t.contains("日会")
+            || t.contains("morning sync") {
+            return "站会/日常"
+        }
+        // 1:1 / one-on-one
+        if t.contains("1:1") || t.contains("1v1") || t.contains("one on one")
+            || t.contains("单聊") || t.contains("一对一") || t.contains("1-on-1") {
+            return "1:1"
+        }
+        // Review / retro
+        if t.contains("review") || t.contains("评审") || t.contains("复盘")
+            || t.contains("回顾") || t.contains("retro") || t.contains("retrospective")
+            || t.contains("代码审查") || t.contains("code review") || t.contains("demo") {
+            return "评审/回顾"
+        }
+        // Interview
+        if t.contains("面试") || t.contains("interview") || t.contains("候选人") {
+            return "面试"
+        }
+        // Training / sharing / workshop
+        if t.contains("培训") || t.contains("training") || t.contains("workshop")
+            || t.contains("分享") || t.contains("讲座") || t.contains("tech talk")
+            || t.contains("brown bag") || t.contains("learning") || t.contains("学习") {
+            return "培训/分享"
+        }
+        // Sync / alignment
+        if t.contains("sync") || t.contains("同步") || t.contains("对齐")
+            || t.contains("沟通") || t.contains("碰头") || t.contains("touch base")
+            || t.contains("check-in") || t.contains("check in") || t.contains("catchup")
+            || t.contains("catch up") || t.contains("catch-up") {
+            return "同步会"
+        }
+        // Planning / sprint
+        if t.contains("planning") || t.contains("规划") || t.contains("sprint")
+            || t.contains("kickoff") || t.contains("kick-off") || t.contains("启动")
+            || t.contains("排期") || t.contains("迭代") || t.contains("iteration") {
+            return "规划会"
+        }
+        // All-hands / team meeting
+        if t.contains("all-hands") || t.contains("all hands") || t.contains("全员")
+            || t.contains("team meeting") || t.contains("部门会") || t.contains("周会")
+            || t.contains("月会") || t.contains("例会") || t.contains("组会") {
+            return "团队例会"
+        }
+        // Design / brainstorm
+        if t.contains("design") || t.contains("brainstorm") || t.contains("头脑风暴")
+            || t.contains("设计") || t.contains("方案") || t.contains("讨论") {
+            return "讨论/脑暴"
+        }
+        // Lunch / social
+        if t.contains("lunch") || t.contains("午餐") || t.contains("dinner")
+            || t.contains("晚餐") || t.contains("聚餐") || t.contains("团建")
+            || t.contains("social") || t.contains("happy hour") || t.contains("下午茶") {
+            return "社交/聚餐"
+        }
+        return "其他会议"
+    }
+
+    /// Classifies meeting types by parsing event titles (count-based, for single-day view).
     private func classifyMeetingTypes(events: [CalendarEventItem]) -> [String: Int] {
         var types: [String: Int] = [:]
         for event in events {
-            let t = event.title.lowercased()
-            let type: String
-            if t.contains("standup") || t.contains("站会") || t.contains("晨会") || t.contains("daily") {
-                type = "站会"
-            } else if t.contains("1:1") || t.contains("1v1") || t.contains("one on one") || t.contains("单聊") {
-                type = "1:1"
-            } else if t.contains("review") || t.contains("评审") || t.contains("复盘") || t.contains("回顾") {
-                type = "评审"
-            } else if t.contains("面试") || t.contains("interview") {
-                type = "面试"
-            } else if t.contains("培训") || t.contains("training") || t.contains("workshop") || t.contains("分享") {
-                type = "培训/分享"
-            } else if t.contains("sync") || t.contains("同步") || t.contains("对齐") || t.contains("沟通") {
-                type = "同步会"
-            } else if t.contains("planning") || t.contains("规划") || t.contains("sprint") {
-                type = "规划会"
-            } else {
-                type = "会议"
-            }
+            let type = classifyEventType(event.title)
             types[type, default: 0] += 1
         }
         return types
+    }
+
+    // MARK: - Meeting Type Time Analysis (Multi-Day)
+
+    /// Represents a meeting type's aggregate stats across a multi-day period.
+    private struct MeetingTypeStat {
+        let type: String
+        var count: Int
+        var totalMinutes: Double
+    }
+
+    /// Builds a meeting type time analysis for multi-day calendar views.
+    /// Shows how the user's time is distributed across different meeting categories,
+    /// revealing patterns like "60% of your meeting time goes to syncs" or "1:1s only 10%".
+    private func buildMeetingTypeDiet(events: [CalendarEventItem], spanDays: Int) -> [String] {
+        let timedEvents = events.filter { !$0.isAllDay }
+        // Need at least 4 timed events for a meaningful breakdown
+        guard timedEvents.count >= 4 else { return [] }
+
+        // Aggregate count + duration per type
+        var statsMap: [String: MeetingTypeStat] = [:]
+        for event in timedEvents {
+            let type = classifyEventType(event.title)
+            let durationMin = event.duration / 60.0
+            if var stat = statsMap[type] {
+                stat.count += 1
+                stat.totalMinutes += durationMin
+                statsMap[type] = stat
+            } else {
+                statsMap[type] = MeetingTypeStat(type: type, count: 1, totalMinutes: durationMin)
+            }
+        }
+
+        let totalMeetingMin = timedEvents.reduce(0.0) { $0 + $1.duration } / 60.0
+        guard totalMeetingMin > 0 else { return [] }
+
+        // Sort by total time descending
+        let sorted = statsMap.values.sorted { $0.totalMinutes > $1.totalMinutes }
+
+        // Skip if everything is "其他会议" — no meaningful classification
+        if sorted.count == 1 && sorted[0].type == "其他会议" { return [] }
+
+        var lines: [String] = []
+        lines.append("📊 会议类型分布：")
+
+        // Show each type with visual bar, percentage, and time
+        for stat in sorted {
+            let pct = Int(stat.totalMinutes / totalMeetingMin * 100)
+            let barBlocks = max(1, min(8, Int(Double(pct) / 12.5)))
+            let bar = String(repeating: "▓", count: barBlocks) + String(repeating: "░", count: 8 - barBlocks)
+            let timeStr = formatDuration(stat.totalMinutes)
+            let countStr = stat.count > 1 ? "×\(stat.count)" : ""
+            lines.append("  [\(bar)] \(stat.type) \(pct)%  \(timeStr)\(countStr)")
+        }
+
+        // Insight: identify dominant category and suggest balance
+        if let top = sorted.first, sorted.count >= 2 {
+            let topPct = Int(top.totalMinutes / totalMeetingMin * 100)
+
+            if topPct >= 50 {
+                let insight: String
+                switch top.type {
+                case "站会/日常":
+                    insight = "日常会议占比过半，可考虑缩短时长或合并频次"
+                case "同步会":
+                    insight = "超过一半时间在同步信息 — 试试异步沟通（文档/消息）替代部分同步会"
+                case "1:1":
+                    insight = "1:1 投入充分，关系维护做得好 👍"
+                case "评审/回顾":
+                    insight = "评审时间占比高，确保每次评审都有明确产出"
+                case "面试":
+                    insight = "面试投入大量时间，注意平衡日常工作"
+                case "团队例会":
+                    insight = "例会时间较多，确认是否每场都需要参加"
+                case "讨论/脑暴":
+                    insight = "讨论时间充裕，记得及时将想法转化为行动"
+                default:
+                    insight = "\(top.type)占据了大部分会议时间"
+                }
+                lines.append("  💡 \(insight)")
+            }
+
+            // Check for missing 1:1s in a busy schedule
+            let has1on1 = sorted.contains { $0.type == "1:1" }
+            if !has1on1 && timedEvents.count >= 8 && spanDays >= 5 {
+                lines.append("  💬 本周没有 1:1，工作忙碌之余也别忘了和团队成员单独沟通")
+            }
+
+            // Check weekly meeting hours burden
+            if spanDays >= 5 {
+                let weeklyHours = totalMeetingMin / 60.0
+                let weeklyProjection = spanDays >= 5 ? weeklyHours : weeklyHours / Double(spanDays) * 5
+                if weeklyProjection >= 25 {
+                    lines.append("  ⚠️ 每周约 \(String(format: "%.0f", weeklyProjection)) 小时在会议中 — 仅剩不到 50% 时间做实际工作")
+                } else if weeklyProjection >= 15 {
+                    lines.append("  📈 每周约 \(String(format: "%.0f", weeklyProjection)) 小时会议，在可控范围内")
+                }
+            }
+        }
+
+        return lines
     }
 
     /// Analyzes multi-day schedule rhythm: per-day focus time, best day for deep work.

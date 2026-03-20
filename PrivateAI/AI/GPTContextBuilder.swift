@@ -388,7 +388,7 @@ final class GPTContextBuilder {
         }
         if !h.workouts.isEmpty {
             let wLines = h.workouts.prefix(5).map { w in
-                let name = workoutName(w.activityType)
+                let name = "\(w.typeEmoji) \(w.typeName)"
                 let dur = Int(w.duration / 60)
                 var s = "\(name) \(dur)分钟"
                 if w.totalCalories > 0 { s += " \(Int(w.totalCalories))kcal" }
@@ -697,7 +697,7 @@ final class GPTContextBuilder {
         // List each workout (cap at 15 to avoid token bloat)
         for item in allWorkouts.prefix(15) {
             let w = item.workout
-            let name = workoutName(w.activityType)
+            let name = "\(w.typeEmoji) \(w.typeName)"
             let dayLabel = cal.isDateInToday(item.date) ? "今天" :
                            cal.isDateInYesterday(item.date) ? "昨天" :
                            dateFmt.string(from: item.date)
@@ -712,7 +712,7 @@ final class GPTContextBuilder {
         // Workout type breakdown for quick stats
         var typeCounts: [String: Int] = [:]
         for item in allWorkouts {
-            let name = workoutName(item.workout.activityType)
+            let name = "\(item.workout.typeEmoji) \(item.workout.typeName)"
             typeCounts[name, default: 0] += 1
         }
         if typeCounts.count > 1 {
@@ -796,27 +796,6 @@ final class GPTContextBuilder {
         return lines.joined(separator: "\n")
     }
 
-    // MARK: - Workout Name
-
-    private func workoutName(_ rawValue: UInt) -> String {
-        switch rawValue {
-        case 1:  return "🏃 跑步"
-        case 2:  return "🚶 步行"
-        case 13: return "🚴 骑行"
-        case 20: return "⚽️ 足球"
-        case 25: return "🏋️ HIIT"
-        case 37: return "🏊 游泳"
-        case 46: return "🧘 瑜伽"
-        case 50: return "💪 力量训练"
-        case 52: return "🚶 健走"
-        case 60: return "🧘 冥想"
-        case 74: return "🏃 椭圆机"
-        case 75: return "🚴 动感单车"
-        case 82: return "🤸 功能性训练"
-        case 83: return "🏃 跑步机"
-        default: return "🏅 运动"
-        }
-    }
 }
 
 // MARK: - CoreData Fetch Helpers

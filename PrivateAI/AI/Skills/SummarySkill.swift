@@ -646,6 +646,15 @@ struct SummarySkill: ClawSkill {
                 }
             }
 
+            // --- Multi-Day Pattern Alerts ---
+            // Surface trends from recent 7-day data that the user wouldn't notice on their own.
+            // This is the core "mirror" value: iosclaw tells you what's happening over time.
+            let patternAlerts = self.buildMultiDayPatternAlerts(recentSummaries: recentSummaries, cal: cal)
+            if !patternAlerts.isEmpty {
+                lines.append("\n📊 **近期趋势**")
+                patternAlerts.forEach { lines.append("  \($0)") }
+            }
+
             // --- Habits ---
             let habits = HabitStorage.load()
             if !habits.isEmpty {
@@ -1317,6 +1326,160 @@ struct SummarySkill: ClawSkill {
         default:
             return range.interval
         }
+    }
+
+    // MARK: - Multi-Day Pattern Alerts
+
+    /// Detects notable multi-day patterns from the recent 7-day health data.
+    /// These are trends the user wouldn't notice on their own — the core "mirror" insight.
+    /// Returns an array of alert strings (empty if no notable patterns found).
+    private func buildMultiDayPatternAlerts(recentSummaries: [HealthSummary], cal: Calendar) -> [String] {
+        // Exclude today (incomplete data) and sort oldest-first for trend analysis
+        let pastDays = recentSummaries
+            .filter { !cal.isDateInToday($0.date) && $0.hasData }
+            .sorted { $0.date < $1.date }
+
+        guard pastDays.count >= 3 else { return [] }
+
+        var alerts: [String] = []
+
+        // --- 1. Consecutive sleep deficit ---
+        // Count consecutive days (from most recent backward) with sleep < 7h
+        let sleepDays = pastDays.filter { $0.sleepHours > 0 }
+        if sleepDays.count >= 3 {
+            var consecutiveLow = 0
+            for day in sleepDays.reversed() {
+                if day.sleepHours < 7.0 {
+                    consecutiveLow += 1
+                } else {
+                    break
+                }
+            }
+            if consecutiveLow >= 3 {
+                let totalDebt = sleepDays.suffix(consecutiveLow)
+                    .reduce(0.0) { $0 + max(0, 7.5 - $1.sleepHours) }
+                alerts.append("😴 已连续 \(consecutiveLow) 天睡不到 7 小时（累计少睡 \(String(format: "%.1f", totalDebt))h），注意睡眠债务积累")
+            }
+
+            // --- 1b. Sleep timing drift (bedtime shifting later) ---
+            let onsetDays = sleepDays.filter { $0.sleepOnset != nil }
+            if onsetDays.count >= 3 {
+                let recentOnsets = onsetDays.suffix(4)
+                let onsetMinutes = recentOnsets.map { day -> Int in
+                    let onset = day.sleepOnset!
+                    let hour = cal.component(.hour, from: onset)
+                    let minute = cal.component(.minute, from: onset)
+                    // Normalize: hours after noon are positive; before noon (next day) add 24
+                    let normalized = hour < 12 ? (hour + 24) * 60 + minute : hour * 60 + minute
+                    return normalized
+                }
+                // Check if bedtime is monotonically increasing (getting later)
+                if onsetMinutes.count >= 3 {
+                    var drifting = true
+                    for i in 1..<onsetMinutes.count {
+                        if onsetMinutes[i] <= onsetMinutes[i - 1] {
+                            drifting = false
+                            break
+                        }
+                    }
+                    let totalDrift = onsetMinutes.last! - onsetMinutes.first!
+                    if drifting && totalDrift >= 30 {
+                        alerts.append("🕐 入睡时间连续 \(onsetMinutes.count) 天推迟（共晚了 \(totalDrift) 分钟），生物钟在漂移")
+                    }
+                }
+            }
+        }
+
+        // --- 2. Step goal streak (positive momentum) ---
+        if pastDays.count >= 3 {
+            var consecutiveGoal = 0
+            for day in pastDays.reversed() {
+                if day.steps >= 8000 {
+                    consecutiveGoal += 1
+                } else {
+                    break
+                }
+            }
+            if consecutiveGoal >= 3 {
+                alerts.append("🔥 步数已连续 \(consecutiveGoal) 天达标（≥8000），保持这个节奏！")
+            } else {
+                // Check for anti-streak (consecutive misses)
+                var consecutiveMiss = 0
+                for day in pastDays.reversed() {
+                    if day.steps > 0 && day.steps < 8000 {
+                        consecutiveMiss += 1
+                    } else {
+                        break
+                    }
+                }
+                if consecutiveMiss >= 3 {
+                    let avgShortfall = pastDays.suffix(consecutiveMiss)
+                        .reduce(0.0) { $0 + (8000 - $1.steps) } / Double(consecutiveMiss)
+                    alerts.append("👟 步数连续 \(consecutiveMiss) 天未达标，每天平均差 \(Int(avgShortfall)) 步，试试饭后散步 15 分钟")
+                }
+            }
+        }
+
+        // --- 3. Exercise streak ---
+        if pastDays.count >= 3 {
+            var consecutiveExercise = 0
+            for day in pastDays.reversed() {
+                if day.exerciseMinutes >= 30 {
+                    consecutiveExercise += 1
+                } else {
+                    break
+                }
+            }
+            if consecutiveExercise >= 3 {
+                alerts.append("🏋️ 运动连续 \(consecutiveExercise) 天达标（≥30min），状态在线！")
+            }
+        }
+
+        // --- 4. HRV declining trend (recovery concern) ---
+        let hrvDays = pastDays.filter { $0.hrv > 0 }
+        if hrvDays.count >= 3 {
+            let recentHRV = Array(hrvDays.suffix(4))
+            var declining = true
+            for i in 1..<recentHRV.count {
+                if recentHRV[i].hrv >= recentHRV[i - 1].hrv {
+                    declining = false
+                    break
+                }
+            }
+            if declining && recentHRV.count >= 3 {
+                let drop = recentHRV.first!.hrv - recentHRV.last!.hrv
+                if drop >= 5 {
+                    alerts.append("📳 HRV 连续 \(recentHRV.count) 天下降（降了 \(Int(drop))ms），身体恢复需要关注，建议优先休息")
+                }
+            }
+        }
+
+        // --- 5. Activity level trend (overall energy) ---
+        // Detect if daily steps have been consistently declining over 4+ days
+        if pastDays.count >= 4 {
+            let recentDays = Array(pastDays.suffix(5))
+            if recentDays.count >= 4 {
+                var declining = true
+                for i in 1..<recentDays.count {
+                    // Allow small fluctuations (within 10%)
+                    if recentDays[i].steps >= recentDays[i - 1].steps * 0.9 {
+                        declining = false
+                        break
+                    }
+                }
+                if declining {
+                    let firstSteps = Int(recentDays.first!.steps)
+                    let lastSteps = Int(recentDays.last!.steps)
+                    let dropPct = firstSteps > 0 ? (firstSteps - lastSteps) * 100 / firstSteps : 0
+                    if dropPct >= 30 {
+                        alerts.append("📉 活动量连续 \(recentDays.count) 天下降（从 \(firstSteps.formatted()) 步降到 \(lastSteps.formatted()) 步），是否身体不适或特别忙碌？")
+                    }
+                }
+            }
+        }
+
+        // Cap at 3 alerts to avoid overwhelming the daily review
+        return Array(alerts.prefix(3))
     }
 
     // MARK: - Helpers

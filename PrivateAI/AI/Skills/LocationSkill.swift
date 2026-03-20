@@ -333,17 +333,22 @@ struct LocationSkill: ClawSkill {
             sections.append(commuteSection)
         }
 
-        // 7. Calendar-location correlation: explain WHY you visited each place
+        // 7. Daily rhythm analysis (lifestyle pattern from movement data)
+        if let rhythmSection = buildDailyRhythm(records: records, profiles: profiles, range: range) {
+            sections.append(rhythmSection)
+        }
+
+        // 8. Calendar-location correlation: explain WHY you visited each place
         if let calendarSection = buildCalendarLocationDiary(records: records, profiles: profiles, range: range, context: context) {
             sections.append(calendarSection)
         }
 
-        // 8. Period-over-period comparison (only for multi-day ranges)
+        // 9. Period-over-period comparison (only for multi-day ranges)
         if let comparison = buildPeriodComparison(currentRecords: records, currentProfiles: profiles, range: range, context: context) {
             sections.append(comparison)
         }
 
-        // 9. Activity summary
+        // 10. Activity summary
         let summary = buildActivitySummary(records: records, range: range)
         sections.append(summary)
 
@@ -944,6 +949,292 @@ struct LocationSkill: ClawSkill {
                 sin(dLon / 2) * sin(dLon / 2)
         let c = 2 * atan2(sqrt(a), sqrt(1 - a))
         return R * c
+    }
+
+    // MARK: - Daily Rhythm Analysis
+
+    /// Analyzes the user's daily movement rhythm by detecting departure/return times
+    /// relative to home. Reveals lifestyle patterns: when you typically leave, how long
+    /// you're out, weekday vs weekend differences, and rhythm consistency.
+    /// Requires at least 3 days of multi-record data to produce meaningful insights.
+    private func buildDailyRhythm(records: [LocationRecord], profiles: [PlaceProfile], range: QueryTimeRange) -> String? {
+        // Only meaningful for multi-day ranges with enough data
+        guard range != .today && range != .yesterday else { return nil }
+        guard records.count >= 6 else { return nil }
+
+        // Need a detected home to measure departure/return
+        guard let homeIdx = detectHome(profiles: profiles) else { return nil }
+        let homeProfile = profiles[homeIdx]
+        let homeRecords = findRecordsForProfile(homeProfile, in: records)
+        guard !homeRecords.isEmpty else { return nil }
+
+        // Build a "home zone" anchor from the average of home records
+        let homeLat = homeRecords.reduce(0.0) { $0 + $1.latitude } / Double(homeRecords.count)
+        let homeLon = homeRecords.reduce(0.0) { $0 + $1.longitude } / Double(homeRecords.count)
+        let homeRadius: Double = 250 // meters — slightly larger than cluster radius for buffer
+
+        let cal = Calendar.current
+        let dayFmt = DateFormatter()
+        dayFmt.dateFormat = "yyyy-MM-dd"
+
+        // Group all records by day
+        var recordsByDay: [String: [LocationRecord]] = [:]
+        for r in records {
+            recordsByDay[dayFmt.string(from: r.timestamp), default: []].append(r)
+        }
+
+        // For each day, detect: first departure from home, last return to home, time spent outside
+        struct DayRhythm {
+            let dayKey: String
+            let date: Date
+            let weekday: Int          // 1=Sun..7=Sat
+            let isWeekend: Bool
+            let firstDeparture: Date?  // first record NOT near home
+            let lastReturn: Date?      // last record near home
+            let minutesOutside: Double // total time at non-home places
+            let placesVisited: Int     // unique non-home places
+        }
+
+        var rhythms: [DayRhythm] = []
+
+        for (dayKey, dayRecords) in recordsByDay {
+            guard dayRecords.count >= 2 else { continue }
+            let sorted = dayRecords.sorted { $0.timestamp < $1.timestamp }
+
+            guard let date = dayFmt.date(from: dayKey) else { continue }
+            let weekday = cal.component(.weekday, from: date)
+            let isWeekend = (weekday == 1 || weekday == 7)
+
+            // Classify each record as home or away
+            let classifications: [(record: LocationRecord, isHome: Bool)] = sorted.map { r in
+                let dist = haversine(lat1: homeLat, lon1: homeLon, lat2: r.latitude, lon2: r.longitude)
+                return (r, dist <= homeRadius)
+            }
+
+            // First departure: first non-home record
+            let firstAway = classifications.first { !$0.isHome }
+
+            // Last return: last home record that comes after at least one away record
+            var lastReturn: LocationRecord? = nil
+            var sawAway = false
+            for c in classifications {
+                if !c.isHome { sawAway = true }
+                if c.isHome && sawAway { lastReturn = c.record }
+            }
+
+            // Calculate minutes outside home
+            var outsideMinutes: Double = 0
+            for i in 0..<(sorted.count - 1) {
+                let distA = haversine(lat1: homeLat, lon1: homeLon,
+                                      lat2: sorted[i].latitude, lon2: sorted[i].longitude)
+                if distA > homeRadius {
+                    let gap = sorted[i + 1].timestamp.timeIntervalSince(sorted[i].timestamp) / 60.0
+                    outsideMinutes += min(gap, 720) // cap at 12 hours per gap
+                }
+            }
+
+            // Count unique non-home places
+            let awayNames = Set(classifications.filter { !$0.isHome }.map { $0.record.displayName })
+
+            rhythms.append(DayRhythm(
+                dayKey: dayKey,
+                date: date,
+                weekday: weekday,
+                isWeekend: isWeekend,
+                firstDeparture: firstAway?.record.timestamp,
+                lastReturn: lastReturn?.timestamp,
+                minutesOutside: outsideMinutes,
+                placesVisited: awayNames.count
+            ))
+        }
+
+        // Need at least 3 days with departure data
+        let daysWithDeparture = rhythms.filter { $0.firstDeparture != nil }
+        guard daysWithDeparture.count >= 3 else { return nil }
+
+        let weekdayRhythms = daysWithDeparture.filter { !$0.isWeekend }
+        let weekendRhythms = daysWithDeparture.filter { $0.isWeekend }
+
+        var lines: [String] = ["🕐 生活作息"]
+
+        // --- Typical departure time ---
+        let timeFmt = DateFormatter()
+        timeFmt.dateFormat = "HH:mm"
+
+        if weekdayRhythms.count >= 2 {
+            let depTimes = weekdayRhythms.compactMap { $0.firstDeparture }
+            let depMinutes = depTimes.map { minuteOfDay($0) }
+            let avgDep = depMinutes.reduce(0, +) / depMinutes.count
+            let depStdDev = standardDeviation(depMinutes)
+
+            let retTimes = weekdayRhythms.compactMap { $0.lastReturn }
+            let retMinutes = retTimes.map { minuteOfDay($0) }
+
+            lines.append("")
+            lines.append("  📅 工作日模式（\(weekdayRhythms.count) 天）")
+            lines.append("    出门时间：通常 \(formatMinuteOfDay(avgDep))")
+
+            if !retMinutes.isEmpty {
+                let avgRet = retMinutes.reduce(0, +) / retMinutes.count
+                lines.append("    回家时间：通常 \(formatMinuteOfDay(avgRet))")
+
+                // Time spent outside
+                let avgOutside = weekdayRhythms.reduce(0.0) { $0 + $1.minutesOutside } / Double(weekdayRhythms.count)
+                if avgOutside >= 30 {
+                    lines.append("    日均在外：约 \(formatDwellTime(avgOutside))")
+                }
+            }
+
+            // Consistency score
+            if depStdDev <= 30 {
+                lines.append("    ✅ 作息非常规律（出门时间波动 ≤30分钟）")
+            } else if depStdDev <= 60 {
+                lines.append("    ⚡ 作息较规律（出门时间波动约 \(Int(depStdDev)) 分钟）")
+            } else {
+                lines.append("    🔀 作息不太固定（出门时间波动 \(Int(depStdDev)) 分钟）")
+            }
+
+            // Find the outlier day (earliest/latest departure if significantly different)
+            if weekdayRhythms.count >= 3 {
+                if let earliest = weekdayRhythms.min(by: { minuteOfDay($0.firstDeparture!) < minuteOfDay($1.firstDeparture!) }),
+                   let latest = weekdayRhythms.max(by: { minuteOfDay($0.firstDeparture!) < minuteOfDay($1.firstDeparture!) }) {
+                    let earliestMin = minuteOfDay(earliest.firstDeparture!)
+                    let latestMin = minuteOfDay(latest.firstDeparture!)
+                    if latestMin - earliestMin >= 90 {
+                        let dayName = weekdayShortName(earliest.weekday)
+                        let lateDayName = weekdayShortName(latest.weekday)
+                        lines.append("    💡 \(dayName)出门最早（\(formatMinuteOfDay(earliestMin))），\(lateDayName)最晚（\(formatMinuteOfDay(latestMin))）")
+                    }
+                }
+            }
+        }
+
+        // --- Weekend pattern ---
+        if weekendRhythms.count >= 1 && weekdayRhythms.count >= 2 {
+            let wkndDepTimes = weekendRhythms.compactMap { $0.firstDeparture }
+            let wkndDepMinutes = wkndDepTimes.map { minuteOfDay($0) }
+
+            if !wkndDepMinutes.isEmpty {
+                let avgWkndDep = wkndDepMinutes.reduce(0, +) / wkndDepMinutes.count
+                let wkdayDepMinutes = weekdayRhythms.compactMap { $0.firstDeparture }.map { minuteOfDay($0) }
+                let avgWkdayDep = wkdayDepMinutes.isEmpty ? 0 : wkdayDepMinutes.reduce(0, +) / wkdayDepMinutes.count
+
+                lines.append("")
+                lines.append("  🎉 周末模式（\(weekendRhythms.count) 天）")
+                lines.append("    出门时间：通常 \(formatMinuteOfDay(avgWkndDep))")
+
+                let avgWkndOutside = weekendRhythms.reduce(0.0) { $0 + $1.minutesOutside } / Double(weekendRhythms.count)
+                let avgWkdayOutside = weekdayRhythms.reduce(0.0) { $0 + $1.minutesOutside } / Double(weekdayRhythms.count)
+
+                if avgWkndOutside >= 30 {
+                    lines.append("    日均在外：约 \(formatDwellTime(avgWkndOutside))")
+                }
+
+                // Compare with weekday
+                let depDiff = avgWkndDep - avgWkdayDep
+                if abs(depDiff) >= 30 {
+                    if depDiff > 0 {
+                        lines.append("    💤 比工作日晚出门 \(formatDwellTime(Double(depDiff)))")
+                    } else {
+                        lines.append("    ⏰ 比工作日早出门 \(formatDwellTime(Double(-depDiff)))")
+                    }
+                }
+
+                if avgWkndOutside >= 30 && avgWkdayOutside >= 30 {
+                    let outsideDiff = avgWkndOutside - avgWkdayOutside
+                    if abs(outsideDiff) >= 30 {
+                        if outsideDiff > 0 {
+                            lines.append("    🚶 周末在外时间比工作日多 \(formatDwellTime(outsideDiff))")
+                        } else {
+                            lines.append("    🏠 周末在外时间比工作日少 \(formatDwellTime(-outsideDiff))")
+                        }
+                    }
+                }
+
+                // Weekend activity variety
+                let avgWkndPlaces = Double(weekendRhythms.reduce(0) { $0 + $1.placesVisited }) / Double(weekendRhythms.count)
+                let avgWkdayPlaces = Double(weekdayRhythms.reduce(0) { $0 + $1.placesVisited }) / Double(weekdayRhythms.count)
+                if avgWkndPlaces >= 2 && avgWkndPlaces > avgWkdayPlaces * 1.3 {
+                    lines.append("    🗺️ 周末去的地方更多样（日均 \(String(format: "%.1f", avgWkndPlaces)) 个 vs 工作日 \(String(format: "%.1f", avgWkdayPlaces)) 个）")
+                }
+            }
+        } else if weekendRhythms.count >= 2 && weekdayRhythms.count < 2 {
+            // Only weekend data available
+            let wkndDepTimes = weekendRhythms.compactMap { $0.firstDeparture }
+            let wkndDepMinutes = wkndDepTimes.map { minuteOfDay($0) }
+            if !wkndDepMinutes.isEmpty {
+                let avgWkndDep = wkndDepMinutes.reduce(0, +) / wkndDepMinutes.count
+                lines.append("")
+                lines.append("  🎉 周末模式（\(weekendRhythms.count) 天）")
+                lines.append("    出门时间：通常 \(formatMinuteOfDay(avgWkndDep))")
+            }
+        }
+
+        // --- Overall lifestyle insight ---
+        if daysWithDeparture.count >= 4 {
+            let allDepMinutes = daysWithDeparture.compactMap { $0.firstDeparture }.map { minuteOfDay($0) }
+            let avgDep = allDepMinutes.reduce(0, +) / allDepMinutes.count
+            let allOutside = daysWithDeparture.map { $0.minutesOutside }
+            let avgOutside = allOutside.reduce(0.0, +) / Double(allOutside.count)
+
+            // Homebody vs explorer index
+            let daysHome = rhythms.count - daysWithDeparture.count
+            let stayHomeRatio = rhythms.count > 0 ? Double(daysHome) / Double(rhythms.count) : 0
+
+            lines.append("")
+            if stayHomeRatio >= 0.4 {
+                let homeDays = Int(stayHomeRatio * 100)
+                lines.append("💡 你有 \(homeDays)% 的天数主要待在家，属于居家型作息")
+            } else if avgDep < 480 { // before 8:00
+                lines.append("💡 你是个早起型的人，通常 8 点前就已出门")
+            } else if avgDep >= 600 { // after 10:00
+                lines.append("💡 你习惯晚出门（通常 10 点后），节奏比较从容")
+            }
+
+            if avgOutside >= 480 { // 8+ hours outside
+                lines.append("💡 日均在外超过 8 小时，生活节奏紧凑")
+            } else if avgOutside >= 240 && avgOutside < 480 {
+                lines.append("💡 日均在外 \(Int(avgOutside / 60)) 小时左右，工作生活较平衡")
+            }
+        }
+
+        // Only return if we generated meaningful content beyond the header
+        return lines.count >= 3 ? lines.joined(separator: "\n") : nil
+    }
+
+    /// Extracts the minute-of-day (0..1439) from a Date.
+    private func minuteOfDay(_ date: Date) -> Int {
+        let cal = Calendar.current
+        return cal.component(.hour, from: date) * 60 + cal.component(.minute, from: date)
+    }
+
+    /// Formats a minute-of-day value (e.g. 510 → "08:30").
+    private func formatMinuteOfDay(_ minute: Int) -> String {
+        let h = minute / 60
+        let m = minute % 60
+        return String(format: "%02d:%02d", h, m)
+    }
+
+    /// Computes the standard deviation of an array of Ints.
+    private func standardDeviation(_ values: [Int]) -> Double {
+        guard values.count >= 2 else { return 0 }
+        let mean = Double(values.reduce(0, +)) / Double(values.count)
+        let variance = values.reduce(0.0) { $0 + pow(Double($1) - mean, 2) } / Double(values.count)
+        return sqrt(variance)
+    }
+
+    /// Returns short Chinese weekday name from Calendar weekday number.
+    private func weekdayShortName(_ weekday: Int) -> String {
+        switch weekday {
+        case 1: return "周日"
+        case 2: return "周一"
+        case 3: return "周二"
+        case 4: return "周三"
+        case 5: return "周四"
+        case 6: return "周五"
+        case 7: return "周六"
+        default: return ""
+        }
     }
 
     // MARK: - Commute Analysis

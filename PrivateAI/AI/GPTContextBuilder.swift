@@ -620,11 +620,18 @@ final class GPTContextBuilder {
             topics.insert(.lifeEvents)
         }
 
-        // General/summary queries → include all
+        // General/summary queries → include all.
+        // IMPORTANT: Do NOT include temporal words like "今天", "这周", "上周" here!
+        // Those are time modifiers, not topic indicators. "今天走了多少步" should
+        // match health only, not general. Putting "今天" in generalWords defeats
+        // the entire relevance hint mechanism for the majority of real queries.
+        // Similarly, "怎么样" is too ambiguous — "睡得怎么样" is health-specific,
+        // not general. Only truly topic-agnostic words belong here.
         let generalWords = [
-            "总结", "回顾", "概括", "怎么样", "过得", "这周", "上周", "今天",
-            "summary", "review", "你好", "谢谢", "嗨", "hello", "hi", "hey",
-            "什么都", "所有"
+            "总结", "回顾", "概括", "过得怎么样", "过得如何",
+            "summary", "review", "overview",
+            "你好", "谢谢", "嗨", "hello", "hi", "hey", "你是谁",
+            "什么都", "所有", "一天", "一周"
         ]
         if generalWords.contains(where: { lower.contains($0) }) {
             topics.insert(.general)

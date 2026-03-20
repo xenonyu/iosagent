@@ -107,23 +107,82 @@ struct HealthSkill: ClawSkill {
             let totalCalories = filtered.reduce(0) { $0 + $1.activeCalories }
             let totalDistance = filtered.reduce(0) { $0 + $1.distanceKm }
             let dayCount = Double(max(daysWithData.count, 1))
-
-            // Core metrics
-            if totalSteps > 0 {
-                lines.append("👟 总步数：\(Int(totalSteps).formatted()) 步（日均 \(Int(totalSteps / dayCount).formatted())）")
-            }
-            if totalDistance > 0.1 {
-                lines.append("📏 总距离：\(String(format: "%.1f", totalDistance)) 公里")
-            }
-            if totalExercise > 0 {
-                lines.append("⏱ 运动时长：\(Int(totalExercise)) 分钟（日均 \(Int(totalExercise / dayCount))）")
-            }
-            if totalCalories > 0 {
-                lines.append("🔥 消耗热量：\(Int(totalCalories).formatted()) 千卡")
-            }
             let totalFlights = filtered.reduce(0) { $0 + $1.flightsClimbed }
-            if totalFlights > 0 {
-                lines.append("🏢 爬楼：\(Int(totalFlights)) 层")
+            let isSingleDay = daysWithData.count == 1
+
+            // Core metrics — single-day uses goal progress bars, multi-day uses totals + averages
+            if isSingleDay {
+                // Single-day: show progress bars toward standard daily goals
+                let stepGoal = 8000.0
+                let exerciseGoal = 30.0
+                let calorieGoal = 500.0
+
+                if totalSteps > 0 {
+                    let progress = min(totalSteps / stepGoal, 1.0)
+                    let barFilled = Int(progress * 8)
+                    let bar = String(repeating: "▓", count: barFilled) + String(repeating: "░", count: 8 - barFilled)
+                    let pct = Int(progress * 100)
+                    let tag = totalSteps >= stepGoal ? " ✅ 达标！" : ""
+                    lines.append("👟 \(Int(totalSteps).formatted()) 步 \(bar) \(pct)%\(tag)")
+                    // Remaining hint when close but not yet reached
+                    if totalSteps < stepGoal && totalSteps >= stepGoal * 0.5 {
+                        let remaining = Int(stepGoal - totalSteps)
+                        lines.append("   还差 \(remaining.formatted()) 步达标")
+                    }
+                }
+                if totalDistance > 0.1 {
+                    lines.append("📏 \(String(format: "%.1f", totalDistance)) 公里")
+                }
+                if totalExercise > 0 {
+                    let progress = min(totalExercise / exerciseGoal, 1.0)
+                    let barFilled = Int(progress * 8)
+                    let bar = String(repeating: "▓", count: barFilled) + String(repeating: "░", count: 8 - barFilled)
+                    let pct = Int(progress * 100)
+                    let tag = totalExercise >= exerciseGoal ? " ✅" : ""
+                    lines.append("⏱ 运动 \(Int(totalExercise)) 分钟 \(bar) \(pct)%\(tag)")
+                }
+                if totalCalories > 0 {
+                    let progress = min(totalCalories / calorieGoal, 1.0)
+                    let barFilled = Int(progress * 8)
+                    let bar = String(repeating: "▓", count: barFilled) + String(repeating: "░", count: 8 - barFilled)
+                    let tag = totalCalories >= calorieGoal ? " ✅" : ""
+                    lines.append("🔥 \(Int(totalCalories).formatted()) 千卡 \(bar)\(tag)")
+                }
+                if totalFlights > 0 {
+                    lines.append("🏢 爬楼 \(Int(totalFlights)) 层")
+                }
+                // Quick overall verdict for the day
+                var goalsMet = 0
+                var goalsTotal = 0
+                if totalSteps > 0 { goalsTotal += 1; if totalSteps >= stepGoal { goalsMet += 1 } }
+                if totalExercise > 0 { goalsTotal += 1; if totalExercise >= exerciseGoal { goalsMet += 1 } }
+                if totalCalories > 0 { goalsTotal += 1; if totalCalories >= calorieGoal { goalsMet += 1 } }
+                if goalsTotal >= 2 {
+                    if goalsMet == goalsTotal {
+                        lines.append("\n🏅 所有指标达标，今天运动表现满分！")
+                    } else if goalsMet == 0 {
+                        lines.append("")
+                    } else {
+                        lines.append("\n💪 \(goalsMet)/\(goalsTotal) 项达标，继续保持！")
+                    }
+                }
+            } else {
+                // Multi-day: show totals + daily averages
+                if totalSteps > 0 {
+                    lines.append("👟 总步数：\(Int(totalSteps).formatted()) 步（日均 \(Int(totalSteps / dayCount).formatted())）")
+                }
+                if totalDistance > 0.1 {
+                    lines.append("📏 总距离：\(String(format: "%.1f", totalDistance)) 公里")
+                }
+                if totalExercise > 0 {
+                    lines.append("⏱ 运动时长：\(Int(totalExercise)) 分钟（日均 \(Int(totalExercise / dayCount))）")
+                }
+                if totalCalories > 0 {
+                    lines.append("🔥 消耗热量：\(Int(totalCalories).formatted()) 千卡")
+                }
+                if totalFlights > 0 {
+                    lines.append("🏢 爬楼：\(Int(totalFlights)) 层")
+                }
             }
 
             // --- Today's progress context: compare with yesterday + pace projection ---
@@ -196,6 +255,9 @@ struct HealthSkill: ClawSkill {
                 if allWorkouts.count >= 3 {
                     lines.append(contentsOf: self.trainingBalanceInsight(allWorkouts))
                 }
+
+                // Workout ↔ Location: show WHERE workouts happened
+                lines.append(contentsOf: self.workoutLocationInsight(allWorkouts, context: context))
             }
 
             // Workout schedule pattern: time-of-day preference + rest day rhythm
@@ -625,6 +687,87 @@ struct HealthSkill: ClawSkill {
         return lines
     }
 
+    // MARK: - Workout ↔ Location Correlation
+
+    /// Cross-references workout sessions with CDLocationRecord to show WHERE each workout happened.
+    /// e.g., "📍 运动地点：跑步 → 奥林匹克公园，瑜伽 → 家附近"
+    /// This connects HealthKit workout data with CoreLocation — a core iosclaw cross-data insight.
+    private func workoutLocationInsight(_ workouts: [WorkoutRecord], context: SkillContext) -> [String] {
+        guard !workouts.isEmpty else { return [] }
+
+        // Expand the time window to cover all workouts, with padding for location records
+        // that may have been recorded slightly before/after the workout session.
+        let sortedByTime = workouts.sorted { $0.startDate < $1.startDate }
+        let windowStart = Calendar.current.date(byAdding: .minute, value: -15, to: sortedByTime.first!.startDate) ?? sortedByTime.first!.startDate
+        let windowEnd = Calendar.current.date(byAdding: .minute, value: 15, to: sortedByTime.last!.endDate) ?? sortedByTime.last!.endDate
+        let locationRecords = CDLocationRecord.fetch(from: windowStart, to: windowEnd, in: context.coreDataContext)
+
+        guard !locationRecords.isEmpty else { return [] }
+
+        // Match each workout to the nearest location record within its time window (±15 min)
+        struct WorkoutPlace {
+            let workout: WorkoutRecord
+            let placeName: String
+        }
+
+        var matched: [WorkoutPlace] = []
+
+        for workout in sortedByTime {
+            let wStart = workout.startDate.addingTimeInterval(-15 * 60)
+            let wEnd = workout.endDate.addingTimeInterval(15 * 60)
+
+            // Find all location records within the workout window
+            let nearby = locationRecords.filter { $0.timestamp >= wStart && $0.timestamp <= wEnd }
+            guard !nearby.isEmpty else { continue }
+
+            // Pick the record closest to the workout midpoint for best accuracy
+            let midpoint = workout.startDate.addingTimeInterval(workout.duration / 2)
+            let closest = nearby.min(by: {
+                abs($0.timestamp.timeIntervalSince(midpoint)) < abs($1.timestamp.timeIntervalSince(midpoint))
+            })!
+
+            let name = !closest.placeName.isEmpty ? closest.placeName : closest.address
+            guard !name.isEmpty else { continue }
+
+            matched.append(WorkoutPlace(workout: workout, placeName: name))
+        }
+
+        guard !matched.isEmpty else { return [] }
+
+        // Deduplicate: group by workout type + place
+        struct TypePlace: Hashable {
+            let typeName: String
+            let typeEmoji: String
+            let placeName: String
+        }
+        var typePlaceCounts: [TypePlace: Int] = [:]
+        for m in matched {
+            let key = TypePlace(typeName: m.workout.typeName, typeEmoji: m.workout.typeEmoji, placeName: m.placeName)
+            typePlaceCounts[key, default: 0] += 1
+        }
+
+        // Build output: compact format for single workout, detailed for multiple
+        var lines: [String] = ["\n📍 运动地点"]
+        let sortedPlaces = typePlaceCounts.sorted { $0.value > $1.value }
+        for (tp, count) in sortedPlaces.prefix(5) {
+            if count > 1 {
+                lines.append("  \(tp.typeEmoji) \(tp.typeName) → \(tp.placeName)（\(count)次）")
+            } else {
+                lines.append("  \(tp.typeEmoji) \(tp.typeName) → \(tp.placeName)")
+            }
+        }
+
+        // Insight: identify home gym vs outdoor vs varied locations
+        let uniquePlaces = Set(matched.map { $0.placeName })
+        if uniquePlaces.count == 1 && matched.count >= 3 {
+            lines.append("  💡 运动地点很固定，说明你有稳定的运动场所 👍")
+        } else if uniquePlaces.count >= 3 {
+            lines.append("  🌍 运动地点丰富（\(uniquePlaces.count)处），尝试不同环境有助于保持新鲜感！")
+        }
+
+        return lines
+    }
+
     // MARK: - Calendar ↔ Exercise Correlation
 
     /// Cross-references calendar events with exercise data to explain activity patterns.
@@ -911,6 +1054,9 @@ struct HealthSkill: ClawSkill {
                     }
                 }
             }
+
+            // Workout ↔ Location: show WHERE this workout type happens
+            lines.append(contentsOf: self.workoutLocationInsight(targetWorkouts, context: context))
 
             // Context: also mention overall exercise if there are other types
             let otherWorkouts = allWorkouts.filter { !typeIDs.contains($0.activityType) }
@@ -4176,6 +4322,15 @@ struct HealthSkill: ClawSkill {
                 return "\(sample.typeEmoji)\(sample.typeName) \(info.count)次·\(mins)min"
             }
             lines.append("🏋️ 运动：\(typeStrs.joined(separator: "  "))")
+
+            // Compact workout location hint for overview (show top 1-2 places)
+            let locInsight = workoutLocationInsight(allWorkouts, context: context)
+            // In overview mode, only include if there are locations and keep it concise
+            if locInsight.count > 1 {
+                // Take just the first 1-2 place lines (skip the header)
+                let placeLines = locInsight.dropFirst().prefix(2)
+                lines.append("📍 运动地点：\(placeLines.map { $0.trimmingCharacters(in: .whitespaces) }.joined(separator: " · "))")
+            }
         }
 
         // --- Sparkline: day-by-day step trend ---

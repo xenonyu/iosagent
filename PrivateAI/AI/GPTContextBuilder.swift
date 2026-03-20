@@ -2267,6 +2267,17 @@ final class GPTContextBuilder {
 
                 lines.append("  \(dayLabel)：\(countParts.joined(separator: "、"))\(kindNote)\(favNote)")
 
+                // Time-of-day clustering so GPT can answer "昨天下午拍的照片" or
+                // "今天上午的照片". Without this, GPT only sees total count per day
+                // and can't distinguish morning vs afternoon vs evening photos.
+                // Only show when there are enough photos to make time breakdown useful.
+                if dayPhotos.count >= 3 {
+                    let timeClusters = photoTimeClusters(dayPhotos, cal: cal)
+                    if !timeClusters.isEmpty {
+                        lines.append("    时段：\(timeClusters)")
+                    }
+                }
+
                 // Add location clusters for this day's geo-tagged photos so GPT can
                 // answer "我在哪拍了照片？" or "昨天在哪些地方拍了照？" with place names.
                 let locationNote = photoLocationClusters(dayPhotos, placeRecords: placeRecords)
@@ -2277,6 +2288,44 @@ final class GPTContextBuilder {
         }
 
         return lines.joined(separator: "\n")
+    }
+
+    /// Clusters photos by time-of-day periods (凌晨/上午/下午/晚上) so GPT can
+    /// answer "昨天下午拍了什么照片?" or "今天上午拍了几张?". Returns a compact
+    /// summary like "上午3张、下午5张、晚上2张" with hour ranges for context.
+    private func photoTimeClusters(_ photos: [PhotoMetadataItem], cal: Calendar) -> String {
+        // Time period definitions (hour ranges)
+        // 凌晨 0-5, 上午 6-11, 下午 12-17, 晚上 18-23
+        struct TimePeriod {
+            let label: String
+            let range: Range<Int>
+        }
+        let periods = [
+            TimePeriod(label: "凌晨", range: 0..<6),
+            TimePeriod(label: "上午", range: 6..<12),
+            TimePeriod(label: "下午", range: 12..<18),
+            TimePeriod(label: "晚上", range: 18..<24)
+        ]
+
+        var periodCounts: [String: Int] = [:]
+        for p in photos {
+            let hour = cal.component(.hour, from: p.date)
+            for period in periods where period.range.contains(hour) {
+                periodCounts[period.label, default: 0] += 1
+                break
+            }
+        }
+
+        // Only show periods that have photos, in chronological order
+        let parts = periods.compactMap { period -> String? in
+            guard let count = periodCounts[period.label], count > 0 else { return nil }
+            return "\(period.label)\(count)张"
+        }
+
+        // Skip if all photos are in a single period (not informative)
+        guard parts.count >= 2 else { return "" }
+
+        return parts.joined(separator: "、")
     }
 
     /// Groups geo-tagged photos into location clusters and resolves place names

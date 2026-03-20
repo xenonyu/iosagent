@@ -220,7 +220,7 @@ final class GPTContextBuilder {
         - 周统计中会标注「X天中Y天有运动」，回答时要如实反映活跃天数，不要把少数几天的数据当作每天都达到了。例如7天中2天运动共60分钟，应该说「这周运动了2天，共60分钟」，而不是「日均运动30分钟」。
         - 不要重复罗列所有数据，只回答用户问到的内容。
         - 如果用户提到家人（如"我妈"、"我爸"等），参考下方[用户信息]中的家庭成员数据来回答。
-        - 日历日程中 [日历名] 标签表示事件来源（如 [Work]、[个人]、[家庭]），用户问「工作会议」时参考此标签区分。日程的「备注」字段包含议程或描述，用户问「那个会议聊什么」时可引用。
+        - 日历日程中 [日历名] 标签表示事件来源（如 [Work]、[个人]、[家庭]），用户问「工作会议」时参考此标签区分。日程的「备注」字段包含议程或描述，用户问「那个会议聊什么」时可引用。日历数据已标注星期几和相对日期（昨天/前天/明天/后天），用户问「周三有什么安排」时直接匹配对应日期即可。
         - 今天的日程带有时间状态标注（已结束/进行中），回答日程问题时优先告诉用户接下来的安排，而不是罗列全天。例如下午3点问「今天有什么安排」，重点说还有哪些未完成的，已结束的可简要带过。
         - 对话历史中的内容是之前的对话，注意用户可能会用「那…呢」「昨天的呢」「详细说说」等方式追问。如果用户的问题很短且含指代词（如「那个」「它」「上面说的」），结合对话历史推断用户指的是什么。
 
@@ -535,6 +535,7 @@ final class GPTContextBuilder {
         df.locale = Locale(identifier: "zh_CN")
         let timeFmt = DateFormatter(); timeFmt.dateFormat = "HH:mm"
 
+        let now = Date()
         var lines = ["[日历日程]"]
 
         // Summarize calendar sources so GPT can distinguish work/personal/family events
@@ -561,7 +562,15 @@ final class GPTContextBuilder {
             lines.append("过去7天日程：")
             for day in sortedDays.prefix(7) {
                 guard let dayEvents = dayGroups[day] else { continue }
-                let dayLabel = cal.isDateInYesterday(day) ? "昨天" : dayNameFmt.string(from: day)
+                let dayLabel: String
+                if cal.isDateInYesterday(day) {
+                    dayLabel = "昨天"
+                } else if let twoDaysAgo = cal.date(byAdding: .day, value: -2, to: cal.startOfDay(for: now)),
+                          cal.isDate(day, inSameDayAs: twoDaysAgo) {
+                    dayLabel = "前天"
+                } else {
+                    dayLabel = dayNameFmt.string(from: day)
+                }
                 let eventDescs = dayEvents.prefix(5).map { e -> String in
                     let timeStr = e.isAllDay ? "全天" : "\(timeFmt.string(from: e.startDate))–\(timeFmt.string(from: e.endDate))"
                     var desc = "\(timeStr) \(e.title)"
@@ -579,7 +588,6 @@ final class GPTContextBuilder {
 
         // Today's events — annotate with temporal status so GPT knows what's
         // past, ongoing, and upcoming relative to "now"
-        let now = Date()
         if todayEvents.isEmpty {
             lines.append("今天：无日程")
         } else {
@@ -628,12 +636,28 @@ final class GPTContextBuilder {
             }
         }
 
-        // Upcoming events (future, excluding today)
+        // Upcoming events (future, excluding today) — include weekday names
+        // so GPT can answer "下周三有什么会？" without needing date math
         let futureEvents = upcoming.filter { !cal.isDateInToday($0.startDate) }.prefix(10)
         if !futureEvents.isEmpty {
+            let weekdayFmt = DateFormatter()
+            weekdayFmt.locale = Locale(identifier: "zh_CN")
+            weekdayFmt.dateFormat = "EEEE"
             lines.append("近期：")
             for e in futureEvents {
-                let dateStr = df.string(from: e.startDate)
+                // Add relative labels (明天/后天) and weekday for all future dates
+                let eventDay = cal.startOfDay(for: e.startDate)
+                let relativeLabel: String
+                if let tomorrow = cal.date(byAdding: .day, value: 1, to: cal.startOfDay(for: now)),
+                   cal.isDate(eventDay, inSameDayAs: tomorrow) {
+                    relativeLabel = "明天"
+                } else if let dayAfter = cal.date(byAdding: .day, value: 2, to: cal.startOfDay(for: now)),
+                          cal.isDate(eventDay, inSameDayAs: dayAfter) {
+                    relativeLabel = "后天"
+                } else {
+                    relativeLabel = weekdayFmt.string(from: e.startDate)
+                }
+                let dateStr = "\(df.string(from: e.startDate))(\(relativeLabel))"
                 let timeStr = e.isAllDay ? "全天" : "\(timeFmt.string(from: e.startDate))–\(timeFmt.string(from: e.endDate))"
                 var line = "  \(dateStr) \(timeStr) \(e.title)"
                 if !e.calendar.isEmpty { line += " [\(e.calendar)]" }

@@ -1267,13 +1267,21 @@ final class GPTContextBuilder {
             ("礼拜天", 1), ("礼拜日", 1)
         ]
 
-        // Pre-check "上周X" and "下周X" prefixes to avoid ambiguous fallback.
+        // Pre-check "上周X", "下周X", and "这周X" prefixes to avoid ambiguous fallback.
         // MUST include "上礼拜" (without "个") — otherwise "上礼拜三" triggers
         // the ambiguous "本周三(已过) / 上周三" fallback instead of definitively
-        // resolving to last Wednesday. Same applies to "下礼拜".
+        // resolving to last Wednesday. Same applies to "下礼拜" and "这礼拜".
+        //
+        // "这周X" / "本周X" / "这个星期X" must also be recognized: when the user
+        // says "这周三做了什么运动？", they unambiguously mean THIS week's Wednesday.
+        // Without this check, "这周三" falls through to the bare "周三" handler which
+        // presents both this-week and last-week options as ambiguous — even though
+        // the user's intent is clear.
         let hasLastWeekPrefix = ["上周", "上个星期", "上星期", "上个礼拜", "上礼拜"]
             .contains(where: { lower.contains($0) })
         let hasNextWeekPrefix = ["下周", "下个星期", "下星期", "下个礼拜", "下礼拜"]
+            .contains(where: { lower.contains($0) })
+        let hasThisWeekPrefix = ["这周", "本周", "这个星期", "这星期", "这个礼拜", "这礼拜"]
             .contains(where: { lower.contains($0) })
 
         var resolvedWeekdays = Set<Int>() // avoid duplicates (周三 + 星期三)
@@ -1297,6 +1305,18 @@ final class GPTContextBuilder {
             } else if hasNextWeekPrefix {
                 // "下周三" → unambiguously next week
                 hints.append("「下\(shortName)」= \(dateFmt.string(from: targetNextWeek))→ 查看日历日程中对应日期")
+            } else if hasThisWeekPrefix {
+                // "这周三" / "本周三" → unambiguously this week.
+                // Users who say "这周三" intend this week even if Wednesday already passed.
+                // Without this, "这周三运动了吗" on Friday gets an ambiguous hint showing
+                // both this week and last week options, causing GPT to hedge or pick wrong.
+                if cal.isDate(targetThisWeek, inSameDayAs: cal.startOfDay(for: now)) {
+                    hints.append("「这\(shortName)」= \(dateFmt.string(from: targetThisWeek))（今天）")
+                } else if targetThisWeek < cal.startOfDay(for: now) {
+                    hints.append("「这\(shortName)」= \(dateFmt.string(from: targetThisWeek))（本周，已过）")
+                } else {
+                    hints.append("「这\(shortName)」= \(dateFmt.string(from: targetThisWeek))（本周，即将到来）→ 查看日历日程中对应日期")
+                }
             } else if cal.isDate(targetThisWeek, inSameDayAs: cal.startOfDay(for: now)) {
                 // The referenced weekday IS today — "周五" asked on Friday
                 hints.append("「\(shortName)」= \(dateFmt.string(from: targetThisWeek))（今天）")

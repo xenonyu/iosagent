@@ -237,6 +237,26 @@ final class GPTContextBuilder {
         if !lifeEventBoundary.isEmpty { boundaries.append(lifeEventBoundary) }
         let dataBoundaryText = boundaries.joined(separator: "\n")
 
+        // Build explicit "this week" / "last week" boundaries so GPT can correctly
+        // scope temporal queries like "这周运动了几次" vs "上周睡得怎么样".
+        // Without this, GPT often conflates "近7天" with "这周", e.g. on Wednesday
+        // it might count last Thu/Fri/Sat/Sun data as "this week" because all 7 days
+        // are present in the trend table.
+        let weekBoundaryText: String = {
+            let wkCal = Calendar.current
+            // Monday-based week (ISO 8601, standard in Chinese locale)
+            let todayWeekday = wkCal.component(.weekday, from: now) // 1=Sun..7=Sat
+            let daysSinceMonday = (todayWeekday + 5) % 7 // Mon=0, Tue=1, ..., Sun=6
+            let thisMonday = wkCal.date(byAdding: .day, value: -daysSinceMonday, to: wkCal.startOfDay(for: now))!
+            let lastMonday = wkCal.date(byAdding: .day, value: -7, to: thisMonday)!
+            let lastSunday = wkCal.date(byAdding: .day, value: -1, to: thisMonday)!
+
+            let wkFmt = DateFormatter(); wkFmt.dateFormat = "M月d日"
+            let thisWeekLabel = "\(wkFmt.string(from: thisMonday))~\(wkFmt.string(from: now))（周一至今天，共\(daysSinceMonday + 1)天）"
+            let lastWeekLabel = "\(wkFmt.string(from: lastMonday))~\(wkFmt.string(from: lastSunday))（周一至周日）"
+            return "「这周」= \(thisWeekLabel)\n「上周」= \(lastWeekLabel)"
+        }()
+
         // Determine tone based on user's AI style preference
         let toneInstruction: String
         switch self.profile.aiStyle {
@@ -256,10 +276,12 @@ final class GPTContextBuilder {
 
         数据时间范围（重要）：
         \(dataBoundaryText)
+        \(weekBoundaryText)
         ⚠️ 你只拥有上述时间范围内的数据。如果用户询问的时间段超出数据覆盖范围（如「上个月」「今年」「过去30天」），你必须：
         1. 先说明你只有近7天的数据
         2. 基于已有数据给出部分回答（如「近7天内…」）
         3. 不要将7天数据外推为更长时间段的结论
+        ⚠️ 「这周」和「近7天」是不同概念。用户说「这周」指本周一至今天，说「上周」指上周一至上周日。回答时务必按上方日期范围筛选对应的数据行，不要把上周的数据算入这周，也不要把这周的数据算入上周。
 
         能力边界：
         - 你只能读取数据，不能创建、修改或保存任何记录。如果用户想记录事情，告诉他可以在 App 的生活记录页面手动添加。

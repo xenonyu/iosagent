@@ -37,8 +37,12 @@ struct PhotoSkill: ClawSkill {
         let interval = range.interval
         let photos = context.photoService.fetchMetadata(from: interval.start, to: interval.end)
 
-        if photos.isEmpty {
-            return "📷 \(range.label)没有找到照片。\n如果是有限访问权限，请在设置中选择更多照片，或者调整时间范围再试试。"
+        // Also fetch all media (including videos) for comprehensive stats
+        let allMedia = context.photoService.fetchAllMedia(from: interval.start, to: interval.end)
+        let videoItems = allMedia.filter { $0.isVideo }
+
+        if photos.isEmpty && videoItems.isEmpty {
+            return "📷 \(range.label)没有找到照片或视频。\n如果是有限访问权限，请在设置中选择更多照片，或者调整时间范围再试试。"
         }
 
         let cal = Calendar.current
@@ -76,6 +80,13 @@ struct PhotoSkill: ClawSkill {
         // --- Build response ---
         var lines = ["📷 \(range.label)的照片记录\n"]
         lines.append("共拍了 **\(photos.count) 张**照片")
+
+        // --- Media type breakdown ---
+        // Count special types from the image set (screenshots, live photos, etc.)
+        let mediaBreakdown = buildMediaBreakdown(photos: photos, videos: videoItems)
+        if !mediaBreakdown.isEmpty {
+            lines.append(mediaBreakdown)
+        }
 
         let totalDays = max(1, dayCount.count)
         let avgPerDay = Double(photos.count) / Double(totalDays)
@@ -161,6 +172,42 @@ struct PhotoSkill: ClawSkill {
         }
 
         return lines.joined(separator: "\n")
+    }
+
+    // MARK: - Media Type Breakdown
+
+    /// Builds a compact media type summary line for photo stats view.
+    /// Shows counts for screenshots, live photos, videos, panoramas, etc.
+    private func buildMediaBreakdown(photos: [PhotoMetadataItem], videos: [PhotoMetadataItem]) -> String {
+        var parts: [String] = []
+
+        // Count special types from the image set
+        var kindCounts: [PhotoMediaKind: Int] = [:]
+        for photo in photos {
+            if photo.mediaKind != .photo {
+                kindCounts[photo.mediaKind, default: 0] += 1
+            }
+        }
+
+        // Add video count
+        if !videos.isEmpty {
+            let totalDuration = videos.reduce(0.0) { $0 + $1.duration }
+            let durationStr = totalDuration > 60
+                ? "\(Int(totalDuration / 60))分钟"
+                : "\(Int(totalDuration))秒"
+            parts.append("🎬 \(videos.count)个视频（\(durationStr)）")
+        }
+
+        // Special image types (sorted by count, most frequent first)
+        let orderedKinds: [PhotoMediaKind] = [.screenshot, .livePhoto, .depthEffect, .panorama, .hdr, .burst]
+        for kind in orderedKinds {
+            if let count = kindCounts[kind], count > 0 {
+                parts.append("\(kind.emoji) \(count)\(kind.label == "截图" ? "张截图" : "张\(kind.label)")")
+            }
+        }
+
+        guard !parts.isEmpty else { return "" }
+        return parts.joined(separator: "  ")
     }
 
     // MARK: - Photo Event Detection
@@ -501,6 +548,20 @@ struct PhotoSkill: ClawSkill {
         }
 
         let lower = query.lowercased()
+
+        // --- Media type search (screenshots, videos, live photos, panoramas, etc.) ---
+        if let mediaKind = detectMediaKind(in: lower) {
+            let timeRange = extractTimeRange(from: lower)
+            let interval = timeRange?.interval
+            let items = context.photoService.fetchByMediaKind(
+                mediaKind, from: interval?.start, to: interval?.end
+            )
+            return buildMediaTypeResults(
+                items: items, kind: mediaKind,
+                timeLabel: timeRange?.label, context: context
+            )
+        }
+
         var resultPhotos: [PhotoMetadataItem] = []
         var searchDescription = ""
 
@@ -592,6 +653,220 @@ struct PhotoSkill: ClawSkill {
         }
 
         return buildSearchResults(photos: resultPhotos, description: searchDescription, context: context)
+    }
+
+    // MARK: - Media Type Search
+
+    /// Detects if the query is asking for a specific media type (screenshot, video, etc.).
+    private func detectMediaKind(in text: String) -> PhotoMediaKind? {
+        // Order: most specific first to avoid "照" in "截图" matching photo
+        if containsAny(text, ["截图", "截屏", "screenshot", "屏幕截图", "屏幕快照"]) {
+            return .screenshot
+        }
+        if containsAny(text, ["全景", "panorama", "全景照", "panoramic"]) {
+            return .panorama
+        }
+        if containsAny(text, ["实况", "live photo", "livephoto", "动态照片"]) {
+            return .livePhoto
+        }
+        if containsAny(text, ["人像", "portrait", "人像模式", "景深", "虚化", "depth"]) {
+            return .depthEffect
+        }
+        if containsAny(text, ["连拍", "burst", "快拍"]) {
+            return .burst
+        }
+        if containsAny(text, ["慢动作", "slo-mo", "slomo", "slow motion", "慢放"]) {
+            return .sloMo
+        }
+        if containsAny(text, ["延时", "timelapse", "time-lapse", "延时摄影", "缩时"]) {
+            return .timelapse
+        }
+        if containsAny(text, ["hdr"]) {
+            return .hdr
+        }
+        // Video must be checked after sloMo/timelapse to avoid shadowing
+        if containsAny(text, ["视频", "录像", "video", "影片", "录制", "拍的视频"]) {
+            return .video
+        }
+        return nil
+    }
+
+    /// Builds a rich response for media-type-specific photo search results.
+    private func buildMediaTypeResults(items: [PhotoMetadataItem], kind: PhotoMediaKind,
+                                       timeLabel: String?, context: SkillContext) -> String {
+        let kindLabel = kind.label
+        let emoji = kind.emoji
+        let timePart = timeLabel ?? ""
+
+        if items.isEmpty {
+            var msg = "\(emoji) \(timePart)没有找到\(kindLabel)。\n"
+            switch kind {
+            case .screenshot:
+                msg += "试试扩大时间范围？比如「这个月的截图」。"
+            case .video, .sloMo, .timelapse:
+                msg += "试试「最近的视频」或「这个月拍的视频」。"
+            case .livePhoto:
+                msg += "实况照片需要在拍照时开启 Live Photo 功能。"
+            case .panorama:
+                msg += "全景照片需要使用相机的全景模式拍摄。"
+            case .depthEffect:
+                msg += "人像照片需要使用人像模式拍摄（支持的 iPhone 机型）。"
+            default:
+                msg += "试试调整时间范围再看看？"
+            }
+            return msg
+        }
+
+        let cal = Calendar.current
+        let df = DateFormatter()
+        df.dateFormat = "M月d日 HH:mm"
+        df.locale = Locale(identifier: "zh_CN")
+        let dayDf = DateFormatter()
+        dayDf.dateFormat = "M月d日"
+        dayDf.locale = Locale(identifier: "zh_CN")
+
+        var lines = ["\(emoji) 找到 **\(items.count) \(items.count == 1 ? "个" : "个")**\(timePart)\(kindLabel)\n"]
+
+        // --- Date range ---
+        let sortedByDate = items.sorted { $0.date < $1.date }
+        if let earliest = sortedByDate.first?.date, let latest = sortedByDate.last?.date {
+            if cal.isDate(earliest, inSameDayAs: latest) {
+                lines.append("📅 \(dayDf.string(from: earliest))")
+            } else {
+                lines.append("📅 \(dayDf.string(from: earliest)) ~ \(dayDf.string(from: latest))")
+            }
+        }
+
+        // --- Video-specific stats ---
+        if kind == .video || kind == .sloMo || kind == .timelapse {
+            let totalSeconds = items.reduce(0.0) { $0 + $1.duration }
+            let avgDuration = totalSeconds / Double(items.count)
+            lines.append("⏱️ 总时长 \(formatDuration(totalSeconds))，平均 \(formatDuration(avgDuration))")
+
+            let longest = items.max(by: { $0.duration < $1.duration })
+            if let longest = longest, items.count > 1 {
+                lines.append("🏆 最长: \(formatDuration(longest.duration))（\(df.string(from: longest.date))）")
+            }
+        }
+
+        // --- Resolution stats for photos ---
+        if !items.first!.isVideo && items.first!.pixelWidth > 0 {
+            let maxRes = items.max(by: { $0.pixelWidth * $0.pixelHeight < $1.pixelWidth * $1.pixelHeight })
+            if let maxRes = maxRes, maxRes.pixelWidth > 0 {
+                let mp = Double(maxRes.pixelWidth * maxRes.pixelHeight) / 1_000_000.0
+                if kind == .panorama {
+                    lines.append("📐 最大分辨率: \(maxRes.pixelWidth)×\(maxRes.pixelHeight)（\(String(format: "%.1f", mp))MP）")
+                }
+            }
+        }
+
+        // --- Favorites ---
+        let favCount = items.filter { $0.isFavorite }.count
+        if favCount > 0 {
+            lines.append("❤️ 其中 \(favCount) 个已收藏")
+        }
+
+        // --- Location info ---
+        let geoItems = items.filter { $0.hasLocation }
+        if geoItems.count >= 2 {
+            let clusters = buildLocationClusters(photos: geoItems, context: context)
+            if !clusters.isEmpty {
+                lines.append("\n📍 **拍摄地点**:")
+                for cluster in clusters.prefix(5) {
+                    lines.append("  · \(cluster.name)（\(cluster.count) 个）")
+                }
+            }
+        } else if geoItems.count == 1 {
+            let knownPlaces = loadKnownPlaces(from: context)
+            if let lat = geoItems[0].latitude, let lon = geoItems[0].longitude {
+                let name = resolveLocationName(lat: lat, lon: lon, knownPlaces: knownPlaces)
+                lines.append("📍 拍摄于 \(name)")
+            }
+        }
+
+        // --- Day distribution (when spanning multiple days) ---
+        var dayCount: [Date: Int] = [:]
+        items.forEach {
+            let day = cal.startOfDay(for: $0.date)
+            dayCount[day, default: 0] += 1
+        }
+
+        if dayCount.count >= 2 && dayCount.count <= 10 {
+            let sortedDays = dayCount.sorted { $0.key < $1.key }
+            let maxDayCount = sortedDays.map(\.value).max() ?? 1
+            lines.append("\n📊 **逐日分布**:")
+            for (day, count) in sortedDays {
+                let barLen = max(1, Int(Double(count) / Double(maxDayCount) * 8))
+                let bar = String(repeating: "▓", count: barLen) + String(repeating: "░", count: max(0, 8 - barLen))
+                let weekday = cal.component(.weekday, from: day)
+                let wdNames = ["", "日", "一", "二", "三", "四", "五", "六"]
+                let wdStr = weekday < wdNames.count ? "周\(wdNames[weekday])" : ""
+                lines.append("  \(dayDf.string(from: day))(\(wdStr)) [\(bar)] \(count)个")
+            }
+        }
+
+        // --- Time-of-day pattern ---
+        if items.count >= 5 {
+            var periodCounts: [String: Int] = [:]
+            for item in items {
+                let hour = cal.component(.hour, from: item.date)
+                let period = timeOfDayLabel(hour: hour)
+                periodCounts[period, default: 0] += 1
+            }
+            if let peak = periodCounts.max(by: { $0.value < $1.value }) {
+                let pct = Int(Double(peak.value) / Double(items.count) * 100)
+                if pct >= 35 {
+                    lines.append("⏰ 主要拍摄于\(peak.key)（\(pct)%）")
+                }
+            }
+        }
+
+        // --- Recent items list ---
+        lines.append("\n**最近的\(kindLabel)**:")
+        for item in items.prefix(6) {
+            var parts: [String] = [df.string(from: item.date)]
+            if item.isVideo {
+                parts.append(formatDuration(item.duration))
+            }
+            if item.isFavorite { parts.append("❤️") }
+            if item.hasLocation { parts.append("📍") }
+            lines.append("  · \(parts.joined(separator: " "))")
+        }
+        if items.count > 6 {
+            lines.append("  …还有 \(items.count - 6) 个")
+        }
+
+        // --- Kind-specific tips ---
+        switch kind {
+        case .screenshot:
+            lines.append("\n💡 截图通常记录了重要信息。你也可以问「在北京拍的截图」按地点筛选。")
+        case .video:
+            lines.append("\n💡 你也可以问「慢动作视频」或「延时摄影」查看特定类型。")
+        case .livePhoto:
+            lines.append("\n💡 实况照片记录了拍摄前后 1.5 秒的动态瞬间。")
+        case .depthEffect:
+            lines.append("\n💡 人像模式照片支持后期调整背景虚化强度。")
+        default:
+            break
+        }
+
+        return lines.joined(separator: "\n")
+    }
+
+    /// Formats a time duration in seconds into a human-readable string.
+    private func formatDuration(_ seconds: TimeInterval) -> String {
+        let totalSec = Int(seconds)
+        if totalSec < 60 {
+            return "\(totalSec)秒"
+        } else if totalSec < 3600 {
+            let min = totalSec / 60
+            let sec = totalSec % 60
+            return sec > 0 ? "\(min)分\(sec)秒" : "\(min)分钟"
+        } else {
+            let hr = totalSec / 3600
+            let min = (totalSec % 3600) / 60
+            return min > 0 ? "\(hr)小时\(min)分" : "\(hr)小时"
+        }
     }
 
     // MARK: - Vision Index Search
@@ -968,11 +1243,12 @@ struct PhotoSkill: ClawSkill {
         · 「找自拍照片」— 人脸识别搜索
         · 「海边的照片」— 场景搜索
         · 「风景照片」「夜景照片」— 场景类型
-        · 「美食照片」「咖啡照片」— 内容分类
         · 「找猫的照片」「鸟的照片」— 物体识别
-        · 「建筑照片」「街拍」— 城市场景
+        · 「最近的截图」— 按媒体类型搜索
+        · 「这周的视频」— 视频搜索
+        · 「全景照片」「实况照片」「人像照片」— 特殊拍摄模式
 
-        💡 我可以根据时间、地点、内容和人脸帮你找到照片。
+        💡 我可以根据时间、地点、内容、媒体类型和人脸帮你找到照片。
         需要先在「设置」中完成照片索引才能使用 AI 内容搜索。
         """
     }

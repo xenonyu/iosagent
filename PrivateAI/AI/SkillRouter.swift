@@ -868,6 +868,24 @@ struct SkillRouter {
             return .calendar(range: range)
         }
 
+        // --- Photo Search (media type keywords) ---
+        // Screenshots, videos, live photos, panoramas, etc. are direct photo-search queries.
+        // "找截图", "最近的视频", "我的全景照", "有实况照片吗", "人像照片", "慢动作视频"
+        let mediaTypeKeywords = [
+            "截图", "截屏", "screenshot", "屏幕截图", "屏幕快照",
+            "视频", "录像", "video", "影片", "录制",
+            "实况", "live photo", "动态照片",
+            "全景", "panorama", "panoramic",
+            "人像模式", "人像照", "portrait", "景深", "虚化",
+            "连拍", "burst",
+            "慢动作", "slo-mo", "slomo", "slow motion",
+            "延时", "timelapse", "time-lapse", "延时摄影",
+            "hdr"
+        ]
+        if containsAny(lower, mediaTypeKeywords) {
+            return .photoSearch(query: text)
+        }
+
         // --- Photo Search (AI visual search) ---
         // "帮我找自拍照", "找一下猫的图", "搜照片"
         // Also accepts photo-inherent words: 合照/合影/自拍 don't need an extra "照片" noun.
@@ -884,14 +902,35 @@ struct SkillRouter {
         }
 
         // --- Photo Search (location + photo context) ---
+        // General pattern: "在X拍的"/"在X的照片" → location-based photo search.
+        // This catches ANY location without needing an exhaustive city list,
+        // because PhotoSkill's matchLocationFromHistory handles arbitrary places.
         if containsAny(lower, ["照片", "拍的", "photo"]) &&
-           containsAny(lower, ["在北京", "在上海", "在广州", "在深圳", "在杭州", "在成都",
-                                "在南京", "在西安", "在重庆", "在武汉", "在厦门", "在三亚",
-                                "在东京", "在大阪", "在京都", "在首尔", "在曼谷", "在新加坡",
-                                "在巴黎", "在纽约", "在伦敦", "在旧金山", "在洛杉矶", "在悉尼",
-                                "在苏州", "在青岛", "在丽江", "在大理", "在黄山", "在香港", "在台北",
-                                "海边", "山上", "湖边",
-                                "收藏", "喜欢", "最爱"]) {
+           (Self.hasLocationPhotoPattern(lower) ||
+            containsAny(lower, [
+                // --- Named locations (synced with PhotoSearchService) ---
+                // China Tier-1/2 cities
+                "北京", "上海", "广州", "深圳", "杭州", "成都",
+                "南京", "西安", "重庆", "武汉", "厦门", "三亚",
+                "苏州", "青岛", "丽江", "大理", "黄山", "香港", "台北",
+                "长沙", "哈尔滨", "桂林",
+                // China provinces/regions
+                "云南", "海南", "西藏", "新疆", "内蒙古", "四川", "福建", "浙江", "广西",
+                // International cities
+                "东京", "大阪", "京都", "首尔", "曼谷", "新加坡",
+                "巴黎", "纽约", "伦敦", "旧金山", "洛杉矶", "悉尼",
+                "温哥华", "多伦多", "迪拜", "伊斯坦布尔",
+                "罗马", "威尼斯", "米兰", "巴塞罗那", "马德里", "墨尔本", "苏黎世",
+                // Countries
+                "日本", "韩国", "泰国", "美国", "英国", "法国", "德国",
+                "意大利", "西班牙", "澳大利亚", "新西兰", "加拿大", "瑞士", "土耳其", "埃及",
+                // Generic place types (covers "公司的照片", "学校拍的" etc.)
+                "家", "公司", "学校", "办公室", "酒店", "机场", "火车站", "医院",
+                "公园", "商场", "超市", "健身房", "咖啡厅", "餐厅", "图书馆",
+                // Scenic/geographic features
+                "海边", "山上", "湖边", "河边", "沙滩",
+                // Favorites (kept from original)
+                "收藏", "喜欢", "最爱"])) {
             return .photoSearch(query: text)
         }
 
@@ -941,7 +980,7 @@ struct SkillRouter {
         // Only reached when there's no search intent — user is asking about photo volume/patterns.
         // e.g. "这周拍了多少照片", "最近照片多吗", "相册有多少张"
         if containsAny(lower, ["照片", "拍了", "拍过", "图片", "相册", "记录了几张",
-                                "拍照", "截图", "相机",
+                                "拍照", "相机",
                                 "photo", "picture", "shot", "camera", "image"]) {
             return .photos(range: range)
         }
@@ -3438,6 +3477,47 @@ struct SkillRouter {
 
     static func containsAny(_ text: String, _ keywords: [String]) -> Bool {
         keywords.contains { text.contains($0) }
+    }
+
+    /// Detects the general pattern "在X拍/照" where X is any short location name (1-10 chars).
+    /// This catches location-based photo queries without needing an exhaustive city list.
+    /// e.g. "在长沙拍的照片", "在公司拍的", "去云南的时候拍的照片"
+    static func hasLocationPhotoPattern(_ text: String) -> Bool {
+        // Pattern 1: "在X拍" — "在长沙拍的", "在公司拍了", "在海边拍的照片"
+        if let zaiRange = text.range(of: "在") {
+            let afterZai = text[zaiRange.upperBound...]
+            // Look for "拍" within 1-10 characters after "在"
+            if let paiRange = afterZai.range(of: "拍") {
+                let gap = afterZai.distance(from: afterZai.startIndex, to: paiRange.lowerBound)
+                if gap >= 1 && gap <= 10 {
+                    return true
+                }
+            }
+            // Look for "照片"/"照" within 1-12 characters after "在X的" pattern
+            if let deRange = afterZai.range(of: "的照") {
+                let gap = afterZai.distance(from: afterZai.startIndex, to: deRange.lowerBound)
+                if gap >= 1 && gap <= 10 {
+                    return true
+                }
+            }
+        }
+        // Pattern 2: "去X拍" / "去X的照片" — "去三亚拍的", "去云南的照片"
+        if let quRange = text.range(of: "去") {
+            let afterQu = text[quRange.upperBound...]
+            if let paiRange = afterQu.range(of: "拍") {
+                let gap = afterQu.distance(from: afterQu.startIndex, to: paiRange.lowerBound)
+                if gap >= 1 && gap <= 12 {
+                    return true
+                }
+            }
+            if let deRange = afterQu.range(of: "的照") {
+                let gap = afterQu.distance(from: afterQu.startIndex, to: deRange.lowerBound)
+                if gap >= 1 && gap <= 10 {
+                    return true
+                }
+            }
+        }
+        return false
     }
 
     // MARK: - Daily Quote Parsing

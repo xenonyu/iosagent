@@ -2184,7 +2184,122 @@ struct SummarySkill: ClawSkill {
             }
         }
 
-        return Array(insights.prefix(3))
+        // --- Insight 5: Calendar load → sleep quality ---
+        // Heavy meeting days often cause worse sleep: stress and mental fatigue carry
+        // over, leading to later bedtime or more fragmented sleep. This is a pattern
+        // only a personal data assistant can surface.
+        if !calendarEvents.isEmpty && healthSummaries.count >= 4 {
+            let timedEvents = calendarEvents.filter { !$0.isAllDay }
+            var meetingMinutesPerDay: [Date: Double] = [:]
+            for e in timedEvents {
+                let day = cal.startOfDay(for: e.startDate)
+                meetingMinutesPerDay[day, default: 0] += e.duration / 60.0
+            }
+            // Compare sleep on heavy-meeting days (≥3h of meetings) vs light days (<1h)
+            var heavySleep: [Double] = []
+            var lightSleep: [Double] = []
+            for h in healthSummaries where h.sleepHours > 0 {
+                let day = cal.startOfDay(for: h.date)
+                let meetingMin = meetingMinutesPerDay[day] ?? 0
+                if meetingMin >= 180 { heavySleep.append(h.sleepHours) }
+                else if meetingMin < 60 { lightSleep.append(h.sleepHours) }
+            }
+            if heavySleep.count >= 2 && lightSleep.count >= 2 {
+                let heavyAvg = heavySleep.reduce(0, +) / Double(heavySleep.count)
+                let lightAvg = lightSleep.reduce(0, +) / Double(lightSleep.count)
+                let diff = lightAvg - heavyAvg
+                if diff >= 0.3 {
+                    insights.append("📅↔️😴 会议密集日比清闲日少睡 \(String(format: "%.1f", diff))h —— 忙碌让入睡更难")
+                } else if diff <= -0.3 {
+                    insights.append("📅↔️😴 会议密集日反而多睡 \(String(format: "%.1f", -diff))h —— 可能是脑力消耗促进睡眠")
+                }
+            }
+        }
+
+        // --- Insight 6: Late bedtime → next-day activity ---
+        // Sleeping late reliably predicts less activity the next day. By tracking
+        // the user's own sleep onset → next-day steps pattern, we can show them
+        // the personal cost of staying up late in concrete numbers.
+        let withOnset = healthSummaries.filter { $0.sleepOnset != nil && $0.sleepHours > 0 }
+        if withOnset.count >= 4 {
+            // Build a map of next-day steps keyed by sleep onset date
+            var stepsByDay: [Date: Double] = [:]
+            for h in healthSummaries where h.steps > 0 {
+                stepsByDay[cal.startOfDay(for: h.date)] = h.steps
+            }
+            var lateNightNextDaySteps: [Double] = []
+            var earlyNightNextDaySteps: [Double] = []
+            for h in withOnset {
+                guard let onset = h.sleepOnset else { continue }
+                let onsetHour = cal.component(.hour, from: onset)
+                // Late: fell asleep after midnight (0-3am); Early: before 23:30
+                let isLate = onsetHour >= 0 && onsetHour < 4
+                let isEarly = onsetHour >= 20 && onsetHour <= 23
+                // Next day = the day after the sleep date
+                let nextDay = cal.date(byAdding: .day, value: 1, to: cal.startOfDay(for: h.date))!
+                if let nextSteps = stepsByDay[nextDay], nextSteps > 0 {
+                    if isLate { lateNightNextDaySteps.append(nextSteps) }
+                    else if isEarly { earlyNightNextDaySteps.append(nextSteps) }
+                }
+            }
+            if lateNightNextDaySteps.count >= 2 && earlyNightNextDaySteps.count >= 2 {
+                let lateAvg = lateNightNextDaySteps.reduce(0, +) / Double(lateNightNextDaySteps.count)
+                let earlyAvg = earlyNightNextDaySteps.reduce(0, +) / Double(earlyNightNextDaySteps.count)
+                if earlyAvg > 0 {
+                    let dropPct = (earlyAvg - lateAvg) / earlyAvg * 100
+                    if dropPct >= 15 {
+                        insights.append("🌙↔️👟 熬夜后次日步数少 \(Int(dropPct))% —— 早睡是最好的活力投资")
+                    } else if dropPct <= -15 {
+                        insights.append("🌙↔️👟 晚睡后次日反而更活跃 —— 你是夜猫子体质？")
+                    }
+                }
+            }
+        }
+
+        // --- Insight 7: Weekend recovery pattern ---
+        // Do weekends actually restore you? Compare weekend vs weekday sleep,
+        // activity, and recovery to see if your rest days are truly restful.
+        if healthSummaries.count >= 5 {
+            var weekdayHealth: (steps: Double, sleep: Double, count: Int, sleepCount: Int) = (0, 0, 0, 0)
+            var weekendHealth: (steps: Double, sleep: Double, count: Int, sleepCount: Int) = (0, 0, 0, 0)
+            for h in healthSummaries where h.hasData {
+                let wd = cal.component(.weekday, from: h.date)
+                let isWeekend = (wd == 1 || wd == 7)
+                if isWeekend {
+                    if h.steps > 0 { weekendHealth.steps += h.steps; weekendHealth.count += 1 }
+                    if h.sleepHours > 0 { weekendHealth.sleep += h.sleepHours; weekendHealth.sleepCount += 1 }
+                } else {
+                    if h.steps > 0 { weekdayHealth.steps += h.steps; weekdayHealth.count += 1 }
+                    if h.sleepHours > 0 { weekdayHealth.sleep += h.sleepHours; weekdayHealth.sleepCount += 1 }
+                }
+            }
+            // Need data on both sides to compare
+            if weekendHealth.count >= 2 && weekdayHealth.count >= 3 {
+                let wkendAvgSteps = weekendHealth.steps / Double(weekendHealth.count)
+                let wkdayAvgSteps = weekdayHealth.steps / Double(weekdayHealth.count)
+                let stepsDiff = wkendAvgSteps - wkdayAvgSteps
+                let stepsPctDiff = wkdayAvgSteps > 0 ? stepsDiff / wkdayAvgSteps * 100 : 0
+
+                // Also compare sleep if available
+                let hasSleepBoth = weekendHealth.sleepCount >= 1 && weekdayHealth.sleepCount >= 2
+                let wkendAvgSleep = hasSleepBoth ? weekendHealth.sleep / Double(weekendHealth.sleepCount) : 0
+                let wkdayAvgSleep = hasSleepBoth ? weekdayHealth.sleep / Double(weekdayHealth.sleepCount) : 0
+                let sleepDiff = wkendAvgSleep - wkdayAvgSleep
+
+                if stepsPctDiff <= -25 && hasSleepBoth && sleepDiff >= 0.5 {
+                    // Weekend: less active but more sleep — classic recovery pattern
+                    insights.append("🛋↔️🔋 周末多睡 \(String(format: "%.1f", sleepDiff))h 但少走 \(Int(-stepsPctDiff))% —— 身体在补觉恢复")
+                } else if stepsPctDiff <= -25 && (!hasSleepBoth || sleepDiff < 0.3) {
+                    // Weekend: less active without extra sleep — potential sedentary risk
+                    insights.append("🛋↔️⚠️ 周末步数比工作日少 \(Int(-stepsPctDiff))%，但没有多睡 —— 周末也动起来")
+                } else if stepsPctDiff >= 25 {
+                    // Weekend: more active — outdoor/exercise type
+                    insights.append("🏃↔️🎉 周末比工作日多走 \(Int(stepsPctDiff))% —— 你是周末运动达人")
+                }
+            }
+        }
+
+        return Array(insights.prefix(4))
     }
 
     /// Returns Chinese weekday name from Calendar weekday number (1=Sun, 7=Sat).

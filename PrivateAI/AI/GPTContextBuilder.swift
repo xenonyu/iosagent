@@ -1354,6 +1354,34 @@ final class GPTContextBuilder {
             items.append(sleepDesc)
         }
 
+        // Heart rate & HRV per-week averages — critical for weekly comparison.
+        // Without these, GPT sees "这周均静息心率" only in individual trend rows and
+        // has to manually scan & average them, often getting it wrong. Users commonly
+        // ask "这周心率和上周比怎么样？" or "最近压力大吗？HRV 有变化吗？", and resting HR +
+        // HRV are the best proxy metrics for stress/recovery trends.
+        let rhrDays = days.filter { $0.restingHeartRate > 0 }
+        if !rhrDays.isEmpty {
+            let avgRHR = Int(rhrDays.map(\.restingHeartRate).reduce(0, +) / Double(rhrDays.count))
+            var hrDesc = "均静息心率\(avgRHR)bpm"
+
+            // HRV — Heart Rate Variability, key recovery/stress indicator.
+            // Trending down across weeks suggests accumulated fatigue or stress.
+            let hrvDays = days.filter { $0.hrv > 0 }
+            if !hrvDays.isEmpty {
+                let avgHRV = Int(hrvDays.map(\.hrv).reduce(0, +) / Double(hrvDays.count))
+                hrDesc += "，均HRV \(avgHRV)ms"
+            }
+
+            // Average daily heart rate (not just resting) for overall activity level context
+            let avgHRDays = days.filter { $0.heartRate > 0 }
+            if !avgHRDays.isEmpty {
+                let avgDayHR = Int(avgHRDays.map(\.heartRate).reduce(0, +) / Double(avgHRDays.count))
+                hrDesc += "，日均心率\(avgDayHR)bpm"
+            }
+
+            items.append(hrDesc)
+        }
+
         // Show both total and daily average for calories so GPT can fairly compare
         // weeks of different lengths. Without daily average, GPT sees "本周(4天)总消耗
         // 8500kcal" vs "上周(7天)总消耗14000kcal" and wrongly concludes "this week less

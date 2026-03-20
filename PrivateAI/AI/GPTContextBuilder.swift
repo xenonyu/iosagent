@@ -2549,7 +2549,173 @@ final class GPTContextBuilder {
                 }
             }
         }
+
+        // Per-week calendar stats — pre-computed so GPT can directly answer
+        // "这周忙吗？" "上周有几个会？" "这周和上周哪个忙？" without manually counting
+        // events from the per-day listing. Mirrors the per-week health stats pattern.
+        let weeklyCalStats = buildPerWeekCalendarStats(
+            todayEvents: todayEvents,
+            pastEvents: past,
+            upcomingEvents: upcoming,
+            cal: cal
+        )
+        if !weeklyCalStats.isEmpty {
+            lines.append(weeklyCalStats)
+        }
+
         return lines.joined(separator: "\n")
+    }
+
+    /// Builds per-week calendar stats ("本周" vs "上周") with event counts,
+    /// meeting time, and comparison — so GPT can directly answer "这周忙不忙？"
+    /// or "和上周比呢？" without manually scanning day-by-day event listings.
+    private func buildPerWeekCalendarStats(
+        todayEvents: [CalendarEventItem],
+        pastEvents: [CalendarEventItem],
+        upcomingEvents: [CalendarEventItem],
+        cal: Calendar
+    ) -> String {
+        let now = Date()
+        let todayWeekday = cal.component(.weekday, from: now) // 1=Sun..7=Sat
+        let daysSinceMonday = (todayWeekday + 5) % 7 // Mon=0..Sun=6
+        let thisMonday = cal.date(byAdding: .day, value: -daysSinceMonday, to: cal.startOfDay(for: now))!
+        let lastMonday = cal.date(byAdding: .day, value: -7, to: thisMonday)!
+        let thisSunday = cal.date(byAdding: .day, value: 7, to: thisMonday)! // start of next week
+
+        // Combine all events for classification
+        let allEvents = todayEvents + pastEvents + upcomingEvents
+        // Deduplicate by title + startDate to avoid double-counting today's events
+        // (todayEvents and upcoming/past may overlap)
+        var seen = Set<String>()
+        let uniqueEvents = allEvents.filter { e in
+            let key = "\(e.title)|\(e.startDate.timeIntervalSince1970)"
+            return seen.insert(key).inserted
+        }
+
+        // Split into this week and last week
+        let thisWeekEvents = uniqueEvents.filter { e in
+            let dayStart = cal.startOfDay(for: e.startDate)
+            return dayStart >= thisMonday && dayStart < thisSunday
+        }
+        let lastWeekEvents = uniqueEvents.filter { e in
+            let dayStart = cal.startOfDay(for: e.startDate)
+            return dayStart >= lastMonday && dayStart < thisMonday
+        }
+
+        guard !thisWeekEvents.isEmpty || !lastWeekEvents.isEmpty else { return "" }
+
+        var parts: [String] = []
+
+        // Helper to summarize a week's events
+        func weekSummary(_ events: [CalendarEventItem]) -> String {
+            let total = events.count
+            let nonAllDay = events.filter { !$0.isAllDay }
+            let totalMeetingMins = nonAllDay.map { Int($0.duration / 60) }.reduce(0, +)
+            let activeDays = Set(events.map { cal.startOfDay(for: $0.startDate) }).count
+
+            var desc = "\(total)个日程，\(activeDays)天有安排"
+
+            if totalMeetingMins >= 60 {
+                let hrs = totalMeetingMins / 60
+                let mins = totalMeetingMins % 60
+                let timeStr = mins > 0 ? "\(hrs)小时\(mins)分钟" : "\(hrs)小时"
+                desc += "，会议总时长\(timeStr)"
+            } else if totalMeetingMins > 0 {
+                desc += "，会议总时长\(totalMeetingMins)分钟"
+            }
+
+            // Per-calendar breakdown if multiple calendars
+            var calBreakdown: [String: Int] = [:]
+            for e in events where !e.calendar.isEmpty {
+                calBreakdown[e.calendar, default: 0] += 1
+            }
+            if calBreakdown.count >= 2 {
+                let breakdown = calBreakdown.sorted { $0.value > $1.value }
+                    .prefix(3)
+                    .map { "\($0.key)\($0.value)个" }
+                desc += "（\(breakdown.joined(separator: "、"))）"
+            }
+
+            return desc
+        }
+
+        // This week stats
+        if !thisWeekEvents.isEmpty {
+            // Split into past (completed) and future (upcoming) for richer context
+            let thisWeekPast = thisWeekEvents.filter { $0.endDate <= now }
+            let thisWeekFuture = thisWeekEvents.filter { $0.startDate > now }
+            let thisWeekOngoing = thisWeekEvents.filter { $0.startDate <= now && $0.endDate > now }
+
+            var thisWeekDesc = "本周（周一至周日）：\(weekSummary(thisWeekEvents))"
+            if !thisWeekPast.isEmpty && !thisWeekFuture.isEmpty {
+                thisWeekDesc += "，已完成\(thisWeekPast.count)个，待办\(thisWeekFuture.count)个"
+            }
+            if !thisWeekOngoing.isEmpty {
+                thisWeekDesc += "，进行中\(thisWeekOngoing.count)个"
+            }
+            parts.append(thisWeekDesc)
+        }
+
+        // Last week stats
+        if !lastWeekEvents.isEmpty {
+            parts.append("上周（完整7天）：\(weekSummary(lastWeekEvents))")
+        }
+
+        // Week-over-week comparison — pre-computed so GPT can directly say
+        // "这周比上周忙" without counting events from two separate day listings
+        if !thisWeekEvents.isEmpty && !lastWeekEvents.isEmpty {
+            let thisCount = thisWeekEvents.count
+            let lastCount = lastWeekEvents.count
+            let diff = thisCount - lastCount
+
+            let thisNonAllDay = thisWeekEvents.filter { !$0.isAllDay }
+            let lastNonAllDay = lastWeekEvents.filter { !$0.isAllDay }
+            let thisMeetingMins = thisNonAllDay.map { Int($0.duration / 60) }.reduce(0, +)
+            let lastMeetingMins = lastNonAllDay.map { Int($0.duration / 60) }.reduce(0, +)
+
+            var comparisons: [String] = []
+
+            // Event count comparison
+            if diff > 0 {
+                comparisons.append("日程数↑多\(diff)个")
+            } else if diff < 0 {
+                comparisons.append("日程数↓少\(abs(diff))个")
+            } else {
+                comparisons.append("日程数持平")
+            }
+
+            // Meeting time comparison
+            if thisMeetingMins > 0 || lastMeetingMins > 0 {
+                let meetingDiff = thisMeetingMins - lastMeetingMins
+                if abs(meetingDiff) >= 15 {  // Only report if ≥15min difference
+                    let absDiff = abs(meetingDiff)
+                    let diffStr: String
+                    if absDiff >= 60 {
+                        let hrs = absDiff / 60
+                        let mins = absDiff % 60
+                        diffStr = mins > 0 ? "\(hrs)小时\(mins)分钟" : "\(hrs)小时"
+                    } else {
+                        diffStr = "\(absDiff)分钟"
+                    }
+                    if meetingDiff > 0 {
+                        comparisons.append("会议时长↑多\(diffStr)")
+                    } else {
+                        comparisons.append("会议时长↓少\(diffStr)")
+                    }
+                } else {
+                    comparisons.append("会议时长持平")
+                }
+            }
+
+            // Note: this week may be incomplete (today is not Sunday yet)
+            let daysElapsed = daysSinceMonday + 1
+            let incompleteness = daysElapsed < 7
+                ? "（注：本周仅过\(daysElapsed)/7天，包含\(7 - daysElapsed)天未来日程）" : ""
+            parts.append("周对比：\(comparisons.joined(separator: "，"))\(incompleteness)")
+        }
+
+        guard !parts.isEmpty else { return "" }
+        return "日程周统计：\n\(parts.joined(separator: "\n"))"
     }
 
     // MARK: - Free Time Slot Computation

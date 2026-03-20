@@ -59,7 +59,12 @@ final class GPTContextBuilder {
 
             let now = Date()
             let cal = Calendar.current
-            let sevenDaysAgo = cal.date(byAdding: .day, value: -7, to: now) ?? now
+            // Use startOfDay to ensure we capture full calendar days, matching
+            // how health data is fetched (per-day summaries for days 0..6).
+            // Without startOfDay, a query at 3pm would miss data before 3pm on
+            // the earliest day — e.g., photos taken Wednesday morning would vanish
+            // if it's now Wednesday 3pm, 7 days later.
+            let dataRangeStart = cal.startOfDay(for: cal.date(byAdding: .day, value: -6, to: now) ?? now)
             let sevenDaysAhead = cal.date(byAdding: .day, value: 7, to: now) ?? now
 
             let todayEvents = self.calendarService.todayEvents()
@@ -67,9 +72,9 @@ final class GPTContextBuilder {
             // Also fetch past 7 days of calendar events so GPT can answer
             // "what meetings did I have yesterday?" or "last week's schedule"
             let pastStartOfToday = cal.startOfDay(for: now)
-            let pastEvents = self.calendarService.fetchEvents(from: sevenDaysAgo, to: pastStartOfToday)
-            let recentPhotos = self.photoService.fetchAllMedia(from: sevenDaysAgo, to: now)
-            let locationRecords = CDLocationRecord.fetchRecent(days: 7, in: self.coreDataContext)
+            let pastEvents = self.calendarService.fetchEvents(from: dataRangeStart, to: pastStartOfToday)
+            let recentPhotos = self.photoService.fetchAllMedia(from: dataRangeStart, to: now)
+            let locationRecords = CDLocationRecord.fetchRecent(in: self.coreDataContext, since: dataRangeStart)
             let lifeEvents = CDLifeEvent.fetchRecent(limit: 15, in: self.coreDataContext)
 
             // Run photo search when query looks photo-related so GPT can describe results
@@ -1242,10 +1247,12 @@ final class GPTContextBuilder {
 // MARK: - CoreData Fetch Helpers
 
 private extension CDLocationRecord {
-    static func fetchRecent(days: Int, in context: NSManagedObjectContext) -> [CDLocationRecord] {
+    /// Fetches location records since a given date.
+    /// The caller provides the exact start date (with startOfDay applied) to ensure
+    /// consistency with other data sources (health, photos, calendar).
+    static func fetchRecent(in context: NSManagedObjectContext, since fromDate: Date) -> [CDLocationRecord] {
         let req = NSFetchRequest<CDLocationRecord>(entityName: "CDLocationRecord")
-        let from = Calendar.current.date(byAdding: .day, value: -days, to: Date()) ?? Date()
-        req.predicate = NSPredicate(format: "timestamp >= %@", from as NSDate)
+        req.predicate = NSPredicate(format: "timestamp >= %@", fromDate as NSDate)
         req.sortDescriptors = [NSSortDescriptor(key: "timestamp", ascending: false)]
         req.fetchLimit = 200
         return (try? context.fetch(req)) ?? []

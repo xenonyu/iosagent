@@ -152,6 +152,7 @@ enum GreetingType {
     case farewell       // 拜拜, bye, 再见
     case presence       // 在吗, are you there
     case selfIntro      // 你是谁, who are you
+    case capabilities   // 你能做什么, what can you do, 功能, 怎么用
     case howAreYou      // 你好吗, how are you
 }
 
@@ -1874,16 +1875,48 @@ struct SkillRouter {
     // MARK: - Add Event Parsing
 
     private static func parseAddEvent(from text: String) -> QueryIntent {
-        var mood = MoodType.neutral
-        if containsAny(text.lowercased(), ["开心", "高兴", "棒", "好", "great", "happy", "good"]) {
-            mood = .good
-        } else if containsAny(text.lowercased(), ["难过", "不开心", "糟", "sad", "bad", "upset"]) {
-            mood = .sad
-        } else if containsAny(text.lowercased(), ["累", "疲惫", "tired", "exhausted"]) {
-            mood = .tired
-        }
+        let lower = text.lowercased()
+        let mood = detectEventMood(lower)
         let title = String(text.prefix(20))
         return .addEvent(title: title, content: text, mood: mood)
+    }
+
+    /// Detects mood from event text with comprehensive keyword coverage.
+    /// Checks from most specific (great/stressed) to least specific (good/sad)
+    /// to avoid generic keywords like "好" overshadowing stronger signals.
+    private static func detectEventMood(_ text: String) -> MoodType {
+        // Great: strongly positive, excitement, celebration
+        if containsAny(text, ["太棒了", "超开心", "太开心", "超棒", "太爽", "超爽", "太好了",
+                               "非常开心", "非常高兴", "特别开心", "特别高兴", "好激动",
+                               "兴奋", "狂喜", "爆开心", "绝了", "完美", "amazing", "awesome",
+                               "incredible", "fantastic", "perfect", "超级", "巨开心"]) {
+            return .great
+        }
+        // Stressed: pressure, anxiety, overwhelm
+        if containsAny(text, ["压力", "焦虑", "紧张", "崩溃", "头大", "烦死", "受不了",
+                               "stressed", "anxious", "overwhelmed", "deadline",
+                               "心烦", "烦躁", "抓狂", "窒息", "喘不过气"]) {
+            return .stressed
+        }
+        // Sad: negative, disappointment, loss
+        if containsAny(text, ["难过", "不开心", "伤心", "失望", "糟糕", "糟", "难受",
+                               "sad", "bad", "upset", "disappointed", "unhappy",
+                               "委屈", "郁闷", "沮丧", "低落", "心塞", "emo"]) {
+            return .sad
+        }
+        // Tired: fatigue, exhaustion, sleepiness
+        if containsAny(text, ["累", "疲惫", "疲劳", "困", "没精神", "没力气", "乏",
+                               "tired", "exhausted", "worn out", "sleepy",
+                               "筋疲力尽", "精疲力竭", "体力透支"]) {
+            return .tired
+        }
+        // Good: generally positive
+        if containsAny(text, ["开心", "高兴", "棒", "不错", "愉快", "舒服", "满足",
+                               "great", "happy", "good", "nice", "wonderful", "pleased",
+                               "充实", "有收获", "顺利", "成功", "搞定", "达成"]) {
+            return .good
+        }
+        return .neutral
     }
 
     // MARK: - Search Keyword Extraction
@@ -2285,8 +2318,20 @@ struct SkillRouter {
     }
 
     private static func parseGreeting(_ trimmed: String) -> GreetingType? {
-        // Only match short messages (≤15 chars) to avoid false positives
-        guard trimmed.count <= 15 else { return nil }
+        // Only match short messages (≤20 chars) to avoid false positives
+        guard trimmed.count <= 20 else { return nil }
+
+        // Capabilities: "你能做什么", "你有什么功能", "怎么用"
+        // Must check BEFORE selfIntro — "你能做什么" asks about capabilities, not identity.
+        if containsAny(trimmed, ["能做什么", "会什么", "有什么功能", "什么功能", "能干什么",
+                                   "怎么用", "怎么使用", "使用说明", "使用方法", "使用指南",
+                                   "教我用", "教教我", "用法", "教程",
+                                   "能帮我什么", "帮我什么忙", "能帮什么",
+                                   "what can you", "how to use", "help me",
+                                   "你的功能", "哪些功能", "你能干嘛", "干嘛的",
+                                   "能做啥", "干啥的", "会干啥", "能干啥"]) {
+            return .capabilities
+        }
 
         // Self-intro: "你是谁", "who are you"
         if containsAny(trimmed, ["你是谁", "你叫什么", "who are you", "what are you", "介绍一下你自己"]) {

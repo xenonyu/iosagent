@@ -407,6 +407,13 @@ struct CalendarSkill: ClawSkill {
         let events = context.calendarService.fetchEvents(from: interval.start, to: interval.end)
 
         if events.isEmpty {
+            // When user asks about availability/busy-ness and there are no events,
+            // give a direct positive answer
+            if (isAvailabilityFocusedQuery(context.originalQuery) ||
+                isBusyAssessmentQuery(context.originalQuery)) &&
+                context.calendarService.isAuthorized {
+                return "🟢 \(range.label)完全没有日程安排，时间都是你的！\n\n全天自由，可以随心安排。"
+            }
             return buildEmptyResponse(range: range, isAuthorized: context.calendarService.isAuthorized)
         }
 
@@ -417,8 +424,24 @@ struct CalendarSkill: ClawSkill {
         let todFilter = parseTimeOfDayFilter(from: context.originalQuery)
 
         if spanDays <= 1 {
+            // When user specifically asks about availability ("有空吗", "什么时候有空"),
+            // lead with a direct answer about free time instead of dumping the full schedule.
+            if isAvailabilityFocusedQuery(context.originalQuery) {
+                return buildAvailabilityResponse(
+                    events: events, range: range, date: interval.start,
+                    timeOfDay: todFilter, context: context
+                )
+            }
             return buildSingleDayResponse(events: events, range: range, date: interval.start, timeOfDay: todFilter, context: context)
         } else {
+            // When user asks "这周忙不忙", "下周安排多吗" — give a direct busy-ness
+            // assessment instead of dumping the full schedule.
+            if isBusyAssessmentQuery(context.originalQuery) {
+                return buildMultiDayBusyAssessment(
+                    events: events, range: range, interval: interval,
+                    spanDays: spanDays, context: context
+                )
+            }
             return buildMultiDayResponse(events: events, range: range, interval: interval, spanDays: spanDays, context: context)
         }
     }
@@ -929,6 +952,345 @@ struct CalendarSkill: ClawSkill {
                 lines.append("")
                 lines.append(contentsOf: compInsight)
             }
+        }
+
+        return lines.joined(separator: "\n")
+    }
+
+    // MARK: - Availability-Focused Response (Single-Day)
+
+    /// Detects whether the user's query is specifically about availability / free time
+    /// rather than wanting a full schedule overview.
+    /// e.g. "今天有空吗", "明天什么时候有空", "下午忙不忙", "今晚有时间吗"
+    private func isAvailabilityFocusedQuery(_ query: String) -> Bool {
+        let lower = query.lowercased()
+        let availabilityKeywords = [
+            "有空", "空闲", "空不空", "有没有空", "有时间", "有没有时间",
+            "什么时候空", "什么时候有空", "什么时候有时间",
+            "忙不忙", "忙吗", "忙么",
+            "free", "available", "busy", "am i free", "am i busy"
+        ]
+        return availabilityKeywords.contains(where: { lower.contains($0) })
+    }
+
+    /// Builds a response that leads with a direct availability answer + free slots,
+    /// then shows the schedule as compact context. This is what users expect when
+    /// they ask "有空吗" or "什么时候有空" — the answer, not a schedule dump.
+    private func buildAvailabilityResponse(
+        events: [CalendarEventItem],
+        range: QueryTimeRange,
+        date: Date,
+        timeOfDay: TimeOfDayFilter?,
+        context: SkillContext
+    ) -> String {
+        let cal = Calendar.current
+        let now = Date()
+        let isToday = cal.isDateInToday(date)
+
+        let timedEvents = events.filter { !$0.isAllDay }
+        let allDayEvents = events.filter { $0.isAllDay }
+
+        // Apply time-of-day filter if present
+        let relevantTimed: [CalendarEventItem]
+        let periodLabel: String
+        if let tod = timeOfDay {
+            relevantTimed = timedEvents.filter { tod.matches(event: $0, on: date) }
+            periodLabel = "\(range.label)\(tod.label)"
+        } else {
+            relevantTimed = timedEvents
+            periodLabel = range.label
+        }
+
+        let totalMeetingMin = relevantTimed.reduce(0.0) { $0 + $1.duration } / 60.0
+
+        // Get free slots (reuse existing logic)
+        let freeSlots = findFreeSlots(events: relevantTimed, date: date, onlyFuture: isToday)
+        let totalFreeMin = freeSlots.reduce(0.0) { total, slot in
+            // Parse duration from the slot string like "10:00–12:00（2 小时）"
+            total + parseDurationMinutes(from: slot)
+        }
+
+        var lines: [String] = []
+
+        // --- Direct answer: are you free? ---
+        if relevantTimed.isEmpty {
+            lines.append("✅ \(periodLabel)没有安排，完全自由！")
+            if let tod = timeOfDay {
+                // Check if OTHER time periods have events
+                let otherTimed = timedEvents.filter { !tod.matches(event: $0, on: date) }
+                if !otherTimed.isEmpty {
+                    lines.append("（其他时段有 \(otherTimed.count) 个安排）")
+                }
+            }
+        } else if relevantTimed.count <= 2 && totalMeetingMin < 120 {
+            lines.append("📅 \(periodLabel)比较轻松，有 \(relevantTimed.count) 个安排（约 \(formatDuration(totalMeetingMin))），大部分时间自由。")
+        } else if relevantTimed.count <= 4 && totalMeetingMin < 300 {
+            lines.append("📅 \(periodLabel)有 \(relevantTimed.count) 个安排（约 \(formatDuration(totalMeetingMin))），但还有空余时间。")
+        } else {
+            lines.append("⚠️ \(periodLabel)安排比较满，有 \(relevantTimed.count) 个事件（约 \(formatDuration(totalMeetingMin))）。")
+        }
+
+        // --- Free slots (the star of the show) ---
+        if !freeSlots.isEmpty {
+            lines.append("")
+            lines.append("💚 空闲时段：")
+            for slot in freeSlots.prefix(6) {
+                lines.append("  • \(slot)")
+            }
+
+            // Highlight the longest slot for actionability
+            if freeSlots.count > 1 {
+                let longestSlot = freeSlots.max { parseDurationMinutes(from: $0) < parseDurationMinutes(from: $1) }
+                if let longest = longestSlot, parseDurationMinutes(from: longest) >= 60 {
+                    lines.append("  🟢 最大连续空闲：\(longest)")
+                }
+            }
+        } else if !relevantTimed.isEmpty {
+            lines.append("\n⚠️ 没有超过 30 分钟的连续空闲时段。")
+        }
+
+        // --- Ongoing event context (if asking "now" about today) ---
+        if isToday {
+            let ongoing = relevantTimed.filter { $0.startDate <= now && $0.endDate > now }
+            if let current = ongoing.first {
+                let remainMin = Int(current.endDate.timeIntervalSince(now) / 60)
+                lines.append("")
+                lines.append("🔴 现在正在进行「\(current.title)」（\(current.timeDisplay)），还剩 \(formatDuration(Double(remainMin)))。")
+            }
+        }
+
+        // --- Compact schedule context (not the main focus) ---
+        if !relevantTimed.isEmpty {
+            lines.append("")
+            lines.append("📋 \(relevantTimed.count == timedEvents.count ? "日程" : "\(timeOfDay?.label ?? "")日程")概览：")
+            let timeFmt = DateFormatter()
+            timeFmt.dateFormat = "HH:mm"
+            for event in relevantTimed.sorted(by: { $0.startDate < $1.startDate }) {
+                let recurTag = event.isRecurring ? " 🔄" : ""
+                var line = "  · \(event.timeDisplay) \(event.title)\(recurTag)"
+                if !event.location.isEmpty { line += "  📍\(event.location)" }
+                lines.append(line)
+            }
+        }
+
+        // All-day events as minor context
+        if !allDayEvents.isEmpty {
+            lines.append("")
+            lines.append("🏷️ 全天事件：\(allDayEvents.map { $0.title }.joined(separator: "、"))")
+        }
+
+        // --- Conflicts warning (still useful) ---
+        let conflicts = detectConflicts(events: relevantTimed)
+        if !conflicts.isEmpty {
+            lines.append("")
+            lines.append("⚠️ 注意时间冲突：")
+            conflicts.forEach { lines.append("  • \($0)") }
+        }
+
+        return lines.joined(separator: "\n")
+    }
+
+    /// Parses approximate duration in minutes from a free slot string like "10:00–12:00（2 小时）".
+    private func parseDurationMinutes(from slotString: String) -> Double {
+        // Try to extract from the parenthetical duration label
+        if let parenStart = slotString.firstIndex(of: "（"),
+           let parenEnd = slotString.firstIndex(of: "）") {
+            let durationPart = String(slotString[slotString.index(after: parenStart)..<parenEnd])
+            var minutes = 0.0
+
+            // Parse "X 小时 Y 分钟" or "X 小时" or "Y 分钟"
+            if let hourRange = durationPart.range(of: #"(\d+)\s*小时"#, options: .regularExpression) {
+                let hourStr = durationPart[hourRange].filter { $0.isNumber }
+                minutes += (Double(hourStr) ?? 0) * 60
+            }
+            if let minRange = durationPart.range(of: #"(\d+)\s*分"#, options: .regularExpression) {
+                let minStr = durationPart[minRange].filter { $0.isNumber }
+                minutes += Double(minStr) ?? 0
+            }
+            if minutes > 0 { return minutes }
+        }
+
+        // Fallback: parse time range "HH:mm–HH:mm"
+        let parts = slotString.components(separatedBy: "–")
+        if parts.count >= 2 {
+            let timeFmt = DateFormatter()
+            timeFmt.dateFormat = "HH:mm"
+            if let start = timeFmt.date(from: String(parts[0].suffix(5))),
+               let end = timeFmt.date(from: String(parts[1].prefix(5))) {
+                return end.timeIntervalSince(start) / 60
+            }
+        }
+        return 0
+    }
+
+    // MARK: - Busy-ness Assessment (Multi-Day)
+
+    /// Detects whether the user's query is asking about overall busy-ness level
+    /// rather than wanting a full schedule listing.
+    /// "这周忙不忙", "下周安排多吗", "本月忙吗" → true
+    /// But NOT "这周有什么安排" or "下周日程" which want the full list.
+    private func isBusyAssessmentQuery(_ query: String) -> Bool {
+        let lower = query.lowercased()
+        let busyKeywords = [
+            "忙不忙", "忙吗", "忙么", "忙嘛",
+            "安排多吗", "安排多不多", "安排满吗", "安排满不满",
+            "日程多吗", "日程多不多", "日程满吗",
+            "会多吗", "会多不多", "会议多吗", "会议多不多",
+            "紧张吗", "紧张不紧张", "紧不紧张",
+            "轻松吗", "轻松不轻松", "轻不轻松",
+            "充实吗", "充不充实",
+            "排满", "排得满",
+            "busy", "am i busy", "is it busy", "how busy"
+        ]
+        return busyKeywords.contains(where: { lower.contains($0) })
+    }
+
+    /// Builds a concise multi-day busy-ness assessment that directly answers
+    /// "这周忙不忙" / "下周安排多吗" with a clear verdict + day-by-day visual bar.
+    /// Unlike the full `buildMultiDayResponse`, this leads with the answer and
+    /// keeps the schedule compact — users asking about busy-ness want a quick read.
+    private func buildMultiDayBusyAssessment(
+        events: [CalendarEventItem],
+        range: QueryTimeRange,
+        interval: DateInterval,
+        spanDays: Int,
+        context: SkillContext
+    ) -> String {
+        let cal = Calendar.current
+        let timedEvents = events.filter { !$0.isAllDay }
+        let allDayEvents = events.filter { $0.isAllDay }
+        let totalMinutes = timedEvents.reduce(0.0) { $0 + $1.duration } / 60.0
+        let avgDailyMin = spanDays > 0 ? totalMinutes / Double(spanDays) : 0
+        let grouped = Dictionary(grouping: events) { cal.startOfDay(for: $0.startDate) }
+        let daysWithEvents = grouped.count
+        let freeDays = spanDays - daysWithEvents
+
+        var lines: [String] = []
+
+        // ── 1. Direct verdict ──
+        let verdict: String
+        let verdictEmoji: String
+        if timedEvents.isEmpty {
+            verdictEmoji = "🟢"
+            verdict = "\(range.label)非常清闲，没有任何定时安排！"
+        } else if timedEvents.count <= 3 && totalMinutes < 180 {
+            verdictEmoji = "🟢"
+            verdict = "\(range.label)比较轻松，只有 \(timedEvents.count) 个安排（共 \(formatDuration(totalMinutes))）。"
+        } else if avgDailyMin < 60 && timedEvents.count <= spanDays * 2 {
+            verdictEmoji = "🟢"
+            verdict = "\(range.label)节奏舒适，日均不到 1 小时有安排。"
+        } else if avgDailyMin < 120 && timedEvents.count <= spanDays * 3 {
+            verdictEmoji = "🟡"
+            verdict = "\(range.label)安排适中，共 \(timedEvents.count) 个事件（约 \(formatDuration(totalMinutes))）。"
+        } else if avgDailyMin < 240 {
+            verdictEmoji = "🟠"
+            verdict = "\(range.label)比较忙碌，共 \(timedEvents.count) 个安排（约 \(formatDuration(totalMinutes))）。"
+        } else {
+            verdictEmoji = "🔴"
+            verdict = "\(range.label)非常忙碌，共 \(timedEvents.count) 个安排（约 \(formatDuration(totalMinutes))），要注意节奏。"
+        }
+        lines.append("\(verdictEmoji) \(verdict)")
+
+        // ── 2. Day-by-day busy-ness bar (compact visual) ──
+        let startDay = cal.startOfDay(for: interval.start)
+        let dayLabelFmt = DateFormatter()
+        dayLabelFmt.dateFormat = "E"
+        dayLabelFmt.locale = Locale(identifier: "zh_CN")
+        let dateFmt = DateFormatter()
+        dateFmt.dateFormat = "M/d"
+
+        // Only show bar for reasonable span (≤ 14 days)
+        if spanDays <= 14 {
+            lines.append("")
+            for offset in 0..<spanDays {
+                guard let day = cal.date(byAdding: .day, value: offset, to: startDay) else { continue }
+                let dayStart = cal.startOfDay(for: day)
+                let dayEvents = grouped[dayStart] ?? []
+                let dayTimed = dayEvents.filter { !$0.isAllDay }
+                let dayMin = dayTimed.reduce(0.0) { $0 + $1.duration } / 60.0
+
+                let dayLabel = dayLabelFmt.string(from: day)
+                let dateLabel = dateFmt.string(from: day)
+                let weekendTag = isWeekend(day) ? "🏖️" : "  "
+
+                // Visual bar: each ▓ = 30 min, ░ = remaining capacity up to 8h
+                let filledBlocks = min(Int(dayMin / 30), 16)
+                let bar = String(repeating: "▓", count: filledBlocks)
+                let emptyBlocks = max(0, 8 - filledBlocks)  // up to 4h visual scale
+                let emptyBar = String(repeating: "░", count: emptyBlocks)
+
+                let countStr = dayTimed.isEmpty ? "—" : "\(dayTimed.count)个"
+
+                lines.append("  \(dateLabel) \(dayLabel)\(weekendTag) \(bar)\(emptyBar) \(countStr)")
+            }
+        }
+
+        // ── 3. Key highlights ──
+        lines.append("")
+
+        // Busiest day
+        let dayDurations: [(day: Date, count: Int, totalMin: Double)] = grouped.compactMap { (day, evts) in
+            let timed = evts.filter { !$0.isAllDay }
+            guard !timed.isEmpty else { return nil }
+            return (day: day, count: timed.count, totalMin: timed.reduce(0.0) { $0 + $1.duration } / 60.0)
+        }
+        let fullDateFmt = DateFormatter()
+        fullDateFmt.dateFormat = "M月d日（E）"
+        fullDateFmt.locale = Locale(identifier: "zh_CN")
+
+        if let busiest = dayDurations.max(by: { $0.totalMin < $1.totalMin }),
+           busiest.count >= 2 {
+            lines.append("📊 最忙：\(fullDateFmt.string(from: busiest.day))（\(busiest.count) 个安排，\(formatDuration(busiest.totalMin))）")
+        }
+
+        // Lightest day (with events) or free day count
+        if freeDays > 0 {
+            lines.append("💚 \(freeDays) 天完全没有安排")
+        }
+        if let lightest = dayDurations.filter({ $0.count > 0 }).min(by: { $0.totalMin < $1.totalMin }),
+           dayDurations.count >= 3 {
+            lines.append("🍃 最轻松：\(fullDateFmt.string(from: lightest.day))（\(lightest.count) 个安排，\(formatDuration(lightest.totalMin))）")
+        }
+
+        // Conflict count
+        let allConflicts = timedEvents.count >= 2 ? detectConflicts(events: timedEvents) : []
+        if !allConflicts.isEmpty {
+            lines.append("⚠️ 发现 \(allConflicts.count) 处时间冲突")
+        }
+
+        // All-day events summary
+        if !allDayEvents.isEmpty {
+            let uniqueAllDay = Set(allDayEvents.map { $0.title })
+            if uniqueAllDay.count <= 3 {
+                let titles = uniqueAllDay.joined(separator: "、")
+                lines.append("🏷️ 全天事件：\(titles)")
+            } else {
+                lines.append("🏷️ \(allDayEvents.count) 个全天事件")
+            }
+        }
+
+        // ── 4. Period-over-period comparison (was it busier than before?) ──
+        let comparison = buildPeriodComparison(
+            currentEvents: events,
+            currentInterval: interval,
+            spanDays: spanDays,
+            context: context
+        )
+        if !comparison.isEmpty {
+            lines.append("")
+            lines.append(contentsOf: comparison)
+        }
+
+        // ── 5. Actionable tip ──
+        lines.append("")
+        if verdictEmoji == "🔴" || verdictEmoji == "🟠" {
+            if freeDays > 0 {
+                lines.append("💡 可以把需要专注的工作安排在空闲日，保护整块时间。")
+            } else {
+                lines.append("💡 每天都有安排，记得在会议间留出缓冲时间。想看详细日程可以说「\(range.label)有什么安排」。")
+            }
+        } else {
+            lines.append("💡 时间比较自由，适合安排一些重要但不紧急的事。想看完整日程可以说「\(range.label)有什么安排」。")
         }
 
         return lines.joined(separator: "\n")

@@ -57,9 +57,28 @@ struct SummarySkill: ClawSkill {
             var lines: [String] = ["📋 \(range.label)的生活总结：\n"]
             var hasAnyData = false
 
-            // ── Calendar Events ──
+            // Fetch calendar events once — used for both headline and details
             let calInterval = Self.calendarInterval(for: range)
             let calendarEvents = context.calendarService.fetchEvents(from: calInterval.start, to: calInterval.end)
+
+            // ── Headline: one-line "life pulse" at the top ──
+            // Users scan on mobile — give them the gist before details.
+            let headline = Self.buildHeadline(
+                healthSummaries: withData,
+                prevSummaries: prevSummaries,
+                calendarEvents: calendarEvents,
+                locations: locations,
+                photoCount: context.photoService.isAuthorized
+                    ? context.photoService.fetchAllMedia(from: interval.start, to: interval.end).count
+                    : 0,
+                spanDays: spanDays
+            )
+            if !headline.isEmpty {
+                lines.append(headline)
+                lines.append("")
+            }
+
+            // ── Calendar Events ──
             if !calendarEvents.isEmpty {
                 hasAnyData = true
                 let timedEvents = calendarEvents.filter { !$0.isAllDay }
@@ -220,15 +239,14 @@ struct SummarySkill: ClawSkill {
                 )
                 lines.append(contentsOf: recoveryLines)
 
-                // Best and worst day
-                if withData.count >= 3, let best = withData.max(by: { $0.steps < $1.steps }),
-                   let worst = withData.filter({ $0.steps > 0 }).min(by: { $0.steps < $1.steps }),
-                   best.steps > worst.steps * 1.5 {
-                    let fmt = DateFormatter()
-                    fmt.dateFormat = "M/d（E）"
-                    fmt.locale = Locale(identifier: "zh_CN")
-                    lines.append("  🏆 最活跃：\(fmt.string(from: best.date)) \(Int(best.steps).formatted())步")
-                    lines.append("  📉 最安静：\(fmt.string(from: worst.date)) \(Int(worst.steps).formatted())步")
+                // Best and most challenging day — composite score across steps, exercise, and sleep
+                if withData.count >= 3 {
+                    let highlights = Self.buildDayHighlights(
+                        days: withData,
+                        calendarEvents: calendarEvents,
+                        cal: cal
+                    )
+                    lines.append(contentsOf: highlights)
                 }
 
                 // Overall health verdict — considers activity, sleep, AND recovery
@@ -280,28 +298,73 @@ struct SummarySkill: ClawSkill {
                 }
             }
 
-            // ── Photo Activity with peak day ──
+            // ── Photo & Video Activity ──
             if context.photoService.isAuthorized {
-                let photos = context.photoService.fetchMetadata(from: interval.start, to: interval.end)
-                if !photos.isEmpty {
+                let allMedia = context.photoService.fetchAllMedia(from: interval.start, to: interval.end)
+                if !allMedia.isEmpty {
                     hasAnyData = true
-                    let activeDays = Set(photos.map { cal.startOfDay(for: $0.date) }).count
-                    let favCount = photos.filter { $0.isFavorite }.count
+                    let photos = allMedia.filter { !$0.isVideo }
+                    let videos = allMedia.filter { $0.isVideo }
+                    let activeDays = Set(allMedia.map { cal.startOfDay(for: $0.date) }).count
+                    let favCount = allMedia.filter { $0.isFavorite }.count
 
-                    var photoLine = "\n📷 **照片**  \(photos.count) 张"
-                    if activeDays > 1 { photoLine += "，\(activeDays) 天有拍照" }
-                    if favCount > 0 { photoLine += "，\(favCount) 张收藏" }
+                    // Header: total media count with video breakdown
+                    var photoLine = "\n📷 **影像记录**  "
+                    if videos.isEmpty {
+                        photoLine += "\(photos.count) 张照片"
+                    } else {
+                        photoLine += "\(photos.count) 张照片 + \(videos.count) 个视频"
+                    }
+                    if activeDays > 1 { photoLine += "，\(activeDays) 天有记录" }
+                    if favCount > 0 { photoLine += "，\(favCount) 个收藏" }
                     lines.append(photoLine)
+
+                    // Media type breakdown (screenshots, live photos, portraits, etc.)
+                    let mediaBreakdown = Self.buildMediaTypeBreakdown(items: allMedia)
+                    if !mediaBreakdown.isEmpty {
+                        lines.append("  🗂️ \(mediaBreakdown)")
+                    }
+
+                    // Video duration summary
+                    if !videos.isEmpty {
+                        let totalVideoSec = videos.reduce(0.0) { $0 + $1.duration }
+                        if totalVideoSec >= 10 {
+                            lines.append("  🎬 视频总时长 \(Self.formatMediaDuration(totalVideoSec))")
+                        }
+                    }
 
                     // Peak shooting day
                     if activeDays >= 2 {
                         var dayPhotoCount: [Date: Int] = [:]
-                        photos.forEach { dayPhotoCount[cal.startOfDay(for: $0.date), default: 0] += 1 }
+                        allMedia.forEach { dayPhotoCount[cal.startOfDay(for: $0.date), default: 0] += 1 }
                         if let (bestDay, count) = dayPhotoCount.max(by: { $0.value < $1.value }), count >= 3 {
                             let dayFmt = DateFormatter()
                             dayFmt.dateFormat = "M月d日"
                             dayFmt.locale = Locale(identifier: "zh_CN")
-                            lines.append("  🏆 拍照最多：\(dayFmt.string(from: bestDay))（\(count) 张）")
+                            lines.append("  🏆 记录最多：\(dayFmt.string(from: bestDay))（\(count) 个）")
+                        }
+                    }
+
+                    // Photo location cross-reference with visited places
+                    let geoMedia = allMedia.filter { $0.hasLocation }
+                    if geoMedia.count >= 2 {
+                        let photoPlaces = Self.clusterPhotoLocations(geoMedia, knownLocations: locations)
+                        if !photoPlaces.isEmpty {
+                            let placeList = photoPlaces.prefix(3).map { "\($0.name)(\($0.count)张)" }.joined(separator: "、")
+                            lines.append("  📍 拍摄地点：\(placeList)")
+                        }
+                    }
+
+                    // Previous-period comparison
+                    if spanDays >= 3 {
+                        let prevPhotos = context.photoService.fetchAllMedia(from: prevStart, to: prevEnd)
+                        if !prevPhotos.isEmpty {
+                            let delta = allMedia.count - prevPhotos.count
+                            if delta > 5 {
+                                lines.append("  📈 比上个同期多拍 \(delta) 个，记录生活更积极")
+                            } else if delta < -5 {
+                                lines.append("  📉 比上个同期少 \(-delta) 个，节奏放缓")
+                            }
                         }
                     }
 
@@ -770,26 +833,58 @@ struct SummarySkill: ClawSkill {
                 lines.append(contentsOf: timelineLines)
             }
 
-            // --- Photos Today ---
+            // --- Photos & Videos Today ---
             if context.photoService.isAuthorized {
-                let todayPhotos = context.photoService.fetchMetadata(from: interval.start, to: interval.end)
-                if !todayPhotos.isEmpty {
+                let todayMedia = context.photoService.fetchAllMedia(from: interval.start, to: interval.end)
+                if !todayMedia.isEmpty {
                     hasData = true
-                    let favCount = todayPhotos.filter { $0.isFavorite }.count
-                    var photoLine = "\n📷 **照片**  今天拍了 \(todayPhotos.count) 张"
-                    if favCount > 0 { photoLine += "（\(favCount) 张收藏）" }
+                    let todayPhotos = todayMedia.filter { !$0.isVideo }
+                    let todayVideos = todayMedia.filter { $0.isVideo }
+                    let favCount = todayMedia.filter { $0.isFavorite }.count
+
+                    var photoLine = "\n📷 **影像**  "
+                    if todayVideos.isEmpty {
+                        photoLine += "今天拍了 \(todayPhotos.count) 张照片"
+                    } else {
+                        photoLine += "今天拍了 \(todayPhotos.count) 张照片 + \(todayVideos.count) 个视频"
+                    }
+                    if favCount > 0 { photoLine += "（\(favCount) 个收藏）" }
                     lines.append(photoLine)
 
+                    // Media type breakdown
+                    let mediaBreakdown = Self.buildMediaTypeBreakdown(items: todayMedia)
+                    if !mediaBreakdown.isEmpty {
+                        lines.append("  🗂️ \(mediaBreakdown)")
+                    }
+
+                    // Video duration
+                    if !todayVideos.isEmpty {
+                        let totalVideoSec = todayVideos.reduce(0.0) { $0 + $1.duration }
+                        if totalVideoSec >= 10 {
+                            lines.append("  🎬 视频共 \(Self.formatMediaDuration(totalVideoSec))")
+                        }
+                    }
+
                     // Peak shooting time if enough photos
-                    if todayPhotos.count >= 3 {
+                    if todayMedia.count >= 3 {
                         var hourCount = [Int: Int]()
-                        todayPhotos.forEach {
+                        todayMedia.forEach {
                             let h = cal.component(.hour, from: $0.date)
                             hourCount[h, default: 0] += 1
                         }
                         if let (hour, count) = hourCount.max(by: { $0.value < $1.value }), count >= 2 {
                             let period = Self.photoTimeOfDay(hour: hour)
-                            lines.append("  ⏰ 拍照高峰：\(period)（\(count) 张）")
+                            lines.append("  ⏰ 拍摄高峰：\(period)（\(count) 个）")
+                        }
+                    }
+
+                    // Photo location cross-reference with today's visited places
+                    let geoMedia = todayMedia.filter { $0.hasLocation }
+                    if geoMedia.count >= 2 {
+                        let photoPlaces = Self.clusterPhotoLocations(geoMedia, knownLocations: locations)
+                        if !photoPlaces.isEmpty {
+                            let placeList = photoPlaces.prefix(3).map { "\($0.name)(\($0.count)张)" }.joined(separator: "、")
+                            lines.append("  📍 拍摄地点：\(placeList)")
                         }
                     }
 
@@ -1730,6 +1825,135 @@ struct SummarySkill: ClawSkill {
         return Array(alerts.prefix(2))
     }
 
+    // MARK: - Headline (Life Pulse)
+
+    /// Builds a concise one-line "life pulse" that captures the period's essence.
+    /// Combines health, schedule, location, and photo signals into a single insight.
+    ///
+    /// Examples:
+    /// - "💪 充实的一周：运动达标、睡眠充足、去了 5 个地方"
+    /// - "⚡ 忙碌的一周：日程密集、运动偏少，但睡得还行"
+    /// - "🌿 安静的一周：日程轻松、活动量偏低，适合充电"
+    private static func buildHeadline(
+        healthSummaries: [HealthSummary],
+        prevSummaries: [HealthSummary],
+        calendarEvents: [CalendarEventItem],
+        locations: [LocationRecord],
+        photoCount: Int,
+        spanDays: Int
+    ) -> String {
+        // Require at least some data to build a meaningful headline
+        guard !healthSummaries.isEmpty || !calendarEvents.isEmpty else { return "" }
+
+        let dayCount = Double(max(healthSummaries.count, 1))
+
+        // --- Health signals ---
+        let avgSteps = healthSummaries.reduce(0) { $0 + $1.steps } / dayCount
+        let avgExercise = healthSummaries.reduce(0) { $0 + $1.exerciseMinutes } / dayCount
+        let sleepDays = healthSummaries.filter { $0.sleepHours > 0 }
+        let avgSleep = sleepDays.isEmpty ? 0.0
+            : sleepDays.reduce(0) { $0 + $1.sleepHours } / Double(sleepDays.count)
+
+        let activityGood = avgSteps >= 8000 || avgExercise >= 30
+        let activityLow = healthSummaries.isEmpty ? false : (avgSteps < 4000 && avgExercise < 15)
+        let sleepGood = avgSleep >= 7.0 && avgSleep <= 9.0
+        let sleepPoor = avgSleep > 0 && avgSleep < 6.0
+
+        // --- Schedule signals ---
+        let timedEvents = calendarEvents.filter { !$0.isAllDay }
+        let avgEventsPerDay = spanDays > 0 ? Double(timedEvents.count) / Double(spanDays) : 0
+        let scheduleBusy = avgEventsPerDay >= 3.0
+        let scheduleLight = timedEvents.isEmpty || avgEventsPerDay < 1.0
+
+        // --- Richness signals (location + photos) ---
+        let uniquePlaces = Set(locations.map { $0.displayName }).count
+        let isExploring = uniquePlaces >= 4
+        let hasPhotos = photoCount >= 5
+
+        // --- Previous-period comparison for trend ---
+        let prevDayCount = Double(max(prevSummaries.count, 1))
+        let prevAvgSteps = prevSummaries.isEmpty ? 0.0
+            : prevSummaries.reduce(0) { $0 + $1.steps } / prevDayCount
+        let prevAvgExercise = prevSummaries.isEmpty ? 0.0
+            : prevSummaries.reduce(0) { $0 + $1.exerciseMinutes } / prevDayCount
+        let trendUp = prevAvgSteps > 0 && avgSteps > prevAvgSteps * 1.15
+        let trendDown = prevAvgSteps > 0 && avgSteps < prevAvgSteps * 0.75
+
+        // --- Build headline components ---
+        var highlights: [String] = []
+        var concerns: [String] = []
+
+        if activityGood { highlights.append("运动达标") }
+        else if activityLow { concerns.append("活动量偏低") }
+
+        if sleepGood { highlights.append("睡眠充足") }
+        else if sleepPoor { concerns.append("睡眠不足") }
+
+        if scheduleBusy {
+            highlights.append("日程密集")
+        } else if scheduleLight && !calendarEvents.isEmpty {
+            highlights.append("日程轻松")
+        }
+
+        if isExploring { highlights.append("去了 \(uniquePlaces) 个地方") }
+
+        if hasPhotos && photoCount >= 20 {
+            highlights.append("记录了 \(photoCount) 张照片")
+        }
+
+        // --- Determine overall tone ---
+        let positiveCount = highlights.count
+        let concernCount = concerns.count
+
+        // Need at least one signal to produce a headline
+        guard positiveCount + concernCount > 0 else { return "" }
+
+        let emoji: String
+        let tone: String
+        let isSingleDay = spanDays <= 1
+        let periodWord = isSingleDay ? "一天" : "一周"
+
+        if positiveCount >= 3 && concernCount == 0 {
+            emoji = "💪"
+            tone = "充实的\(periodWord)"
+        } else if scheduleBusy && (sleepPoor || activityLow) {
+            emoji = "⚡"
+            tone = "忙碌的\(periodWord)"
+        } else if scheduleLight && activityLow && !sleepPoor {
+            emoji = "🌿"
+            tone = "安静的\(periodWord)"
+        } else if positiveCount >= 2 {
+            emoji = "👍"
+            tone = "不错的\(periodWord)"
+        } else if concernCount >= 2 && positiveCount == 0 {
+            emoji = "💡"
+            tone = "需要调整的\(periodWord)"
+        } else if trendUp {
+            emoji = "📈"
+            tone = "进步的\(periodWord)"
+        } else if trendDown && concernCount > 0 {
+            emoji = "📉"
+            tone = "有些放慢的\(periodWord)"
+        } else {
+            emoji = "📊"
+            tone = "平稳的\(periodWord)"
+        }
+
+        // Assemble: combine highlights and concerns naturally
+        var parts: [String] = []
+        parts.append(contentsOf: highlights.prefix(3))
+        if !concerns.isEmpty {
+            // Soften concerns with "但" connector
+            if !parts.isEmpty {
+                parts.append("但\(concerns.joined(separator: "、"))")
+            } else {
+                parts.append(contentsOf: concerns)
+            }
+        }
+
+        return "\(emoji) \(tone)：\(parts.joined(separator: "、"))"
+    }
+
     // MARK: - Helpers
 
     private static func formatDuration(_ minutes: Double) -> String {
@@ -2251,6 +2475,124 @@ struct SummarySkill: ClawSkill {
 
     /// Formats a week-over-week percentage delta as a concise arrow string.
     /// Returns "" if the change is too small to be meaningful (<10%).
+    // MARK: - Composite Day Highlights
+
+    /// Scores each day across steps, exercise, and sleep to identify the best and most
+    /// challenging days in the period. Cross-references with calendar data to explain WHY.
+    /// Returns formatted lines (may be empty if days are too similar to highlight).
+    private static func buildDayHighlights(
+        days: [HealthSummary],
+        calendarEvents: [CalendarEventItem],
+        cal: Calendar
+    ) -> [String] {
+        guard days.count >= 3 else { return [] }
+
+        // --- Composite daily score (0-100) ---
+        // Steps: 0-40 points (8000 steps = full marks)
+        // Exercise: 0-30 points (30 min = full marks)
+        // Sleep: 0-30 points (7-9h = full marks, tapering outside)
+        struct DayScore {
+            let day: HealthSummary
+            let total: Int
+            let stepScore: Int
+            let exerciseScore: Int
+            let sleepScore: Int
+            var highlights: [String] // what made this day stand out
+        }
+
+        let scored = days.map { d -> DayScore in
+            let stepPts = min(40, Int(d.steps / 8000.0 * 40))
+            let exPts = min(30, Int(d.exerciseMinutes / 30.0 * 30))
+            let sleepPts: Int
+            if d.sleepHours <= 0 {
+                sleepPts = 0
+            } else if d.sleepHours >= 7 && d.sleepHours <= 9 {
+                sleepPts = 30
+            } else if d.sleepHours >= 6 && d.sleepHours < 7 {
+                sleepPts = 20
+            } else if d.sleepHours > 9 && d.sleepHours <= 10 {
+                sleepPts = 22
+            } else {
+                sleepPts = max(0, 15 - Int(abs(d.sleepHours - 8) * 5))
+            }
+            return DayScore(day: d, total: stepPts + exPts + sleepPts,
+                            stepScore: stepPts, exerciseScore: exPts,
+                            sleepScore: sleepPts, highlights: [])
+        }
+
+        guard let best = scored.max(by: { $0.total < $1.total }),
+              let worst = scored.filter({ $0.day.steps > 0 || $0.day.sleepHours > 0 })
+                .min(by: { $0.total < $1.total }),
+              best.total > worst.total + 15 // meaningful gap to avoid trivial differences
+        else { return [] }
+
+        let fmt = DateFormatter()
+        fmt.dateFormat = "M/d（E）"
+        fmt.locale = Locale(identifier: "zh_CN")
+
+        var lines: [String] = []
+
+        // --- Best day ---
+        var bestDetails: [String] = []
+        if best.day.steps >= 8000 {
+            bestDetails.append("\(Int(best.day.steps).formatted())步 ✅")
+        } else if best.day.steps > 0 {
+            bestDetails.append("\(Int(best.day.steps).formatted())步")
+        }
+        if best.day.exerciseMinutes >= 30 {
+            bestDetails.append("运动\(Int(best.day.exerciseMinutes))min ✅")
+        } else if best.day.exerciseMinutes > 0 {
+            bestDetails.append("运动\(Int(best.day.exerciseMinutes))min")
+        }
+        if best.day.sleepHours >= 7 && best.day.sleepHours <= 9 {
+            bestDetails.append("睡\(String(format: "%.1f", best.day.sleepHours))h ✅")
+        } else if best.day.sleepHours > 0 {
+            bestDetails.append("睡\(String(format: "%.1f", best.day.sleepHours))h")
+        }
+
+        let bestLabel = fmt.string(from: best.day.date)
+        if !bestDetails.isEmpty {
+            lines.append("  🏆 最佳状态：\(bestLabel)  \(bestDetails.joined(separator: " · "))")
+        }
+
+        // --- Most challenging day ---
+        var worstDetails: [String] = []
+        if worst.day.steps > 0 && worst.day.steps < 5000 {
+            worstDetails.append("仅\(Int(worst.day.steps).formatted())步")
+        } else if worst.day.steps > 0 {
+            worstDetails.append("\(Int(worst.day.steps).formatted())步")
+        }
+        if worst.day.exerciseMinutes <= 0 {
+            worstDetails.append("无运动")
+        } else if worst.day.exerciseMinutes < 15 {
+            worstDetails.append("运动仅\(Int(worst.day.exerciseMinutes))min")
+        }
+        if worst.day.sleepHours > 0 && worst.day.sleepHours < 6 {
+            worstDetails.append("睡\(String(format: "%.1f", worst.day.sleepHours))h ⚠️")
+        } else if worst.day.sleepHours > 0 {
+            worstDetails.append("睡\(String(format: "%.1f", worst.day.sleepHours))h")
+        }
+
+        let worstLabel = fmt.string(from: worst.day.date)
+        if !worstDetails.isEmpty {
+            var worstLine = "  📉 最需关注：\(worstLabel)  \(worstDetails.joined(separator: " · "))"
+
+            // Cross-reference with calendar: was the low day also a heavy meeting day?
+            let worstDayStart = cal.startOfDay(for: worst.day.date)
+            let worstDayEnd = cal.date(byAdding: .day, value: 1, to: worstDayStart) ?? worstDayStart
+            let dayMeetings = calendarEvents.filter {
+                !$0.isAllDay && $0.startDate >= worstDayStart && $0.startDate < worstDayEnd
+            }
+            if dayMeetings.count >= 4 {
+                worstLine += "（当天 \(dayMeetings.count) 个会议）"
+            }
+
+            lines.append(worstLine)
+        }
+
+        return lines
+    }
+
     private static func formatDelta(current: Double, previous: Double) -> String {
         guard previous > 0 else { return "" }
         let pct = ((current - previous) / previous) * 100
@@ -3333,6 +3675,143 @@ struct SummarySkill: ClawSkill {
                 sin(dLon / 2) * sin(dLon / 2)
         let c = 2 * atan2(sqrt(a), sqrt(1 - a))
         return R * c
+    }
+
+    // MARK: - Photo Media Type Helpers
+
+    /// Builds a compact media type breakdown string from photo metadata items.
+    /// Only includes non-standard types (screenshots, live photos, portraits, etc.)
+    /// since regular photos are already shown in the header count.
+    /// Example: "截图 12张 · 实况 5张 · 人像 3张"
+    private static func buildMediaTypeBreakdown(items: [PhotoMetadataItem]) -> String {
+        var kindCounts: [PhotoMediaKind: Int] = [:]
+        for item in items {
+            kindCounts[item.mediaKind, default: 0] += 1
+        }
+
+        // Only show non-standard types that add information
+        let interestingKinds: [PhotoMediaKind] = [
+            .screenshot, .livePhoto, .depthEffect, .panorama,
+            .burst, .sloMo, .timelapse
+        ]
+        let parts = interestingKinds.compactMap { kind -> String? in
+            guard let count = kindCounts[kind], count > 0 else { return nil }
+            return "\(kind.emoji)\(kind.label) \(count)"
+        }
+        // Only show if there are notable media types
+        guard !parts.isEmpty else { return "" }
+        return parts.joined(separator: " · ")
+    }
+
+    /// Formats a video duration in seconds to a human-readable string.
+    private static func formatMediaDuration(_ seconds: TimeInterval) -> String {
+        let totalSec = Int(seconds)
+        if totalSec < 60 {
+            return "\(totalSec)秒"
+        } else if totalSec < 3600 {
+            let min = totalSec / 60
+            let sec = totalSec % 60
+            return sec > 0 ? "\(min)分\(sec)秒" : "\(min)分钟"
+        } else {
+            let hr = totalSec / 3600
+            let min = (totalSec % 3600) / 60
+            return min > 0 ? "\(hr)小时\(min)分" : "\(hr)小时"
+        }
+    }
+
+    /// Simple location clustering for photo metadata: groups geotagged photos into ~2km cells
+    /// and resolves names using the user's own location records from the same period.
+    private static func clusterPhotoLocations(
+        _ items: [PhotoMetadataItem],
+        knownLocations: [LocationRecord]
+    ) -> [(name: String, count: Int)] {
+        // Build a lookup of known place names from user's location history
+        struct KnownPlace {
+            let name: String
+            let lat: Double
+            let lon: Double
+        }
+        var known: [KnownPlace] = []
+        var seenNames = Set<String>()
+        for loc in knownLocations {
+            guard !loc.placeName.isEmpty,
+                  loc.latitude != 0, loc.longitude != 0,
+                  seenNames.insert(loc.placeName).inserted else { continue }
+            known.append(KnownPlace(name: loc.placeName, lat: loc.latitude, lon: loc.longitude))
+        }
+
+        // Grid-based clustering (~2km cells)
+        let gridSize = 0.02  // ~2km in degrees
+        var grid: [String: (lat: Double, lon: Double, count: Int)] = [:]
+        for item in items {
+            guard let lat = item.latitude, let lon = item.longitude else { continue }
+            let key = "\(Int(lat / gridSize)),\(Int(lon / gridSize))"
+            if let existing = grid[key] {
+                grid[key] = (existing.lat, existing.lon, existing.count + 1)
+            } else {
+                grid[key] = (lat, lon, 1)
+            }
+        }
+
+        // Resolve each cluster to a name using known places (within 2km)
+        var result: [(name: String, count: Int)] = []
+        for (_, cell) in grid {
+            var resolved = false
+            for place in known {
+                let dLat = (cell.lat - place.lat) * 111_000
+                let dLon = (cell.lon - place.lon) * 111_000 * cos(cell.lat * .pi / 180)
+                let dist = sqrt(dLat * dLat + dLon * dLon)
+                if dist < 2000 {
+                    result.append((name: place.name, count: cell.count))
+                    resolved = true
+                    break
+                }
+            }
+            if !resolved {
+                // Fall back to approximate city-level name
+                let cityName = approximateCity(lat: cell.lat, lon: cell.lon)
+                result.append((name: cityName, count: cell.count))
+            }
+        }
+
+        // Merge same-name clusters and sort by count
+        var merged: [String: Int] = [:]
+        for entry in result {
+            merged[entry.name, default: 0] += entry.count
+        }
+        return merged.sorted { $0.value > $1.value }.map { (name: $0.key, count: $0.value) }
+    }
+
+    /// Quick city-level approximation from coordinates, for photo location display.
+    private static func approximateCity(lat: Double, lon: Double) -> String {
+        let cities: [(name: String, lat: Double, lon: Double, radius: Double)] = [
+            ("北京", 39.90, 116.41, 60_000),
+            ("上海", 31.23, 121.47, 50_000),
+            ("广州", 23.13, 113.26, 40_000),
+            ("深圳", 22.54, 114.06, 35_000),
+            ("杭州", 30.27, 120.16, 35_000),
+            ("成都", 30.57, 104.07, 35_000),
+            ("南京", 32.06, 118.80, 35_000),
+            ("武汉", 30.59, 114.31, 35_000),
+            ("重庆", 29.56, 106.55, 35_000),
+            ("西安", 34.34, 108.94, 35_000),
+            ("厦门", 24.48, 118.09, 25_000),
+            ("三亚", 18.25, 109.51, 25_000),
+            ("东京", 35.68, 139.65, 40_000),
+            ("首尔", 37.57, 126.98, 35_000),
+            ("曼谷", 13.76, 100.50, 35_000),
+            ("新加坡", 1.35, 103.82, 25_000),
+            ("香港", 22.32, 114.17, 20_000),
+        ]
+        for city in cities {
+            let dLat = (lat - city.lat) * 111_000
+            let dLon = (lon - city.lon) * 111_000 * cos(lat * .pi / 180)
+            let dist = sqrt(dLat * dLat + dLon * dLon)
+            if dist < city.radius { return city.name }
+        }
+        // Broad region fallback
+        if lat >= 18 && lat <= 54 && lon >= 73 && lon <= 135 { return "国内" }
+        return "海外"
     }
 
     /// Queries CDPhotoIndex for the given date interval and returns a compact content breakdown line.

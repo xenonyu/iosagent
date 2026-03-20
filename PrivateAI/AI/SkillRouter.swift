@@ -1166,6 +1166,9 @@ struct SkillRouter {
             "周前", "周内", "个星期", "个礼拜",
             // Relative month patterns: "两个月前", "三个月内", "半个月"
             "个月前", "个月内", "半个月", "半月",
+            // Season keywords
+            "春天", "夏天", "秋天", "冬天", "春季", "夏季", "秋季", "冬季",
+            "开春", "入夏", "入秋", "入冬",
             "today", "yesterday", "tomorrow",
             "this week", "last week", "next week",
             "weekend", "this weekend", "next weekend", "last weekend",
@@ -1173,7 +1176,8 @@ struct SkillRouter {
             "recently", "lately",
             "days ago", "weeks ago", "months ago",
             "week ago", "month ago", "past",
-            "this year", "last year", "year before last", "years ago", "year ago"
+            "this year", "last year", "year before last", "years ago", "year ago",
+            "spring", "summer", "autumn", "fall", "winter"
         ]
         // Also check for specific weekday patterns (周一, 星期三, monday, etc.)
         let weekdayPatterns = ["周一", "周二", "周三", "周四", "周五", "周六", "周日", "周天",
@@ -1259,6 +1263,8 @@ struct SkillRouter {
         // Past ranges
         if containsAny(text, ["前天", "day before yesterday"]) { return .dayBeforeYesterday }
         if containsAny(text, ["昨天", "yesterday"]) { return .yesterday }
+        // --- Season parsing (must check before year-level to catch "去年夏天" as season, not "去年") ---
+        if let seasonRange = extractSeason(from: text) { return seasonRange }
         if containsAny(text, ["前年", "year before last"]) { return .yearBeforeLast }
         if containsAny(text, ["去年", "last year"]) { return .lastYear }
         if containsAny(text, ["今年", "this year"]) { return .thisYear }
@@ -1594,6 +1600,77 @@ struct SkillRouter {
         }
 
         return nil
+    }
+
+    // MARK: - Season Extraction
+
+    /// Parses season references like "去年夏天", "今年春天", "冬天", "前年秋季",
+    /// "last summer", "this spring", "winter" into a `.season(year:quarter:)` range.
+    ///
+    /// Season definitions (meteorological, Northern Hemisphere):
+    /// - 春天 Spring: March – May
+    /// - 夏天 Summer: June – August
+    /// - 秋天 Autumn: September – November
+    /// - 冬天 Winter: December – February (crosses year boundary)
+    private static func extractSeason(from text: String) -> QueryTimeRange? {
+        let lower = text.lowercased()
+
+        // Detect which season (quarter)
+        let quarter: Int
+        if containsAny(lower, ["春天", "春季", "开春", "spring"]) {
+            quarter = 1
+        } else if containsAny(lower, ["夏天", "夏季", "入夏", "summer"]) {
+            quarter = 2
+        } else if containsAny(lower, ["秋天", "秋季", "入秋", "autumn", "fall"]) {
+            quarter = 3
+        } else if containsAny(lower, ["冬天", "冬季", "入冬", "winter"]) {
+            quarter = 4
+        } else {
+            return nil
+        }
+
+        // Detect which year
+        let currentYear = Calendar.current.component(.year, from: Date())
+        let currentMonth = Calendar.current.component(.month, from: Date())
+        let year: Int
+
+        if containsAny(lower, ["前年"]) {
+            year = currentYear - 2
+        } else if containsAny(lower, ["去年", "last"]) {
+            year = currentYear - 1
+        } else if containsAny(lower, ["今年", "this"]) {
+            year = currentYear
+        } else if containsAny(lower, ["明年", "next"]) {
+            year = currentYear + 1
+        } else {
+            // No year specified → infer the most recent occurrence of this season
+            // Season month ranges: spring=3-5, summer=6-8, autumn=9-11, winter=12-2
+            let seasonStartMonth = [0, 3, 6, 9, 12][quarter]
+            let seasonEndMonth = [0, 5, 8, 11, 2][quarter]
+
+            if quarter == 4 {
+                // Winter: if we're in Dec, it's this year's winter; if Jan-Feb, last year's winter
+                // Otherwise, use the most recent completed winter
+                if currentMonth == 12 {
+                    year = currentYear
+                } else if currentMonth <= 2 {
+                    year = currentYear - 1 // winter started last Dec
+                } else {
+                    year = currentYear - 1 // last winter
+                }
+            } else if currentMonth > seasonEndMonth {
+                // Season already passed this year → use this year's
+                year = currentYear
+            } else if currentMonth >= seasonStartMonth {
+                // We're currently in this season → use this year's
+                year = currentYear
+            } else {
+                // Season hasn't started yet this year → use last year's
+                year = currentYear - 1
+            }
+        }
+
+        return .season(year: year, quarter: quarter)
     }
 
     // MARK: - Specific Weekday Extraction
@@ -2693,13 +2770,26 @@ struct SkillRouter {
         if containsAny(text, ["星期几", "周几", "礼拜几", "what day"]) {
             return .dayOfWeek
         }
-        // Current time
+        // Current time — only match pure "what time is it" queries.
+        // "几点" is ambiguous: "几点了" = current time, but "standup是几点" / "几点开会" = calendar search.
+        // Guard against event-context patterns that should fall through to parseCalendarSearch.
         if containsAny(text, ["几点", "什么时间", "几时", "what time", "现在时间", "时间是"]) {
-            return .currentTime
+            let eventContextPatterns = ["是几点", "几点开", "几点有", "几点到", "几点结束",
+                                         "几点上", "几点下", "几点去",
+                                         "什么时间开", "什么时间有", "什么时间到",
+                                         "几时开", "几时有",
+                                         "what time is the", "what time does"]
+            if !containsAny(text, eventContextPatterns) {
+                return .currentTime
+            }
         }
-        // Current date
+        // Current date — same guard for event-context queries like "X是几号"
         if containsAny(text, ["几号", "几月几号", "什么日期", "today's date", "今天日期", "哪一天"]) {
-            return .currentDate
+            let dateEventContext = ["是几号", "是哪天", "在几号", "几号开", "几号有",
+                                    "哪一天开", "哪一天有"]
+            if !containsAny(text, dateEventContext) {
+                return .currentDate
+            }
         }
         // General "now" queries
         if containsAny(text, ["现在", "此刻"]) &&
@@ -3723,5 +3813,40 @@ struct SkillRouter {
         }
 
         return .random
+    }
+
+    // MARK: - Bare Date Query Detection
+
+    /// Returns true if the query is essentially just a date reference with no skill keyword.
+    /// Examples: "3月15号", "周三", "上周五", "15号", "大后天", "下周一", "March 15"
+    /// Used as a last-resort fallback to route plain date queries to calendar (future)
+    /// or summary (past) without requiring any skill keyword.
+    static func isBareDateQuery(_ text: String) -> Bool {
+        let stripped = text
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "？", with: "")
+            .replacingOccurrences(of: "?", with: "")
+            .replacingOccurrences(of: "呢", with: "")
+            .replacingOccurrences(of: "的", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // Short bare queries only (long queries have skill keywords and are handled above)
+        guard stripped.count <= 12 else { return false }
+
+        // Must contain a time reference but no major skill keyword
+        guard hasExplicitTimeReference(stripped) else { return false }
+
+        let skillKeywords = [
+            "运动", "步数", "睡眠", "心率", "健康", "锻炼",
+            "去过", "在哪", "地点", "位置",
+            "心情", "情绪",
+            "照片", "拍了",
+            "日历", "日程", "会议",
+            "记录", "总结",
+            "推荐", "建议",
+            "exercise", "steps", "sleep", "health",
+            "location", "photo", "calendar", "summary"
+        ]
+        return !containsAny(stripped, skillKeywords)
     }
 }

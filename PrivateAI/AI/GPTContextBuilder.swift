@@ -1312,10 +1312,16 @@ final class GPTContextBuilder {
         }
 
         if !h.workouts.isEmpty {
+            // Include start–end time range so GPT can answer "几点运动的？" or
+            // "早上跑步了吗？" directly from [今日健康数据] without cross-referencing
+            // the separate [运动记录] section. The workout section has times but
+            // GPT often cites this section for today-specific questions.
+            let wTimeFmt = DateFormatter(); wTimeFmt.dateFormat = "HH:mm"
             let wLines = h.workouts.prefix(5).map { w in
                 let name = "\(w.typeEmoji) \(w.typeName)"
+                let timeRange = "\(wTimeFmt.string(from: w.startDate))–\(wTimeFmt.string(from: w.endDate))"
                 let dur = Int(w.duration / 60)
-                var s = "\(name) \(dur)分钟"
+                var s = "\(name) \(timeRange) \(dur)分钟"
                 if w.totalCalories > 0 { s += " \(Int(w.totalCalories))kcal" }
                 if w.totalDistance > 10 { s += " \(String(format: "%.1f", w.totalDistance / 1000))km" }
                 // Heart rate during workout — critical for intensity analysis
@@ -2008,13 +2014,30 @@ final class GPTContextBuilder {
             lines.append("今天：")
             for e in todayEvents.prefix(10) {
                 // Determine temporal status for non-all-day events
+                // Annotate temporal status for non-all-day events.
+                // Ongoing events include remaining minutes so GPT can directly
+                // answer "这个会还有多久结束？" without computing time differences.
+                // Upcoming events within 60 minutes show countdown for urgency.
                 let status: String
                 if e.isAllDay {
                     status = ""
                 } else if e.endDate <= now {
                     status = "（已结束）"
                 } else if e.startDate <= now && e.endDate > now {
-                    status = "（进行中）"
+                    let remainMins = Int(e.endDate.timeIntervalSince(now) / 60)
+                    if remainMins <= 1 {
+                        status = "（进行中，即将结束）"
+                    } else if remainMins < 60 {
+                        status = "（进行中，还剩\(remainMins)分钟）"
+                    } else {
+                        let hrs = remainMins / 60
+                        let mins = remainMins % 60
+                        let timeStr = mins > 0 ? "\(hrs)小时\(mins)分钟" : "\(hrs)小时"
+                        status = "（进行中，还剩\(timeStr)）"
+                    }
+                } else if e.startDate.timeIntervalSince(now) <= 60 * 60 {
+                    let minsUntil = Int(e.startDate.timeIntervalSince(now) / 60)
+                    status = minsUntil <= 1 ? "（即将开始）" : "（\(minsUntil)分钟后开始）"
                 } else {
                     status = ""
                 }

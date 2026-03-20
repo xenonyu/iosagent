@@ -180,6 +180,12 @@ final class GPTContextBuilder {
             parts.append(trendSection(weeklyHealth))
         }
 
+        // 7-DAY WORKOUT HISTORY (individual sessions GPT can reference)
+        let workoutHistory = weeklyWorkoutSection(weeklyHealth)
+        if !workoutHistory.isEmpty {
+            parts.append(workoutHistory)
+        }
+
         // CALENDAR
         parts.append(calendarSection(todayEvents: todayEvents, upcoming: upcomingEvents))
 
@@ -440,6 +446,64 @@ final class GPTContextBuilder {
             }
             lines.append(line)
         }
+        return lines.joined(separator: "\n")
+    }
+
+    // MARK: - Weekly Workout History
+
+    /// Extracts individual workout sessions from weekly summaries so GPT can answer
+    /// questions like "when was my last run?" or "how many times did I exercise this week?"
+    private func weeklyWorkoutSection(_ summaries: [HealthSummary]) -> String {
+        let cal = Calendar.current
+        let dateFmt = DateFormatter(); dateFmt.dateFormat = "M/d"
+        let timeFmt = DateFormatter(); timeFmt.dateFormat = "HH:mm"
+
+        // Collect all workouts from all days, tagged with their date
+        var allWorkouts: [(date: Date, workout: WorkoutRecord)] = []
+        for s in summaries.prefix(7) {
+            for w in s.workouts {
+                allWorkouts.append((date: s.date, workout: w))
+            }
+        }
+
+        guard !allWorkouts.isEmpty else { return "" }
+
+        // Sort chronologically (newest first) for easy reading
+        allWorkouts.sort { $0.workout.startDate > $1.workout.startDate }
+
+        var lines = ["[近7天运动记录]"]
+        // Summary line
+        let totalSessions = allWorkouts.count
+        let activeDays = Set(allWorkouts.map { cal.startOfDay(for: $0.date) }).count
+        lines.append("共 \(totalSessions) 次运动，覆盖 \(activeDays) 天")
+
+        // List each workout (cap at 15 to avoid token bloat)
+        for item in allWorkouts.prefix(15) {
+            let w = item.workout
+            let name = workoutName(w.activityType)
+            let dayLabel = cal.isDateInToday(item.date) ? "今天" :
+                           cal.isDateInYesterday(item.date) ? "昨天" :
+                           dateFmt.string(from: item.date)
+            let timeStr = timeFmt.string(from: w.startDate)
+            let dur = Int(w.duration / 60)
+            var line = "\(dayLabel) \(timeStr) \(name) \(dur)分钟"
+            if w.totalCalories > 0 { line += " \(Int(w.totalCalories))kcal" }
+            if w.totalDistance > 100 { line += " \(String(format: "%.1f", w.totalDistance / 1000))km" }
+            lines.append(line)
+        }
+
+        // Workout type breakdown for quick stats
+        var typeCounts: [String: Int] = [:]
+        for item in allWorkouts {
+            let name = workoutName(item.workout.activityType)
+            typeCounts[name, default: 0] += 1
+        }
+        if typeCounts.count > 1 {
+            let breakdown = typeCounts.sorted { $0.value > $1.value }
+                .map { "\($0.key)\($0.value)次" }
+            lines.append("运动类型：\(breakdown.joined(separator: "、"))")
+        }
+
         return lines.joined(separator: "\n")
     }
 

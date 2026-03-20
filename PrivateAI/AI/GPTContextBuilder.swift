@@ -353,6 +353,7 @@ final class GPTContextBuilder {
         - 如果用户提到家人（如"我妈"、"我爸"等），参考下方[用户信息]中的家庭成员数据来回答。
         - 日历日程中 [日历名] 标签表示事件来源（如 [Work]、[个人]、[家庭]），用户问「工作会议」时参考此标签区分。日程的「备注」字段包含议程或描述，用户问「那个会议聊什么」时可引用。日历数据已标注星期几和相对日期（昨天/前天/明天/后天），用户问「周三有什么安排」时直接匹配对应日期即可。
         - 今天的日程带有时间状态标注（已结束/进行中），回答日程问题时优先告诉用户接下来的安排，而不是罗列全天。例如下午3点问「今天有什么安排」，重点说还有哪些未完成的，已结束的可简要带过。
+        - 日历数据中包含预计算的「空闲时段」（今天剩余空闲 / 明天空闲时段）。用户问「有空吗」「什么时候能约」「忙不忙」时，直接引用这些空闲时段回答，不需要自己计算事件间隔。空闲时段仅覆盖8:00–22:00的活跃时间。
         - 对话历史中的内容是之前的对话，注意用户可能会用「那…呢」「昨天的呢」「详细说说」等方式追问。如果用户的问题很短且含指代词（如「那个」「它」「上面说的」），结合对话历史推断用户指的是什么。
 
         回复格式：
@@ -658,6 +659,8 @@ final class GPTContextBuilder {
             // Appointment & work-related terms
             "约", "预约", "面试", "上班", "下班", "提醒", "截止", "deadline",
             "见面", "聚餐", "聚会", "约会",
+            // Free time / availability queries — map to calendar for free slot analysis
+            "有空", "空闲", "有时间", "忙不忙", "忙吗", "free", "available", "busy",
             "schedule", "calendar", "meeting", "event", "appointment", "interview"
         ]
         if calendarWords.contains(where: { lower.contains($0) }) {
@@ -2046,6 +2049,42 @@ final class GPTContextBuilder {
                 }
                 lines.append("  （\(summaryParts.joined(separator: "，"))）")
             }
+
+            // Free time slots for today — GPT frequently gets this wrong when computing
+            // manually. Users commonly ask "今天下午有空吗？", "什么时候能约人？",
+            // "接下来有多少空闲时间？". Pre-computing slots eliminates arithmetic errors.
+            let todayFreeSlots = computeFreeSlots(
+                events: todayEvents,
+                dayStart: max(now, cal.startOfDay(for: now)),
+                dayEnd: cal.date(byAdding: .day, value: 1, to: cal.startOfDay(for: now))!,
+                now: now
+            )
+            if !todayFreeSlots.isEmpty {
+                let slotDescs = todayFreeSlots.map { slot -> String in
+                    let startStr = timeFmt.string(from: slot.start)
+                    let endStr = timeFmt.string(from: slot.end)
+                    let durMins = Int(slot.end.timeIntervalSince(slot.start) / 60)
+                    let durStr: String
+                    if durMins >= 60 {
+                        let hrs = durMins / 60
+                        let mins = durMins % 60
+                        durStr = mins > 0 ? "\(hrs)h\(mins)m" : "\(hrs)h"
+                    } else {
+                        durStr = "\(durMins)分钟"
+                    }
+                    return "\(startStr)–\(endStr)（\(durStr)）"
+                }
+                let totalFreeMins = todayFreeSlots.map { Int($0.end.timeIntervalSince($0.start) / 60) }.reduce(0, +)
+                let totalFreeStr: String
+                if totalFreeMins >= 60 {
+                    let hrs = totalFreeMins / 60
+                    let mins = totalFreeMins % 60
+                    totalFreeStr = mins > 0 ? "\(hrs)小时\(mins)分钟" : "\(hrs)小时"
+                } else {
+                    totalFreeStr = "\(totalFreeMins)分钟"
+                }
+                lines.append("  今日剩余空闲：\(slotDescs.joined(separator: "、"))，共\(totalFreeStr)")
+            }
         }
 
         // Upcoming events (future, excluding today) — grouped by day for clarity.
@@ -2112,6 +2151,37 @@ final class GPTContextBuilder {
                     if dayEvents.count > 8 {
                         lines.append("    …还有\(dayEvents.count - 8)项")
                     }
+
+                    // Free time slots for near-future days (tomorrow/day-after) so GPT can
+                    // accurately answer "明天下午有空吗？" or "后天什么时候能约？"
+                    let futureDayStart = day
+                    let futureDayEnd = cal.date(byAdding: .day, value: 1, to: day)!
+                    // For future days, also include events from todayEvents/past if they
+                    // span into that day (unlikely but possible for multi-day events).
+                    // The dayEvents already come from the upcoming array for that day.
+                    let futureFreeSlots = computeFreeSlots(
+                        events: dayEvents,
+                        dayStart: futureDayStart,
+                        dayEnd: futureDayEnd,
+                        now: nil  // full day analysis, not "from now"
+                    )
+                    if !futureFreeSlots.isEmpty && futureFreeSlots.count <= 8 {
+                        let slotDescs = futureFreeSlots.map { slot -> String in
+                            let startStr = timeFmt.string(from: slot.start)
+                            let endStr = timeFmt.string(from: slot.end)
+                            let durMins = Int(slot.end.timeIntervalSince(slot.start) / 60)
+                            let durStr: String
+                            if durMins >= 60 {
+                                let hrs = durMins / 60
+                                let mins = durMins % 60
+                                durStr = mins > 0 ? "\(hrs)h\(mins)m" : "\(hrs)h"
+                            } else {
+                                durStr = "\(durMins)分钟"
+                            }
+                            return "\(startStr)–\(endStr)（\(durStr)）"
+                        }
+                        lines.append("    空闲时段：\(slotDescs.joined(separator: "、"))")
+                    }
                 } else {
                     // Compact summary for further-out days — include both start AND end time
                     // so GPT can compute duration for "下周三的会要开多久?" queries.
@@ -2134,6 +2204,95 @@ final class GPTContextBuilder {
             }
         }
         return lines.joined(separator: "\n")
+    }
+
+    // MARK: - Free Time Slot Computation
+
+    /// Represents a free time slot between calendar events.
+    private struct FreeSlot {
+        let start: Date
+        let end: Date
+    }
+
+    /// Computes free time slots within a given time range by finding gaps between events.
+    /// - Parameters:
+    ///   - events: Calendar events for the day (may include all-day events, which are excluded)
+    ///   - dayStart: Start of the analysis window (for today, this is `now`; for future days, start of day)
+    ///   - dayEnd: End of the analysis window (typically end of the calendar day)
+    ///   - now: If non-nil, slots before `now` are excluded (for today's remaining free time).
+    ///          For future days, pass nil to analyze the full 8:00–22:00 range.
+    /// - Returns: Array of free slots ≥ 15 minutes, within the 8:00–22:00 "active hours" window.
+    ///
+    /// Only considers 8:00–22:00 as "useful" free time — nobody schedules meetings at 3am.
+    /// Minimum slot duration is 15 minutes — shorter gaps aren't practically useful.
+    private func computeFreeSlots(events: [CalendarEventItem],
+                                   dayStart: Date,
+                                   dayEnd: Date,
+                                   now: Date?) -> [FreeSlot] {
+        let cal = Calendar.current
+        let dayBase = cal.startOfDay(for: dayStart)
+
+        // Define active hours: 8:00 – 22:00
+        guard let activeStart = cal.date(bySettingHour: 8, minute: 0, second: 0, of: dayBase),
+              let activeEnd = cal.date(bySettingHour: 22, minute: 0, second: 0, of: dayBase) else {
+            return []
+        }
+
+        // Window start: max of (activeStart, now, dayStart)
+        var windowStart = activeStart
+        if let now = now, now > windowStart { windowStart = now }
+        if dayStart > windowStart { windowStart = dayStart }
+
+        // Window end: min of (activeEnd, dayEnd)
+        let windowEnd = min(activeEnd, dayEnd)
+
+        guard windowStart < windowEnd else { return [] }
+
+        // Collect non-all-day event intervals, clipped to window
+        let busyIntervals: [(start: Date, end: Date)] = events
+            .filter { !$0.isAllDay }
+            .compactMap { e -> (start: Date, end: Date)? in
+                let s = max(e.startDate, windowStart)
+                let e2 = min(e.endDate, windowEnd)
+                guard s < e2 else { return nil }
+                return (start: s, end: e2)
+            }
+            .sorted { $0.start < $1.start }
+
+        // Merge overlapping intervals
+        var merged: [(start: Date, end: Date)] = []
+        for interval in busyIntervals {
+            if let last = merged.last, interval.start <= last.end {
+                // Overlapping or adjacent — extend
+                merged[merged.count - 1] = (start: last.start, end: max(last.end, interval.end))
+            } else {
+                merged.append(interval)
+            }
+        }
+
+        // Find gaps between merged busy intervals
+        var slots: [FreeSlot] = []
+        var cursor = windowStart
+
+        for busy in merged {
+            if busy.start > cursor {
+                let gap = busy.start.timeIntervalSince(cursor)
+                if gap >= 15 * 60 {  // ≥ 15 minutes
+                    slots.append(FreeSlot(start: cursor, end: busy.start))
+                }
+            }
+            cursor = max(cursor, busy.end)
+        }
+
+        // Trailing free time after last event
+        if cursor < windowEnd {
+            let gap = windowEnd.timeIntervalSince(cursor)
+            if gap >= 15 * 60 {
+                slots.append(FreeSlot(start: cursor, end: windowEnd))
+            }
+        }
+
+        return slots
     }
 
     /// Extracts a display name for a location record with coordinate fallback.

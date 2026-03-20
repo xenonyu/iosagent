@@ -541,10 +541,132 @@ final class GPTContextBuilder {
             }
         }
 
+        // QUERY RELEVANCE HINT — guides GPT's attention to the most relevant
+        // data sections without removing any data (safe fallback). This reduces
+        // "over-referencing" where GPT cites irrelevant data in its response
+        // (e.g. mentioning calendar events when user asked about step count).
+        let relevanceHint = buildRelevanceHint(query: userQuery)
+        if !relevanceHint.isEmpty {
+            parts.append(relevanceHint)
+        }
+
         // CURRENT QUESTION
         parts.append("[当前问题]\n用户说：\(userQuery)")
 
         return parts.joined(separator: "\n\n")
+    }
+
+    // MARK: - Query Relevance
+
+    /// Data topic categories for guiding GPT's attention.
+    private enum QueryTopic: String, CaseIterable {
+        case health     // 步数、运动、睡眠、心率、卡路里、体重
+        case calendar   // 日程、会议、日历、安排
+        case location   // 位置、去过、地方、足迹
+        case photos     // 照片、图片、拍
+        case lifeEvents // 记录、备忘、心情
+        case general    // 总结、回顾、你好 → include all
+    }
+
+    /// Detects which data topics the user's query is about.
+    /// Returns a set of relevant topics. If no specific topic matches or the
+    /// query is a general/summary question, returns all topics (safe fallback).
+    private func detectQueryTopics(_ query: String) -> Set<QueryTopic> {
+        let lower = query.lowercased()
+        var topics: Set<QueryTopic> = []
+
+        let healthWords = [
+            "步数", "步", "走路", "走了", "跑步", "跑了", "运动", "锻炼", "健身",
+            "睡眠", "睡觉", "睡了", "睡得", "入睡", "起床", "失眠",
+            "心率", "心跳", "卡路里", "热量", "消耗", "能量",
+            "体重", "胖", "瘦", "血氧", "VO2",
+            "exercise", "sleep", "step", "heart", "workout", "calorie", "weight",
+            "hrv", "vo2", "bpm"
+        ]
+        if healthWords.contains(where: { lower.contains($0) }) {
+            topics.insert(.health)
+        }
+
+        let calendarWords = [
+            "日程", "日历", "会议", "安排", "行程", "活动", "计划", "开会",
+            "schedule", "calendar", "meeting", "event", "appointment"
+        ]
+        if calendarWords.contains(where: { lower.contains($0) }) {
+            topics.insert(.calendar)
+        }
+
+        let locationWords = [
+            "去了", "去过", "地方", "位置", "在哪", "哪里", "足迹", "出门",
+            "城市", "回家", "公司", "地点",
+            "location", "where", "place", "travel"
+        ]
+        if locationWords.contains(where: { lower.contains($0) }) {
+            topics.insert(.location)
+        }
+
+        let photoWords = [
+            "照片", "图片", "相片", "拍照", "拍了", "拍的", "拍过",
+            "photo", "picture", "pic", "视频", "video", "自拍", "截图"
+        ]
+        if photoWords.contains(where: { lower.contains($0) }) {
+            topics.insert(.photos)
+        }
+
+        let lifeWords = [
+            "记录", "备忘", "日记", "心情", "情绪", "感受", "记了", "记过",
+            "mood", "note", "journal", "diary"
+        ]
+        if lifeWords.contains(where: { lower.contains($0) }) {
+            topics.insert(.lifeEvents)
+        }
+
+        // General/summary queries → include all
+        let generalWords = [
+            "总结", "回顾", "概括", "怎么样", "过得", "这周", "上周", "今天",
+            "summary", "review", "你好", "谢谢", "嗨", "hello", "hi", "hey",
+            "什么都", "所有"
+        ]
+        if generalWords.contains(where: { lower.contains($0) }) {
+            topics.insert(.general)
+        }
+
+        // If no specific topic detected or includes general, return all
+        if topics.isEmpty || topics.contains(.general) {
+            return Set(QueryTopic.allCases)
+        }
+
+        return topics
+    }
+
+    /// Builds a hint section that tells GPT which data sections are most relevant
+    /// to the user's question. This helps GPT produce more focused answers by
+    /// prioritizing the right data instead of over-referencing everything.
+    private func buildRelevanceHint(query: String) -> String {
+        let topics = detectQueryTopics(query)
+
+        // If all topics are relevant (general query), no need for a hint
+        if topics == Set(QueryTopic.allCases) { return "" }
+
+        var sectionNames: [String] = []
+        if topics.contains(.health) {
+            sectionNames.append("[今日健康数据]、[近7天健康趋势]、[睡眠质量分析]、[运动记录]")
+        }
+        if topics.contains(.calendar) {
+            sectionNames.append("[日历日程]")
+        }
+        if topics.contains(.location) {
+            sectionNames.append("[位置记录]")
+        }
+        if topics.contains(.photos) {
+            sectionNames.append("[照片统计]、[照片搜索结果]")
+        }
+        if topics.contains(.lifeEvents) {
+            sectionNames.append("[生活记录]")
+        }
+
+        guard !sectionNames.isEmpty else { return "" }
+
+        return "[查询重点提示]\n用户问题主要涉及：\(sectionNames.joined(separator: "、"))。请重点参考这些部分的数据回答，其他部分的数据除非明显相关否则无需引用。"
     }
 
     // MARK: - Section Builders

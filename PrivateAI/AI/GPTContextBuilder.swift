@@ -1,5 +1,6 @@
 import Foundation
 import CoreData
+import CoreLocation
 
 /// Assembles a rich context prompt from all local iOS data sources for RawGPTService.
 /// Replaces ClawEngine — no local routing, just structured data context building.
@@ -301,10 +302,10 @@ final class GPTContextBuilder {
         2. 基于已有数据给出部分回答（如「近两周内…」）
         3. 不要将有限数据外推为更长时间段的结论
         ⚠️ 「这周」和「近7天」是不同概念。用户说「这周」指本周一至今天，说「上周」指上周一至上周日。回答时务必按上方日期范围筛选对应的数据行，不要把上周的数据算入这周，也不要把这周的数据算入上周。
-        ⚠️ 睡眠日期归属规则（重要）：睡眠数据按「醒来当天」归属。例如3月19日晚23:00入睡→3月20日早7:00起床，这笔睡眠记录在3月20日（今天）的行中，而不是3月19日。因此：
+        ⚠️ 睡眠日期归属规则（重要）：睡眠数据按「醒来当天」归属。例如\(boundaryFmt.string(from: Calendar.current.date(byAdding: .day, value: -1, to: now) ?? now))晚23:00入睡→\(boundaryFmt.string(from: now))早7:00起床，这笔睡眠记录在\(boundaryFmt.string(from: now))（今天）的行中，而不是\(boundaryFmt.string(from: Calendar.current.date(byAdding: .day, value: -1, to: now) ?? now))。因此：
         - 用户问「昨晚睡了多久」「昨天晚上睡得怎么样」→ 查看「今天」行的睡眠数据（因为昨晚的睡眠醒来时已是今天）
         - 用户问「前天晚上」→ 查看「昨天」行的睡眠数据
-        - 趋势表和睡眠分析中已标注每行对应的实际睡眠夜晚（如「3/19晚→3/20」），请据此匹配用户提到的时间。
+        - 趋势表和睡眠分析中已标注每行对应的实际睡眠夜晚（如「\(boundaryFmt.string(from: Calendar.current.date(byAdding: .day, value: -1, to: now) ?? now))晚→\(boundaryFmt.string(from: now))」），请据此匹配用户提到的时间。
 
         能力边界：
         - 你只能读取数据，不能创建、修改或保存任何记录。如果用户想记录事情，告诉他可以在 App 的生活记录页面手动添加。
@@ -433,9 +434,12 @@ final class GPTContextBuilder {
             parts.append(calendarSection(todayEvents: todayEvents, upcoming: upcomingEvents, past: pastEvents))
         }
 
-        // LOCATION
-        if !locationRecords.isEmpty {
-            parts.append(locationSection(locationRecords))
+        // LOCATION — include current live position when available.
+        // CDLocationRecord only saves on 200m+ moves, so the user's latest
+        // position may not be persisted yet. Adding CLLocation gives GPT
+        // the ability to answer "我现在在哪？" accurately.
+        if !locationRecords.isEmpty || self.locationService.currentLocation != nil {
+            parts.append(locationSection(locationRecords, currentLocation: self.locationService.currentLocation))
         }
 
         // PHOTO STATS
@@ -1638,13 +1642,53 @@ final class GPTContextBuilder {
         return parts.first
     }
 
-    private func locationSection(_ records: [CDLocationRecord]) -> String {
+    private func locationSection(_ records: [CDLocationRecord],
+                                  currentLocation: CLLocation? = nil) -> String {
         let cal = Calendar.current
         let dateFmt = DateFormatter(); dateFmt.dateFormat = "M月d日（EEEE）"
         dateFmt.locale = Locale(identifier: "zh_CN")
         let timeFmt = DateFormatter(); timeFmt.dateFormat = "HH:mm"
 
         var lines = ["[位置记录（近14天）]"]
+
+        // Show the device's current live position when available.
+        // CDLocationRecord only persists on 200m+ significant moves, so the
+        // latest position may be hours old. The live CLLocation gives GPT a
+        // fresh answer for "我现在在哪？" or "我在哪里？".
+        if let loc = currentLocation {
+            let age = Date().timeIntervalSince(loc.timestamp)
+            let freshness: String
+            if age < 60 {
+                freshness = "刚刚更新"
+            } else if age < 3600 {
+                freshness = "\(Int(age / 60))分钟前更新"
+            } else {
+                freshness = "\(Int(age / 3600))小时前更新"
+            }
+            let latS = loc.coordinate.latitude >= 0 ? "N" : "S"
+            let lonS = loc.coordinate.longitude >= 0 ? "E" : "W"
+            let coords = String(format: "%.4f°%@, %.4f°%@",
+                                abs(loc.coordinate.latitude), latS,
+                                abs(loc.coordinate.longitude), lonS)
+            // Try to match to the nearest CDLocationRecord for a human-readable name
+            var nearestName: String?
+            for r in records {
+                let dist = Self.haversineKm(lat1: loc.coordinate.latitude, lon1: loc.coordinate.longitude,
+                                            lat2: r.latitude, lon2: r.longitude)
+                if dist < 0.5 {
+                    let name = locationDisplayName(for: r)
+                    if name != "未知地点" {
+                        nearestName = name
+                        break
+                    }
+                }
+            }
+            if let name = nearestName {
+                lines.append("📍 当前位置：\(name)（\(coords)，\(freshness)）")
+            } else {
+                lines.append("📍 当前位置：\(coords)（\(freshness)）")
+            }
+        }
 
         // City/district aggregation so GPT can answer "去了几个城市？" or "在哪个区？"
         var cityCounts: [String: Int] = [:]

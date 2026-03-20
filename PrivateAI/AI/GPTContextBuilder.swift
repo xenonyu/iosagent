@@ -340,6 +340,7 @@ final class GPTContextBuilder {
             if h.hrv > 0 { line += "，HRV \(Int(h.hrv))ms" }
             lines.append(line)
         }
+        if h.flightsClimbed > 0 { lines.append("爬楼：\(Int(h.flightsClimbed))层") }
         if h.oxygenSaturation > 0 { lines.append("血氧：\(Int(h.oxygenSaturation))%") }
         if h.vo2Max > 0 { lines.append("VO2 Max：\(String(format: "%.1f", h.vo2Max)) ml/kg·min") }
         if h.bodyMassKg > 0 { lines.append("体重：\(String(format: "%.1f", h.bodyMassKg))kg") }
@@ -350,6 +351,11 @@ final class GPTContextBuilder {
             if h.sleepREMHours > 0 { phases.append("REM \(String(format: "%.1f", h.sleepREMHours))h") }
             if h.sleepCoreHours > 0 { phases.append("浅睡\(String(format: "%.1f", h.sleepCoreHours))h") }
             if !phases.isEmpty { line += "（\(phases.joined(separator: "，"))）" }
+            // Sleep efficiency = actual sleep / time in bed — key quality metric
+            if h.inBedHours > 0 && h.inBedHours >= h.sleepHours {
+                let efficiency = Int((h.sleepHours / h.inBedHours) * 100)
+                line += "，在床\(String(format: "%.1f", h.inBedHours))h，睡眠效率\(efficiency)%"
+            }
             if let onset = h.sleepOnset, let wake = h.wakeTime {
                 let fmt = DateFormatter(); fmt.dateFormat = "HH:mm"
                 line += "，入睡\(fmt.string(from: onset))，起床\(fmt.string(from: wake))"
@@ -375,16 +381,17 @@ final class GPTContextBuilder {
     private func trendSection(_ summaries: [HealthSummary]) -> String {
         let fmt = DateFormatter(); fmt.dateFormat = "M/d"
         let cal = Calendar.current
-        var lines = ["[近7天健康趋势]", "日期  | 步数  | 运动(分) | 睡眠(h) | 心率(bpm)"]
+        var lines = ["[近7天健康趋势]", "日期  | 步数  | 运动(分) | 卡路里(kcal) | 睡眠(h) | 心率(bpm)"]
         // Show oldest→newest so GPT can naturally read the trend direction
         let chronological = Array(summaries.prefix(7).reversed())
         for s in chronological {
             let dateLabel = cal.isDateInToday(s.date) ? "\(fmt.string(from: s.date))(今天)" : fmt.string(from: s.date)
             let steps = s.steps > 0 ? "\(Int(s.steps))" : "-"
             let ex = s.exerciseMinutes > 0 ? "\(Int(s.exerciseMinutes))" : "-"
+            let cal_ = s.activeCalories > 0 ? "\(Int(s.activeCalories))" : "-"
             let sl = s.sleepHours > 0 ? String(format: "%.1f", s.sleepHours) : "-"
             let hr = s.heartRate > 0 ? "\(Int(s.heartRate))" : "-"
-            lines.append("\(dateLabel)  | \(steps)  | \(ex)  | \(sl)  | \(hr)")
+            lines.append("\(dateLabel)  | \(steps)  | \(ex)  | \(cal_)  | \(sl)  | \(hr)")
         }
         // Add weekly totals and averages with active-day counts so GPT can give
         // honest answers. E.g. "7天中有3天运动，共90分钟" is more useful than "日均30分钟"
@@ -403,6 +410,11 @@ final class GPTContextBuilder {
         if !validExDays.isEmpty {
             let totalMin = Int(validExDays.map(\.exerciseMinutes).reduce(0, +))
             avgParts.append("\(totalDays)天中\(validExDays.count)天有运动，共\(totalMin)分钟")
+        }
+        let validCalDays = week.filter { $0.activeCalories > 0 }
+        if !validCalDays.isEmpty {
+            let totalCal = Int(validCalDays.map(\.activeCalories).reduce(0, +))
+            avgParts.append("周活动消耗\(totalCal)kcal")
         }
         if !validSleepDays.isEmpty {
             let total = validSleepDays.map(\.sleepHours).reduce(0, +)

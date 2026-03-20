@@ -85,18 +85,18 @@ final class GPTContextBuilder {
 
                 let now = Date()
                 let cal = Calendar.current
-                // Use startOfDay to ensure we capture full calendar days, matching
-                // how health data is fetched (per-day summaries for days 0..6).
-                // Without startOfDay, a query at 3pm would miss data before 3pm on
-                // the earliest day — e.g., photos taken Wednesday morning would vanish
-                // if it's now Wednesday 3pm, 7 days later.
-                let dataRangeStart = cal.startOfDay(for: cal.date(byAdding: .day, value: -6, to: now) ?? now)
+                // Use startOfDay to ensure we capture full calendar days.
+                // Extend to 14 days (same as health data) so "上周" queries always
+                // have complete Mon-Sun data for calendar/location/photos too.
+                // Without this, on a Wednesday "上周一到上周三" is 8-10 days ago
+                // and would be missing from the prompt entirely.
+                let dataRangeStart = cal.startOfDay(for: cal.date(byAdding: .day, value: -13, to: now) ?? now)
                 let sevenDaysAhead = cal.date(byAdding: .day, value: 7, to: now) ?? now
 
                 let todayEvents = self.calendarService.todayEvents()
                 let upcomingEvents = self.calendarService.fetchEvents(from: now, to: sevenDaysAhead)
-                // Also fetch past 7 days of calendar events so GPT can answer
-                // "what meetings did I have yesterday?" or "last week's schedule"
+                // Fetch past 14 days of calendar events so GPT can answer
+                // "what meetings did I have yesterday?" and "上周有什么会议?"
                 let pastStartOfToday = cal.startOfDay(for: now)
                 let pastEvents = self.calendarService.fetchEvents(from: dataRangeStart, to: pastStartOfToday)
                 let recentPhotos = self.photoService.fetchAllMedia(from: dataRangeStart, to: now)
@@ -231,18 +231,18 @@ final class GPTContextBuilder {
 
         // Build explicit data time boundaries so GPT knows exact coverage
         let boundaryFmt = DateFormatter(); boundaryFmt.dateFormat = "M月d日"
-        let dataStartDate = Calendar.current.date(byAdding: .day, value: -6, to: now) ?? now
-        let healthRangeStart = Calendar.current.date(byAdding: .day, value: -13, to: now) ?? now
+        let dataStartDate = Calendar.current.date(byAdding: .day, value: -13, to: now) ?? now
+        let healthRangeStart = dataStartDate
         let healthBoundary = "健康/运动/睡眠数据：\(boundaryFmt.string(from: healthRangeStart))~\(boundaryFmt.string(from: now))（共14天，近7天有详细趋势表，完整覆盖本周+上周）"
         let locationBoundary = locationRecords.isEmpty ? "" : {
             let timestamps = locationRecords.compactMap { $0.timestamp }
             if let earliest = timestamps.min(), let latest = timestamps.max() {
                 return "位置记录：\(boundaryFmt.string(from: earliest))~\(boundaryFmt.string(from: latest))"
             }
-            return "位置记录：近7天"
+            return "位置记录：近14天"
         }()
         let calendarEndDate = Calendar.current.date(byAdding: .day, value: 7, to: now) ?? now
-        let calendarBoundary = "日历日程：\(boundaryFmt.string(from: dataStartDate))~\(boundaryFmt.string(from: calendarEndDate))（过去7天+未来7天）"
+        let calendarBoundary = "日历日程：\(boundaryFmt.string(from: dataStartDate))~\(boundaryFmt.string(from: calendarEndDate))（过去14天+未来7天）"
         let lifeEventBoundary: String = {
             let timestamps = lifeEvents.compactMap { $0.timestamp }
             if let earliest = timestamps.min(), let latest = timestamps.max() {
@@ -296,8 +296,8 @@ final class GPTContextBuilder {
         数据时间范围（重要）：
         \(dataBoundaryText)
         \(weekBoundaryText)
-        ⚠️ 你只拥有上述时间范围内的数据。健康数据覆盖近14天（本周+上周完整），其他数据（日历/位置/照片）覆盖近7天。如果用户询问的时间段超出数据覆盖范围（如「上个月」「今年」「过去30天」），你必须：
-        1. 先说明你拥有的数据范围（健康14天，其他7天）
+        ⚠️ 你只拥有上述时间范围内的数据。所有数据（健康/日历/位置/照片）覆盖近14天（本周+上周完整），日历额外包含未来7天。如果用户询问的时间段超出数据覆盖范围（如「上个月」「今年」「过去30天」），你必须：
+        1. 先说明你拥有的数据范围（近14天）
         2. 基于已有数据给出部分回答（如「近两周内…」）
         3. 不要将有限数据外推为更长时间段的结论
         ⚠️ 「这周」和「近7天」是不同概念。用户说「这周」指本周一至今天，说「上周」指上周一至上周日。回答时务必按上方日期范围筛选对应的数据行，不要把上周的数据算入这周，也不要把这周的数据算入上周。
@@ -1006,8 +1006,8 @@ final class GPTContextBuilder {
             dayNameFmt.locale = Locale(identifier: "zh_CN")
             dayNameFmt.dateFormat = "M月d日（EEEE）"
 
-            lines.append("过去7天日程：")
-            for day in sortedDays.prefix(7) {
+            lines.append("过去14天日程：")
+            for day in sortedDays.prefix(14) {
                 guard let dayEvents = dayGroups[day] else { continue }
                 let dayLabel: String
                 if cal.isDateInYesterday(day) {
@@ -1163,7 +1163,7 @@ final class GPTContextBuilder {
         dateFmt.locale = Locale(identifier: "zh_CN")
         let timeFmt = DateFormatter(); timeFmt.dateFormat = "HH:mm"
 
-        var lines = ["[位置记录（近7天）]"]
+        var lines = ["[位置记录（近14天）]"]
 
         // City/district aggregation so GPT can answer "去了几个城市？" or "在哪个区？"
         var cityCounts: [String: Int] = [:]
@@ -1189,7 +1189,7 @@ final class GPTContextBuilder {
         }
         let sortedDays = dayGroups.keys.sorted(by: >)  // newest first
 
-        for day in sortedDays.prefix(7) {
+        for day in sortedDays.prefix(14) {
             guard let dayRecords = dayGroups[day] else { continue }
             let dayLabel: String
             if cal.isDateInToday(day) {
@@ -1260,7 +1260,7 @@ final class GPTContextBuilder {
         let geoTagged = photos.filter { $0.hasLocation }.count
         let favorites = photos.filter { $0.isFavorite }.count
         let screenshots = photos.filter { $0.isScreenshot }.count
-        var lines = ["[照片统计（近7天）]"]
+        var lines = ["[照片统计（近14天）]"]
         lines.append("共 \(total - videos) 张照片，\(videos) 个视频")
         if geoTagged > 0 { lines.append("含地理位置：\(geoTagged) 张") }
         if favorites > 0 { lines.append("已收藏：\(favorites) 张") }
@@ -1289,7 +1289,7 @@ final class GPTContextBuilder {
             let weekdayFmt = DateFormatter(); weekdayFmt.locale = Locale(identifier: "zh_CN"); weekdayFmt.dateFormat = "EEE"
 
             lines.append("每日拍摄：")
-            for day in sortedDays.prefix(7) {
+            for day in sortedDays.prefix(14) {
                 guard let dayPhotos = dayGroups[day] else { continue }
                 let dayLabel: String
                 if cal.isDateInToday(day) {

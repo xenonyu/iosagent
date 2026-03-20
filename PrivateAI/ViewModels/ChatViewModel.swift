@@ -140,34 +140,15 @@ final class ChatViewModel: ObservableObject {
             return
         }
 
-        // For unknown intents, try GPT API with full context, fall back to local UnknownSkill
-        let recentHistory = contextMemory.recentMessages
-        engine.buildGPTPrompt(userQuery: text, conversationHistory: recentHistory) { [weak self] prompt in
+        // Unknown intents are handled 100% locally by UnknownSkill.
+        // No network calls — all data stays on device.
+        engine.respond(to: text, preResolvedIntent: .unknown) { [weak self] response in
             guard let self else { return }
-            Task {
-                do {
-                    let gptReply = try await RawGPTService.shared.ask(prompt)
-                    await MainActor.run {
-                        let aiMsg = ChatMessage(content: gptReply, isUser: false)
-                        self.append(message: aiMsg)
-                        self.persist(message: aiMsg)
-                        self.contextMemory.add(message: aiMsg)
-                        self.isThinking = false
-                    }
-                } catch {
-                    // GPT unavailable — fall back to local UnknownSkill for a graceful response
-                    await MainActor.run {
-                        self.engine.respond(to: text, preResolvedIntent: .unknown) { [weak self] localResponse in
-                            guard let self else { return }
-                            let aiMsg = ChatMessage(content: localResponse, isUser: false)
-                            self.append(message: aiMsg)
-                            self.persist(message: aiMsg)
-                            self.contextMemory.add(message: aiMsg)
-                            self.isThinking = false
-                        }
-                    }
-                }
-            }
+            let aiMsg = ChatMessage(content: response, isUser: false)
+            self.append(message: aiMsg)
+            self.persist(message: aiMsg)
+            self.contextMemory.add(message: aiMsg)
+            self.isThinking = false
         }
     }
 

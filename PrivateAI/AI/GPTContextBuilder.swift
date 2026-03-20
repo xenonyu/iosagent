@@ -411,119 +411,138 @@ final class GPTContextBuilder {
             parts.append(specialDates)
         }
 
-        // HEALTH REFERENCE BENCHMARKS — age-adjusted so GPT can give personalized insights
-        // e.g. "离推荐的8000步还差1500步" instead of just "你走了6500步"
-        let benchmarks = healthBenchmarks()
-        if !benchmarks.isEmpty {
-            parts.append(benchmarks)
-        }
+        // TOPIC-BASED SECTION GATING — conditionally include data sections based on
+        // the detected query topic. For specific queries (e.g. "今天走了多少步" → health
+        // only), skip unrelated heavy sections (calendar 14-day history, location records,
+        // photo stats) to reduce token waste by 40-60% and eliminate noise that causes GPT
+        // to over-reference irrelevant data. For general/ambiguous queries, include
+        // everything (safe fallback, same as previous behavior).
+        //
+        // This is the prompt-level counterpart to buildRelevanceHint: the hint tells GPT
+        // what to focus on, but the data was still present as distraction. Now irrelevant
+        // data is actually removed, so GPT can't reference it even if confused.
+        let previousUserQueryForTopics = conversationHistory
+            .filter { $0.isUser && $0.content != userQuery }
+            .last?.content
+        let queryTopics = detectQueryTopics(userQuery, previousUserQuery: previousUserQueryForTopics)
+        let includeAllSections = queryTopics.contains(.general) || queryTopics == Set(QueryTopic.allCases)
 
-        // TODAY'S HEALTH
-        parts.append(healthSection(todayHealth, weeklyHealth: weeklyHealth, hourOfDay: hourOfDay, healthTimedOut: healthTimedOut))
+        // HEALTH sections — benchmarks, today, yesterday, trend, sleep, workout, insights
+        if includeAllSections || queryTopics.contains(.health) {
+            // HEALTH REFERENCE BENCHMARKS — age-adjusted so GPT can give personalized insights
+            // e.g. "离推荐的8000步还差1500步" instead of just "你走了6500步"
+            let benchmarks = healthBenchmarks()
+            if !benchmarks.isEmpty {
+                parts.append(benchmarks)
+            }
 
-        // When today's data is empty (e.g. early morning), surface yesterday's key
-        // metrics so GPT can still answer "how did I do yesterday?" or "how was my sleep?"
-        // Also always surface yesterday's data during late-night hours (0-5 AM) even if
-        // today has some data (e.g. sleep tracking), because at 2 AM the user's "today"
-        // almost certainly refers to the previous calendar day.
-        let shouldShowYesterday = (!todayHasHealth && hourOfDay < 10) || hourOfDay < 5
-        if shouldShowYesterday {
-            if let yesterday = weeklyHealth.first(where: {
-                Calendar.current.isDateInYesterday($0.date) &&
-                ($0.steps > 0 || $0.sleepHours > 0 || $0.exerciseMinutes > 0)
-            }) {
-                parts.append(yesterdayHighlight(yesterday))
+            // TODAY'S HEALTH
+            parts.append(healthSection(todayHealth, weeklyHealth: weeklyHealth, hourOfDay: hourOfDay, healthTimedOut: healthTimedOut))
+
+            // When today's data is empty (e.g. early morning), surface yesterday's key
+            // metrics so GPT can still answer "how did I do yesterday?" or "how was my sleep?"
+            // Also always surface yesterday's data during late-night hours (0-5 AM) even if
+            // today has some data (e.g. sleep tracking), because at 2 AM the user's "today"
+            // almost certainly refers to the previous calendar day.
+            let shouldShowYesterday = (!todayHasHealth && hourOfDay < 10) || hourOfDay < 5
+            if shouldShowYesterday {
+                if let yesterday = weeklyHealth.first(where: {
+                    Calendar.current.isDateInYesterday($0.date) &&
+                    ($0.steps > 0 || $0.sleepHours > 0 || $0.exerciseMinutes > 0)
+                }) {
+                    parts.append(yesterdayHighlight(yesterday))
+                }
+            }
+
+            // 14-DAY HEALTH TREND (full per-day table for all available data)
+            if weeklyHealth.count >= 3 {
+                parts.append(trendSection(weeklyHealth))
+            }
+
+            // 14-DAY SLEEP QUALITY (per-day phase breakdown for sleep analysis)
+            // Uses all 14 days so GPT can answer "上周睡得怎么样" with per-night details,
+            // not just the aggregate from buildPerWeekStats.
+            let sleepAnalysis = weeklySleepSection(weeklyHealth)
+            if !sleepAnalysis.isEmpty {
+                parts.append(sleepAnalysis)
+            }
+
+            // 14-DAY WORKOUT HISTORY (individual sessions GPT can reference)
+            // Uses all 14 days so GPT can answer "上周做了什么运动" with session details.
+            let workoutHistory = weeklyWorkoutSection(weeklyHealth)
+            if !workoutHistory.isEmpty {
+                parts.append(workoutHistory)
+            }
+
+            // HEALTH INSIGHT ALERTS — pre-computed anomalies and noteworthy patterns.
+            if weeklyHealth.count >= 3 {
+                let insights = healthInsightAlerts(weeklyHealth)
+                if !insights.isEmpty {
+                    parts.append(insights)
+                }
+            }
+
+            // CROSS-DOMAIN INSIGHTS — correlations between exercise, sleep, calendar, and activity.
+            if weeklyHealth.count >= 5 {
+                let allPastEvents = pastEvents + todayEvents
+                let crossInsights = crossDomainInsights(
+                    healthSummaries: weeklyHealth,
+                    calendarEvents: allPastEvents
+                )
+                if !crossInsights.isEmpty {
+                    parts.append(crossInsights)
+                }
             }
         }
 
-        // 14-DAY HEALTH TREND (full per-day table for all available data)
-        if weeklyHealth.count >= 3 {
-            parts.append(trendSection(weeklyHealth))
-        }
-
-        // 14-DAY SLEEP QUALITY (per-day phase breakdown for sleep analysis)
-        // Uses all 14 days so GPT can answer "上周睡得怎么样" with per-night details,
-        // not just the aggregate from buildPerWeekStats.
-        let sleepAnalysis = weeklySleepSection(weeklyHealth)
-        if !sleepAnalysis.isEmpty {
-            parts.append(sleepAnalysis)
-        }
-
-        // 14-DAY WORKOUT HISTORY (individual sessions GPT can reference)
-        // Uses all 14 days so GPT can answer "上周做了什么运动" with session details.
-        let workoutHistory = weeklyWorkoutSection(weeklyHealth)
-        if !workoutHistory.isEmpty {
-            parts.append(workoutHistory)
-        }
-
-        // HEALTH INSIGHT ALERTS — pre-computed anomalies and noteworthy patterns.
-        // GPT struggles to detect patterns across 14 rows of dense tabular data
-        // (e.g. missing that sleep has declined for 4 consecutive nights, or that
-        // resting HR spiked 15bpm above baseline). These alerts give GPT explicit
-        // attention cues so it can proactively surface insights the user cares about.
-        if weeklyHealth.count >= 3 {
-            let insights = healthInsightAlerts(weeklyHealth)
-            if !insights.isEmpty {
-                parts.append(insights)
+        // CALENDAR — only include when topic-relevant AND (authorized or has data).
+        if includeAllSections || queryTopics.contains(.calendar) {
+            let hasCalendarData = !todayEvents.isEmpty || !upcomingEvents.isEmpty || !pastEvents.isEmpty
+            if hasCalendarData || self.calendarService.isAuthorized {
+                parts.append(calendarSection(todayEvents: todayEvents, upcoming: upcomingEvents, past: pastEvents))
             }
-        }
-
-        // CROSS-DOMAIN INSIGHTS — correlations between exercise, sleep, calendar, and activity.
-        // GPT cannot compute cross-table joins across separate data sections (health trend table,
-        // calendar listing, location records). Pre-computing correlations like "exercise days →
-        // better sleep" or "busy meeting days → less exercise" lets GPT give genuinely insightful
-        // answers to "why" questions (e.g. "为什么最近睡不好？" → "你不运动的日子平均少睡1h").
-        if weeklyHealth.count >= 5 {
-            let allPastEvents = pastEvents + todayEvents
-            let crossInsights = crossDomainInsights(
-                healthSummaries: weeklyHealth,
-                calendarEvents: allPastEvents
-            )
-            if !crossInsights.isEmpty {
-                parts.append(crossInsights)
-            }
-        }
-
-        // CALENDAR — only include when authorized or has data.
-        // When not authorized, all event arrays are empty and calendarSection would output
-        // "今天：无日程", which contradicts the SYSTEM prompt's "日历日程（未授权…）" message.
-        // This misleads GPT into saying "you have no events" instead of guiding the user
-        // to grant calendar permission. Location/photos/lifeEvents are already gated.
-        let hasCalendarData = !todayEvents.isEmpty || !upcomingEvents.isEmpty || !pastEvents.isEmpty
-        if hasCalendarData || self.calendarService.isAuthorized {
-            parts.append(calendarSection(todayEvents: todayEvents, upcoming: upcomingEvents, past: pastEvents))
         }
 
         // LOCATION — include current live position when available.
-        // CDLocationRecord only saves on 200m+ moves, so the user's latest
-        // position may not be persisted yet. Adding CLLocation gives GPT
-        // the ability to answer "我现在在哪？" accurately.
-        if !locationRecords.isEmpty || self.locationService.currentLocation != nil {
-            parts.append(locationSection(locationRecords,
-                                         currentLocation: self.locationService.currentLocation,
-                                         currentPlaceName: self.locationService.currentPlaceName,
-                                         currentAddress: self.locationService.currentAddress))
+        if includeAllSections || queryTopics.contains(.location) {
+            if !locationRecords.isEmpty || self.locationService.currentLocation != nil {
+                parts.append(locationSection(locationRecords,
+                                             currentLocation: self.locationService.currentLocation,
+                                             currentPlaceName: self.locationService.currentPlaceName,
+                                             currentAddress: self.locationService.currentAddress))
+            }
         }
 
-        // PHOTO STATS
-        if !recentPhotos.isEmpty {
-            parts.append(photoSection(recentPhotos, locationRecords: locationRecords))
-        }
+        // PHOTO sections — stats and search results
+        if includeAllSections || queryTopics.contains(.photos) {
+            if !recentPhotos.isEmpty {
+                parts.append(photoSection(recentPhotos, locationRecords: locationRecords))
+            }
 
-        // PHOTO SEARCH RESULTS (when user asks about specific photos)
-        if !photoSearchResults.isEmpty {
-            parts.append(photoSearchSection(photoSearchResults, query: photoSearchQuery))
-        } else if let pq = photoSearchQuery, (!pq.keywords.isEmpty || pq.location != nil) {
-            // Search was attempted but found no results — tell GPT so it can inform the user
-            var criteria: [String] = []
-            if !pq.keywords.isEmpty { criteria.append("关键词：\(pq.keywords.joined(separator: "、"))") }
-            if !pq.locationName.isEmpty { criteria.append("地点：\(pq.locationName)") }
-            parts.append("[照片搜索结果]\n搜索条件：\(criteria.joined(separator: "，"))\n未找到匹配的照片。可能是照片索引尚未建立，或相册中没有符合条件的照片。")
+            // PHOTO SEARCH RESULTS (when user asks about specific photos)
+            if !photoSearchResults.isEmpty {
+                parts.append(photoSearchSection(photoSearchResults, query: photoSearchQuery))
+            } else if let pq = photoSearchQuery, (!pq.keywords.isEmpty || pq.location != nil) {
+                // Search was attempted but found no results — tell GPT so it can inform the user
+                var criteria: [String] = []
+                if !pq.keywords.isEmpty { criteria.append("关键词：\(pq.keywords.joined(separator: "、"))") }
+                if !pq.locationName.isEmpty { criteria.append("地点：\(pq.locationName)") }
+                parts.append("[照片搜索结果]\n搜索条件：\(criteria.joined(separator: "，"))\n未找到匹配的照片。可能是照片索引尚未建立，或相册中没有符合条件的照片。")
+            }
+        } else {
+            // Even when photos topic is not detected, still include photo search results
+            // if a search was explicitly triggered — the user's query contained photo
+            // keywords that were caught by searchPhotosIfNeeded but not by detectQueryTopics.
+            if !photoSearchResults.isEmpty {
+                parts.append(photoSearchSection(photoSearchResults, query: photoSearchQuery))
+            }
         }
 
         // LIFE EVENTS
-        if !lifeEvents.isEmpty {
-            parts.append(lifeEventsSection(lifeEvents))
+        if includeAllSections || queryTopics.contains(.lifeEvents) {
+            if !lifeEvents.isEmpty {
+                parts.append(lifeEventsSection(lifeEvents))
+            }
         }
 
         // CONVERSATION HISTORY (truncated to save tokens)

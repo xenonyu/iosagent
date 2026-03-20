@@ -18,6 +18,7 @@ final class HealthService: ObservableObject {
         let identifiers: [HKQuantityTypeIdentifier] = [
             .stepCount,
             .activeEnergyBurned,
+            .basalEnergyBurned,
             .appleExerciseTime,
             .heartRate,
             .restingHeartRate,

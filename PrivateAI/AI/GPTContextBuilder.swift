@@ -992,10 +992,68 @@ final class GPTContextBuilder {
 
         // --- Ambiguous expressions ---
 
-        // "最近" / "前几天" / "这几天" — common ambiguous terms
-        let recentWords = ["最近", "近来", "近期", "recently", "lately"]
-        if recentWords.contains(where: { lower.contains($0) }) {
-            hints.append("「最近」→ 优先参考近3~7天数据，结合上下文判断具体范围")
+        // "最近N天" / "近N天" — very common Chinese temporal patterns.
+        // "最近3天睡得怎么样" or "近7天运动了几次" need exact date resolution,
+        // otherwise GPT gets only a vague "近3~7天" hint and has to guess
+        // which trend-table rows to aggregate — often miscounting.
+        // Must be checked BEFORE the bare "最近" handler below, so "最近3天"
+        // gets a precise hint instead of the generic fallback.
+        var recentNDaysHandled = false
+        let recentNDayPatterns: [(pattern: String, days: Int)] = [
+            // Chinese numeral variants
+            ("最近两天", 2), ("最近三天", 3), ("最近四天", 4), ("最近五天", 5),
+            ("最近六天", 6), ("最近七天", 7), ("最近十天", 10),
+            ("近两天", 2), ("近三天", 3), ("近四天", 4), ("近五天", 5),
+            ("近六天", 6), ("近七天", 7), ("近十天", 10),
+            // Duration-based variants
+            ("最近一周", 7), ("最近两周", 14), ("近一周", 7), ("近两周", 14),
+            ("近一个月", 30), ("最近一个月", 30),
+            // English
+            ("last few days", 3), ("recent days", 5),
+            ("last 3 days", 3), ("last 5 days", 5), ("last 7 days", 7)
+        ]
+        for (pattern, requestedDays) in recentNDayPatterns {
+            guard lower.contains(pattern) else { continue }
+            recentNDaysHandled = true
+            if requestedDays <= 14 {
+                let rangeStart = cal.date(byAdding: .day, value: -(requestedDays - 1), to: cal.startOfDay(for: now))!
+                hints.append("「\(pattern)」= \(dateFmt.string(from: rangeStart))~\(dateFmt.string(from: now))（\(requestedDays)天，数据完整覆盖）→ 对应趋势表中这\(requestedDays)天的数据行")
+            } else {
+                let dataStart = cal.date(byAdding: .day, value: -13, to: cal.startOfDay(for: now))!
+                hints.append("「\(pattern)」= 用户期望\(requestedDays)天数据，⚠️ 但我们只有近14天（\(dateFmt.string(from: dataStart))~\(dateFmt.string(from: now))）。请说明只有14天数据，基于已有数据回答。")
+            }
+            break
+        }
+        // Also handle Arabic numeral patterns: "最近3天", "近5天", "最近10天" etc.
+        if !recentNDaysHandled {
+            if let range = lower.range(of: #"(?:最近|近)(\d+)天"#, options: .regularExpression) {
+                let matched = String(lower[range])
+                // Extract the number: remove "最近"/"近" prefix and "天" suffix
+                let numStr = matched.replacingOccurrences(of: "最近", with: "")
+                    .replacingOccurrences(of: "近", with: "")
+                    .replacingOccurrences(of: "天", with: "")
+                if let requestedDays = Int(numStr), requestedDays >= 2 && requestedDays <= 30 {
+                    recentNDaysHandled = true
+                    if requestedDays <= 14 {
+                        let rangeStart = cal.date(byAdding: .day, value: -(requestedDays - 1), to: cal.startOfDay(for: now))!
+                        hints.append("「\(matched)」= \(dateFmt.string(from: rangeStart))~\(dateFmt.string(from: now))（\(requestedDays)天，数据完整覆盖）→ 对应趋势表中这\(requestedDays)天的数据行")
+                    } else {
+                        let dataStart = cal.date(byAdding: .day, value: -13, to: cal.startOfDay(for: now))!
+                        hints.append("「\(matched)」= 用户期望\(requestedDays)天数据，⚠️ 但我们只有近14天（\(dateFmt.string(from: dataStart))~\(dateFmt.string(from: now))）。请说明只有14天数据，基于已有数据回答。")
+                    }
+                }
+            }
+        }
+
+        // "最近" / "前几天" / "这几天" — bare ambiguous terms (no specific N)
+        // Only fire the generic hint when "最近N天" was NOT already handled above,
+        // to avoid conflicting/redundant hints (e.g. "最近3天" getting both
+        // the precise "3月18日~3月21日" hint AND the vague "近3~7天" hint).
+        if !recentNDaysHandled {
+            let recentWords = ["最近", "近来", "近期", "recently", "lately"]
+            if recentWords.contains(where: { lower.contains($0) }) {
+                hints.append("「最近」→ 优先参考近3~7天数据，结合上下文判断具体范围")
+            }
         }
         let fewDaysWords = ["前几天", "前些天", "这几天", "这两天"]
         if fewDaysWords.contains(where: { lower.contains($0) }) {

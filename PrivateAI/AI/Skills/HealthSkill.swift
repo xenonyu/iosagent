@@ -1349,7 +1349,7 @@ struct HealthSkill: ClawSkill {
 
             switch metric {
             case "sleep":
-                self.respondSleep(summaries: withData, range: range, context: context, completion: completion)
+                self.respondSleep(summaries: withData, allSummaries: allSummaries, range: range, context: context, completion: completion)
             case "heartRate":
                 self.respondHeartRate(summaries: withData, allSummaries: allSummaries, range: range, completion: completion)
             case "hrv":
@@ -1377,7 +1377,7 @@ struct HealthSkill: ClawSkill {
         }
     }
 
-    private func respondSleep(summaries: [HealthSummary], range: QueryTimeRange, context: SkillContext, completion: @escaping (String) -> Void) {
+    private func respondSleep(summaries: [HealthSummary], allSummaries: [HealthSummary] = [], range: QueryTimeRange, context: SkillContext, completion: @escaping (String) -> Void) {
         let sleepDays = summaries.filter { $0.sleepHours > 0 }
         guard !sleepDays.isEmpty else {
             // When today has no sleep data, proactively show last night's sleep
@@ -1445,7 +1445,80 @@ struct HealthSkill: ClawSkill {
         lines.append("")
 
         lines.append("💤 平均睡眠：\(String(format: "%.1f", avg)) 小时")
-        lines.append("📊 波动范围：\(String(format: "%.1f", minSleep.sleepHours))~\(String(format: "%.1f", maxSleep.sleepHours)) 小时")
+
+        // --- Personal baseline comparison for single-day/short-range queries ---
+        // When asking "昨晚睡得怎么样", show how it compares to the user's recent pattern.
+        // This transforms a raw number into a meaningful personal insight.
+        let isSingleDay = (range == .today || range == .yesterday || range == .dayBeforeYesterday)
+        if isSingleDay, let todaySleep = sleepDays.first {
+            let interval = range.interval
+            let baseline = allSummaries.filter { $0.sleepHours > 0 && !interval.contains($0.date) }
+            if !baseline.isEmpty {
+                let baselineAvg = baseline.reduce(0) { $0 + $1.sleepHours } / Double(baseline.count)
+                let diff = todaySleep.sleepHours - baselineAvg
+                let absDiff = abs(diff)
+
+                if absDiff >= 0.3 {
+                    if diff > 0 {
+                        lines.append("📈 比你近期均值（\(String(format: "%.1f", baselineAvg))h）多睡了 \(String(format: "%.1f", absDiff)) 小时")
+                    } else {
+                        lines.append("📉 比你近期均值（\(String(format: "%.1f", baselineAvg))h）少睡了 \(String(format: "%.1f", absDiff)) 小时")
+                    }
+                } else {
+                    lines.append("📊 与你近期均值（\(String(format: "%.1f", baselineAvg))h）持平")
+                }
+
+                // Phase comparison: deep sleep vs baseline
+                let baselineWithPhases = baseline.filter { $0.hasSleepPhases }
+                if todaySleep.hasSleepPhases && !baselineWithPhases.isEmpty {
+                    let baselineDeep = baselineWithPhases.reduce(0) { $0 + $1.sleepDeepHours } / Double(baselineWithPhases.count)
+                    let deepDiff = todaySleep.sleepDeepHours - baselineDeep
+                    if abs(deepDiff) >= 0.2 {
+                        if deepDiff > 0 {
+                            lines.append("   🟣 深睡眠比平时多 \(String(format: "%.1f", deepDiff))h，身体修复更充分")
+                        } else {
+                            lines.append("   🟣 深睡眠比平时少 \(String(format: "%.1f", -deepDiff))h，修复质量偏低")
+                        }
+                    }
+
+                    let baselineREM = baselineWithPhases.reduce(0) { $0 + $1.sleepREMHours } / Double(baselineWithPhases.count)
+                    let remDiff = todaySleep.sleepREMHours - baselineREM
+                    if abs(remDiff) >= 0.2 {
+                        if remDiff > 0 {
+                            lines.append("   🔵 REM 比平时多 \(String(format: "%.1f", remDiff))h，记忆巩固更好")
+                        } else {
+                            lines.append("   🔵 REM 比平时少 \(String(format: "%.1f", -remDiff))h，可能影响记忆和情绪")
+                        }
+                    }
+                }
+
+                // Bedtime comparison: was it earlier or later than usual?
+                if let todayOnset = todaySleep.sleepOnset {
+                    let onsetBaseline = baseline.compactMap { $0.sleepOnset }
+                    if !onsetBaseline.isEmpty {
+                        let cal = Calendar.current
+                        // Normalize onset to minutes-since-noon for proper averaging across midnight
+                        func onsetMinutes(_ date: Date) -> Int {
+                            let h = cal.component(.hour, from: date)
+                            let m = cal.component(.minute, from: date)
+                            return h < 12 ? (h + 24) * 60 + m : h * 60 + m
+                        }
+                        let todayMin = onsetMinutes(todayOnset)
+                        let baselineMin = onsetBaseline.reduce(0) { $0 + onsetMinutes($1) } / onsetBaseline.count
+                        let onsetDiff = todayMin - baselineMin // positive = later
+                        if abs(onsetDiff) >= 20 {
+                            if onsetDiff > 0 {
+                                lines.append("   🕐 入睡比平时晚了 \(onsetDiff) 分钟")
+                            } else {
+                                lines.append("   🕐 入睡比平时早了 \(-onsetDiff) 分钟 👍")
+                            }
+                        }
+                    }
+                }
+            }
+        } else if sleepDays.count > 1 {
+            lines.append("📊 波动范围：\(String(format: "%.1f", minSleep.sleepHours))~\(String(format: "%.1f", maxSleep.sleepHours)) 小时")
+        }
 
         if sleepDays.count > 1 {
             let fmt = DateFormatter()

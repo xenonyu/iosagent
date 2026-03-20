@@ -263,8 +263,18 @@ struct SkillRouter {
         }
 
         // --- Greeting / Conversational ---
-        // Only match short utterances to avoid false positives on longer queries
+        // If the message starts with a greeting prefix but has substantive content after,
+        // strip the prefix and parse the real intent (e.g. "你好，帮我查睡眠" → health query).
+        // Only route to greeting when the message IS purely a greeting.
         if let greetingType = parseGreeting(trimmed) {
+            let stripped = stripGreetingPrefix(trimmed)
+            if let stripped = stripped, !stripped.isEmpty {
+                // Recursive parse on the substantive part
+                let realIntent = parse(stripped)
+                if !realIntent.isUnknown {
+                    return realIntent
+                }
+            }
             return .greeting(type: greetingType)
         }
 
@@ -2535,6 +2545,34 @@ struct SkillRouter {
                                    "早上好", "下午好", "晚上好", "早安", "午安",
                                    "good morning", "good afternoon", "good evening"]) {
             return .hello
+        }
+        return nil
+    }
+
+    /// Strips a leading greeting prefix (e.g. "你好，", "嗨 ", "hello, ") and returns the
+    /// remaining text, or nil if the entire message is the greeting itself.
+    private static func stripGreetingPrefix(_ text: String) -> String? {
+        // Ordered longest-first to avoid partial matches (e.g. "早上好" before "早安")
+        let greetingPrefixes = [
+            "good morning", "good afternoon", "good evening",
+            "早上好", "下午好", "晚上好",
+            "你好", "嗨", "哈喽", "hello", "hey", "hi", "嘿", "早安", "午安",
+            "在吗", "在不在",
+        ]
+        let lower = text.lowercased()
+        for prefix in greetingPrefixes {
+            guard lower.hasPrefix(prefix) else { continue }
+            // Drop the prefix and any trailing punctuation/whitespace separator
+            var remainder = String(text.dropFirst(prefix.count))
+            // Strip common separators: "，", ",", "!", "！", " ", "~", "、", "。", "."
+            while let first = remainder.unicodeScalars.first,
+                  CharacterSet.whitespacesAndNewlines.contains(first) ||
+                  "，,!！~、。.：:".unicodeScalars.contains(first) {
+                remainder = String(remainder.dropFirst())
+            }
+            // If nothing meaningful remains, the message was just a greeting
+            guard !remainder.isEmpty else { return nil }
+            return remainder
         }
         return nil
     }

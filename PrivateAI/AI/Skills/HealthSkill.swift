@@ -1242,6 +1242,8 @@ struct HealthSkill: ClawSkill {
                 self.respondSleep(summaries: withData, range: range, context: context, completion: completion)
             case "heartRate":
                 self.respondHeartRate(summaries: withData, allSummaries: allSummaries, range: range, completion: completion)
+            case "hrv":
+                self.respondHRV(summaries: withData, allSummaries: allSummaries, range: range, completion: completion)
             case "steps":
                 self.respondSteps(summaries: withData, allSummaries: allSummaries, range: range, completion: completion)
             case "flights":
@@ -1914,7 +1916,145 @@ struct HealthSkill: ClawSkill {
             }
         }
 
+        // --- Tonight's Sleep Recommendation (forward-looking calendar cross-data) ---
+        // The ultimate iosclaw insight: connect past sleep data with tomorrow's schedule
+        // to give a concrete, actionable bedtime recommendation.
+        if range == .today || range == .yesterday || range == .lastWeek || range == .thisWeek {
+            let tonightRec = buildTonightSleepRecommendation(
+                sleepDays: sleepDays,
+                context: context
+            )
+            if !tonightRec.isEmpty {
+                lines.append("")
+                lines.append(contentsOf: tonightRec)
+            }
+        }
+
         completion(lines.joined(separator: "\n"))
+    }
+
+    // MARK: - Tonight's Sleep Recommendation
+
+    /// Builds a forward-looking bedtime recommendation by cross-referencing
+    /// the user's personal sleep patterns with tomorrow's calendar events.
+    /// Answers: "What time should I sleep tonight given my schedule tomorrow?"
+    private func buildTonightSleepRecommendation(
+        sleepDays: [HealthSummary],
+        context: SkillContext
+    ) -> [String] {
+        guard context.calendarService.isAuthorized else { return [] }
+
+        let cal = Calendar.current
+        let now = Date()
+
+        // Only show this in the evening or when today's sleep is being reviewed
+        let currentHour = cal.component(.hour, from: now)
+
+        // Fetch tomorrow's events
+        let tomorrowStart = cal.date(byAdding: .day, value: 1, to: cal.startOfDay(for: now))!
+        let tomorrowEnd = cal.date(byAdding: .day, value: 1, to: tomorrowStart)!
+        let tomorrowEvents = context.calendarService.fetchEvents(from: tomorrowStart, to: tomorrowEnd)
+        let timedEvents = tomorrowEvents.filter { !$0.isAllDay }
+
+        // Find the first timed event tomorrow
+        let sortedEvents = timedEvents.sorted { $0.startDate < $1.startDate }
+        let firstEvent = sortedEvents.first
+
+        // Calculate personal sleep needs from recent data
+        let targetSleep: Double
+        if sleepDays.count >= 3 {
+            let avgSleep = sleepDays.reduce(0) { $0 + $1.sleepHours } / Double(sleepDays.count)
+            // Use personal average, clamped to 6.5-9h range
+            targetSleep = min(max(avgSleep, 6.5), 9.0)
+        } else {
+            targetSleep = 7.5 // default recommendation
+        }
+
+        // Calculate the user's typical wake-before-first-meeting buffer
+        // (how much time they usually have between waking and their first meeting)
+        let wakeBuffer: Double = 45 // minutes — reasonable default for getting ready
+
+        var lines: [String] = []
+        let timeFmt = DateFormatter()
+        timeFmt.dateFormat = "HH:mm"
+
+        if let first = firstEvent {
+            let firstMeetingHour = cal.component(.hour, from: first.startDate)
+            let firstMeetingMin = cal.component(.minute, from: first.startDate)
+
+            // Calculate recommended wake time: first meeting - buffer
+            let wakeMinutes = Double(firstMeetingHour * 60 + firstMeetingMin) - wakeBuffer
+            guard wakeMinutes > 0 else { return [] }
+
+            // Calculate recommended bedtime: wake time - target sleep hours
+            let bedtimeMinutes = wakeMinutes - targetSleep * 60
+            guard bedtimeMinutes > 0 else { return [] }
+
+            // Only show if the recommended bedtime is in a reasonable window (20:00 - 03:00)
+            let normalizedBedtime = bedtimeMinutes.truncatingRemainder(dividingBy: 1440)
+            guard normalizedBedtime >= 20 * 60 || normalizedBedtime < 3 * 60 else { return [] }
+
+            let bedH = Int(normalizedBedtime) / 60
+            let bedM = Int(normalizedBedtime) % 60
+            let wakeH = Int(wakeMinutes) / 60
+            let wakeM = Int(wakeMinutes) % 60
+
+            lines.append("🌙 今晚睡眠建议")
+
+            // Schedule context
+            let meetingCount = timedEvents.count
+            let totalMeetingMin = timedEvents.reduce(0.0) { $0 + $1.duration } / 60.0
+            let isHeavyDay = meetingCount >= 4 || totalMeetingMin >= 240
+
+            if isHeavyDay {
+                lines.append("   📅 明天日程紧凑：\(meetingCount) 个安排，\(timeFmt.string(from: first.startDate)) 开始")
+                lines.append("   💤 建议 \(String(format: "%02d:%02d", bedH, bedM)) 前入睡 → \(String(format: "%02d:%02d", wakeH, wakeM)) 起床")
+                lines.append("   争取 \(String(format: "%.1f", targetSleep))h 以上睡眠，忙碌日需要更充沛的精力。")
+            } else if meetingCount == 0 {
+                // No timed events but might have all-day events
+                if !tomorrowEvents.isEmpty {
+                    lines.append("   📅 明天只有全天事件，没有定时安排")
+                    lines.append("   💤 可以按自己的节奏安排作息，但规律入睡有助于保持生物钟稳定。")
+                }
+                // Don't show bedtime recommendation for fully free day
+                return lines.isEmpty ? [] : lines
+            } else {
+                lines.append("   📅 明天有 \(meetingCount) 个安排，最早 \(timeFmt.string(from: first.startDate))「\(first.title)」")
+                lines.append("   💤 建议 \(String(format: "%02d:%02d", bedH, bedM)) 前入睡 → \(String(format: "%02d:%02d", wakeH, wakeM)) 起床")
+            }
+
+            // Recent sleep debt warning: if recent sleep is consistently below target
+            if sleepDays.count >= 3 {
+                let recentAvg = sleepDays.prefix(3).reduce(0) { $0 + $1.sleepHours } / Double(min(sleepDays.count, 3))
+                if recentAvg < 6.5 {
+                    lines.append("   ⚠️ 最近几天均睡不足 6.5h，今晚尤其需要早点休息。")
+                }
+            }
+
+            // If it's already late and we can calculate the gap
+            if currentHour >= 21 {
+                let nowMinutes = Double(currentHour * 60 + cal.component(.minute, from: now))
+                let minutesUntilBed = normalizedBedtime - nowMinutes
+                if minutesUntilBed > 0 && minutesUntilBed <= 120 {
+                    lines.append("   ⏰ 距建议入睡时间还有 \(Int(minutesUntilBed)) 分钟，开始准备放松吧。")
+                } else if minutesUntilBed <= 0 && minutesUntilBed > -60 {
+                    lines.append("   ⏰ 已经超过建议入睡时间了，尽快休息吧！")
+                }
+            }
+        } else if tomorrowEvents.isEmpty {
+            // No events at all tomorrow — encourage maintaining rhythm
+            if sleepDays.count >= 3 {
+                let avgSleep = sleepDays.reduce(0) { $0 + $1.sleepHours } / Double(sleepDays.count)
+                if avgSleep < 7 {
+                    lines.append("🌙 今晚睡眠建议")
+                    lines.append("   📅 明天暂无安排，适合补觉。")
+                    lines.append("   💤 最近均睡 \(String(format: "%.1f", avgSleep))h，今晚争取达到 7h 以上。")
+                    lines.append("   💡 但起床时间尽量不要比平时晚超过 1 小时，以免打乱生物钟。")
+                }
+            }
+        }
+
+        return lines
     }
 
     // MARK: - Sleep Quality Score
@@ -3991,6 +4131,308 @@ struct HealthSkill: ClawSkill {
         if score >= 55 { return ("🟡", "恢复中等") }
         if score >= 40 { return ("🟠", "恢复不足") }
         return ("🔴", "需要休息")
+    }
+
+    // MARK: - HRV (Heart Rate Variability) — Dedicated Analysis
+
+    private func respondHRV(summaries: [HealthSummary], allSummaries: [HealthSummary] = [], range: QueryTimeRange, completion: @escaping (String) -> Void) {
+        let hrvDays = summaries.filter { $0.hrv > 0 }
+        guard !hrvDays.isEmpty else {
+            var lines: [String] = ["📳 \(range.label)暂无心率变异性（HRV）数据。\n"]
+            lines.append("HRV 是衡量自主神经系统平衡的关键指标，反映身体的压力与恢复状态。")
+            lines.append("")
+            lines.append("💡 如何获取 HRV 数据：")
+            lines.append("• 需要 Apple Watch（任意型号）")
+            lines.append("• 佩戴 Apple Watch 睡觉，系统会在夜间自动测量")
+            lines.append("• 也可以在「呼吸」App 中主动测量")
+            lines.append("")
+            lines.append("HRV 越高，通常说明身体恢复越充分、压力越低。")
+            completion(lines.joined(separator: "\n"))
+            return
+        }
+
+        var lines: [String] = ["📳 \(range.label)的心率变异性（HRV）分析\n"]
+
+        // --- Basic stats ---
+        let avgHRV = hrvDays.reduce(0) { $0 + $1.hrv } / Double(hrvDays.count)
+        let maxDay = hrvDays.max(by: { $0.hrv < $1.hrv })!
+        let minDay = hrvDays.min(by: { $0.hrv < $1.hrv })!
+        let latestDay = hrvDays.sorted { $0.date > $1.date }.first!
+
+        lines.append("💓 最新 HRV：\(Int(latestDay.hrv)) ms")
+        lines.append("📊 期间平均：\(Int(avgHRV)) ms")
+        if hrvDays.count > 1 {
+            lines.append("   波动范围：\(Int(minDay.hrv))~\(Int(maxDay.hrv)) ms")
+        }
+
+        // --- Interpretation based on personal baseline + absolute ---
+        lines.append("")
+        if avgHRV >= 60 {
+            lines.append("🏅 HRV 较高，自主神经调节能力出色，身体恢复状态非常好。")
+        } else if avgHRV >= 45 {
+            lines.append("✅ HRV 良好，身体处于健康的恢复状态。")
+        } else if avgHRV >= 30 {
+            lines.append("💡 HRV 中等。规律运动、充足睡眠和压力管理有助于提升。")
+        } else {
+            lines.append("⚠️ HRV 偏低，身体可能处于较大压力或疲劳状态，需要重视恢复。")
+        }
+
+        // --- Today vs personal baseline ---
+        if hrvDays.count >= 3 {
+            let baselineAvg = avgHRV
+            let todayHRV = latestDay.hrv
+            let pctDiff = ((todayHRV - baselineAvg) / baselineAvg) * 100
+
+            lines.append("")
+            if abs(pctDiff) < 10 {
+                lines.append("📍 最新 HRV 接近你的个人基线，身体节律稳定。")
+            } else if pctDiff >= 10 {
+                lines.append("📈 最新 HRV 高于你的基线 \(Int(pctDiff))%，恢复状态很好！")
+                if pctDiff >= 25 {
+                    lines.append("   这可能反映了近期良好的睡眠和适度的运动。")
+                }
+            } else {
+                lines.append("📉 最新 HRV 低于你的基线 \(Int(-pctDiff))%。")
+                if pctDiff <= -25 {
+                    lines.append("   显著偏低——可能与压力、睡眠不足、高强度训练或身体不适有关。")
+                    lines.append("   建议今天以轻松活动为主，优先保证休息。")
+                } else {
+                    lines.append("   轻度偏低，注意观察是否与近期压力或疲劳有关。")
+                }
+            }
+        }
+
+        // --- HRV stability (coefficient of variation) ---
+        if hrvDays.count >= 4 {
+            let cv = coefficient(of: hrvDays.map { $0.hrv })
+            lines.append("")
+            if cv < 0.15 {
+                lines.append("🔒 HRV 非常稳定（波动率 \(Int(cv * 100))%），自主神经节律规律。")
+            } else if cv < 0.25 {
+                lines.append("📊 HRV 波动正常（波动率 \(Int(cv * 100))%），属于健康范围。")
+            } else if cv < 0.4 {
+                lines.append("🎢 HRV 波动较大（波动率 \(Int(cv * 100))%），可能受睡眠质量或压力事件影响。")
+            } else {
+                lines.append("⚡ HRV 波动很大（波动率 \(Int(cv * 100))%），建议关注影响因素：睡眠、酒精、压力。")
+            }
+        }
+
+        // --- Day-by-day timeline ---
+        if hrvDays.count >= 3 {
+            let sorted = hrvDays.sorted { $0.date < $1.date }
+            let dayFmt = DateFormatter()
+            dayFmt.dateFormat = "M/d"
+            dayFmt.locale = Locale(identifier: "zh_CN")
+
+            lines.append("")
+            lines.append("📅 逐日 HRV 趋势")
+
+            // Sparkline visualization
+            let sparkChars: [Character] = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"]
+            let vals = sorted.map { $0.hrv }
+            let lo = vals.min()!
+            let hi = vals.max()!
+            let spread = max(hi - lo, 1)
+
+            let spark = sorted.map { day -> Character in
+                let normalized = (day.hrv - lo) / spread
+                let idx = min(Int(normalized * 7), 7)
+                return sparkChars[idx]
+            }
+            let startLabel = dayFmt.string(from: sorted.first!.date)
+            let endLabel = dayFmt.string(from: sorted.last!.date)
+            lines.append("   \(startLabel) \(String(spark)) \(endLabel)")
+            lines.append("   低 \(Int(lo)) ← → \(Int(hi)) ms 高")
+
+            // Mark best & worst days
+            let bestDay = sorted.max(by: { $0.hrv < $1.hrv })!
+            let worstDay = sorted.min(by: { $0.hrv < $1.hrv })!
+            if sorted.count >= 4 {
+                lines.append("   🟢 最佳：\(dayFmt.string(from: bestDay.date)) (\(Int(bestDay.hrv)) ms)")
+                lines.append("   🔴 最低：\(dayFmt.string(from: worstDay.date)) (\(Int(worstDay.hrv)) ms)")
+            }
+        }
+
+        // --- Trend analysis (first half vs second half) ---
+        if hrvDays.count >= 4 {
+            let sorted = hrvDays.sorted { $0.date < $1.date }
+            let mid = sorted.count / 2
+            let olderAvg = sorted.prefix(mid).reduce(0) { $0 + $1.hrv } / Double(mid)
+            let recentAvg = sorted.suffix(from: mid).reduce(0) { $0 + $1.hrv } / Double(sorted.count - mid)
+            let diff = recentAvg - olderAvg
+
+            lines.append("")
+            if abs(diff) < 3 {
+                lines.append("📊 HRV 整体保持稳定，没有明显趋势变化。")
+            } else if diff > 0 {
+                lines.append("📈 HRV 呈上升趋势（+\(Int(diff)) ms），恢复能力在改善！")
+                lines.append("   这通常反映运动适应性增强或压力管理有效。")
+            } else {
+                lines.append("📉 HRV 呈下降趋势（\(Int(diff)) ms），恢复能力在减弱。")
+                lines.append("   可能原因：训练过度、睡眠不足、持续压力或身体状态变化。")
+            }
+        }
+
+        // --- Sleep quality → next-day HRV correlation ---
+        let allSorted = (allSummaries.isEmpty ? summaries : allSummaries).sorted { $0.date < $1.date }
+        if allSorted.count >= 4 {
+            var sleepHRVPairs: [(sleep: Double, deep: Double, hrv: Double)] = []
+            for (i, day) in allSorted.enumerated() where i > 0 {
+                let prevDay = allSorted[i - 1]
+                guard prevDay.sleepHours > 0 && day.hrv > 0 else { continue }
+                sleepHRVPairs.append((sleep: prevDay.sleepHours, deep: prevDay.sleepDeepHours, hrv: day.hrv))
+            }
+
+            let sleepValues = sleepHRVPairs.map(\.sleep)
+            let hasSleepVariance = sleepValues.count >= 4 && (sleepValues.max() ?? 0) - (sleepValues.min() ?? 0) >= 1.0
+
+            if hasSleepVariance {
+                let medianSleep = sleepValues.sorted()[sleepValues.count / 2]
+                let goodSleep = sleepHRVPairs.filter { $0.sleep >= medianSleep }
+                let poorSleep = sleepHRVPairs.filter { $0.sleep < medianSleep }
+
+                if goodSleep.count >= 2 && poorSleep.count >= 2 {
+                    let hrvAfterGood = goodSleep.reduce(0.0) { $0 + $1.hrv } / Double(goodSleep.count)
+                    let hrvAfterPoor = poorSleep.reduce(0.0) { $0 + $1.hrv } / Double(poorSleep.count)
+                    let hrvDiff = hrvAfterGood - hrvAfterPoor
+
+                    lines.append("")
+                    lines.append("😴↔️📳 睡眠如何影响你的 HRV")
+                    if hrvDiff >= 3 {
+                        lines.append("   睡眠充足时 HRV 平均 \(Int(hrvAfterGood)) ms，睡眠不足时 \(Int(hrvAfterPoor)) ms")
+                        lines.append("   差距 \(Int(hrvDiff)) ms —— 对你来说，好的睡眠显著提升恢复能力。")
+                    } else if hrvDiff >= 0 {
+                        lines.append("   你的 HRV 与睡眠时长关联不大（差异仅 \(Int(hrvDiff)) ms）。")
+                        lines.append("   可能睡眠质量（深睡比例）比时长更重要。")
+                    } else {
+                        lines.append("   你的 HRV 与睡眠时长无负相关，身体适应力不错。")
+                    }
+
+                    // Deep sleep → HRV correlation
+                    let deepPairs = sleepHRVPairs.filter { $0.deep > 0 }
+                    if deepPairs.count >= 4 {
+                        let medianDeep = deepPairs.map(\.deep).sorted()[deepPairs.count / 2]
+                        let goodDeep = deepPairs.filter { $0.deep >= medianDeep }
+                        let poorDeep = deepPairs.filter { $0.deep < medianDeep }
+                        if goodDeep.count >= 2 && poorDeep.count >= 2 {
+                            let hrvGoodDeep = goodDeep.reduce(0.0) { $0 + $1.hrv } / Double(goodDeep.count)
+                            let hrvPoorDeep = poorDeep.reduce(0.0) { $0 + $1.hrv } / Double(poorDeep.count)
+                            let deepDiff = hrvGoodDeep - hrvPoorDeep
+                            if deepDiff >= 3 {
+                                lines.append("   🌙 深度睡眠效果更显著：深睡充足时 HRV 高 \(Int(deepDiff)) ms。")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // --- Exercise load → next-day HRV impact ---
+        if allSorted.count >= 4 {
+            var exerciseHRVPairs: [(exercise: Double, calories: Double, hrv: Double)] = []
+            for (i, day) in allSorted.enumerated() where i > 0 {
+                let prevDay = allSorted[i - 1]
+                guard day.hrv > 0 else { continue }
+                exerciseHRVPairs.append((exercise: prevDay.exerciseMinutes, calories: prevDay.activeCalories, hrv: day.hrv))
+            }
+
+            let exerciseValues = exerciseHRVPairs.map(\.exercise)
+            let hasExerciseVariance = exerciseValues.count >= 4 && (exerciseValues.max() ?? 0) - (exerciseValues.min() ?? 0) >= 10
+
+            if hasExerciseVariance {
+                let medianExercise = exerciseValues.sorted()[exerciseValues.count / 2]
+                let heavyDays = exerciseHRVPairs.filter { $0.exercise > medianExercise }
+                let lightDays = exerciseHRVPairs.filter { $0.exercise <= medianExercise }
+
+                if heavyDays.count >= 2 && lightDays.count >= 2 {
+                    let hrvAfterHeavy = heavyDays.reduce(0.0) { $0 + $1.hrv } / Double(heavyDays.count)
+                    let hrvAfterLight = lightDays.reduce(0.0) { $0 + $1.hrv } / Double(lightDays.count)
+                    let exDiff = hrvAfterLight - hrvAfterHeavy
+
+                    lines.append("")
+                    lines.append("🏃↔️📳 运动如何影响你的 HRV")
+                    if exDiff >= 3 {
+                        lines.append("   高强度运动后次日 HRV 低 \(Int(exDiff)) ms（\(Int(hrvAfterHeavy)) vs \(Int(hrvAfterLight)) ms）")
+                        lines.append("   这是正常的生理反应——身体在修复中，给它足够的恢复时间。")
+                    } else if exDiff >= 0 {
+                        lines.append("   你的 HRV 受运动强度影响不大（差异 \(Int(exDiff)) ms），运动耐受力不错。")
+                    } else {
+                        lines.append("   有趣的是，运动后你的 HRV 反而更高，说明适度运动对你是积极的恢复信号。")
+                    }
+                }
+            }
+        }
+
+        // --- Weekly rhythm: which day of week has best/worst HRV ---
+        if hrvDays.count >= 7 {
+            let cal = Calendar.current
+            var weekdayHRV: [Int: [Double]] = [:]
+            for day in hrvDays {
+                let wd = cal.component(.weekday, from: day.date)
+                weekdayHRV[wd, default: []].append(day.hrv)
+            }
+
+            let weekdayAvgs = weekdayHRV.compactMap { (wd, vals) -> (Int, Double)? in
+                guard vals.count >= 1 else { return nil }
+                return (wd, vals.reduce(0, +) / Double(vals.count))
+            }.sorted { $0.1 > $1.1 }
+
+            if weekdayAvgs.count >= 3 {
+                let dayNames = ["", "周日", "周一", "周二", "周三", "周四", "周五", "周六"]
+                let best = weekdayAvgs.first!
+                let worst = weekdayAvgs.last!
+                let diff = best.1 - worst.1
+
+                if diff >= 5 {
+                    lines.append("")
+                    lines.append("📆 一周 HRV 节律")
+                    lines.append("   最佳：\(dayNames[best.0])（平均 \(Int(best.1)) ms）")
+                    lines.append("   最低：\(dayNames[worst.0])（平均 \(Int(worst.1)) ms）")
+                    // Provide context
+                    if worst.0 == 2 { // Monday
+                        lines.append("   💡 周一 HRV 最低？可能是周末作息不规律的滞后影响。")
+                    } else if worst.0 == 6 || worst.0 == 7 { // Friday/Saturday
+                        lines.append("   💡 周末前 HRV 下降？可能累积了一周的工作压力。")
+                    }
+                }
+            }
+        }
+
+        // --- Actionable summary ---
+        lines.append("")
+        lines.append("💡 提升 HRV 的关键因素")
+        // Personalized tips based on data
+        var tips: [String] = []
+        let sleepDays = summaries.filter { $0.sleepHours > 0 }
+        if !sleepDays.isEmpty {
+            let avgSleep = sleepDays.reduce(0) { $0 + $1.sleepHours } / Double(sleepDays.count)
+            if avgSleep < 7 {
+                tips.append("😴 增加睡眠时间（目前平均 \(String(format: "%.1f", avgSleep))h，建议 ≥7h）")
+            } else {
+                tips.append("😴 睡眠时长不错（\(String(format: "%.1f", avgSleep))h），继续保持")
+            }
+        }
+        let exerciseDays = summaries.filter { $0.exerciseMinutes > 0 }
+        if !exerciseDays.isEmpty {
+            let avgEx = exerciseDays.reduce(0) { $0 + $1.exerciseMinutes } / Double(max(summaries.count, 1))
+            if avgEx < 20 {
+                tips.append("🏃 增加规律有氧运动（日均 \(Int(avgEx)) 分钟，建议 ≥30 分钟）")
+            } else {
+                tips.append("🏃 运动习惯良好（日均 \(Int(avgEx)) 分钟），注意避免过度训练")
+            }
+        }
+        tips.append("🧘 减压活动（深呼吸、冥想）可直接提升副交感神经活性")
+        tips.append("🚫 减少酒精摄入——酒精是 HRV 最大的隐形杀手之一")
+
+        for tip in tips {
+            lines.append("   \(tip)")
+        }
+
+        lines.append("")
+        lines.append("📖 HRV 反映的是自主神经系统的平衡——交感（战斗）与副交感（恢复）的拉锯。")
+        lines.append("   长期追踪 HRV 趋势比关注单日数值更有意义。")
+
+        completion(lines.joined(separator: "\n"))
     }
 
     // MARK: - Blood Oxygen (SpO2)

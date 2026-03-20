@@ -407,14 +407,15 @@ struct SkillRouter {
             "烦", "烦躁", "烦恼", "恼火", "生气", "愤怒",
             "孤独", "寂寞", "空虚", "无聊",
             // Physical-emotional states
-            "累", "疲惫", "疲倦", "精神不好", "没精神", "没劲",
+            "累", "疲惫", "疲倦", "疲劳", "过劳", "精神不好", "没精神", "没劲",
             "压力", "有压力", "崩溃", "受不了", "扛不住",
             "放松", "平静", "安心", "舒服", "惬意",
             // English
             "mood", "feeling", "emotion", "emotional",
             "happy", "sad", "stressed", "anxious", "tired",
             "angry", "lonely", "excited", "calm", "depressed",
-            "frustrated", "bored", "overwhelmed", "relaxed"
+            "frustrated", "bored", "overwhelmed", "relaxed",
+            "burned out", "burnout"
         ]) {
             return .mood(range: range)
         }
@@ -510,19 +511,21 @@ struct SkillRouter {
         if containsAny(lower, ["睡眠", "睡了", "睡得", "睡觉", "入睡", "失眠", "熬夜", "早睡", "晚睡",
                                 "睡不好", "睡不着", "睡不够", "没睡好", "没睡够",
                                 "夜醒", "浅眠", "多梦", "嗜睡", "打鼾", "打呼噜",
+                                "犯困", "好困", "困了", "困死", "打瞌睡",
                                 "作息", "生物钟", "日夜颠倒", "昼夜颠倒", "起得早", "起得晚", "几点起的",
                                 "心率", "心跳", "血压", "卡路里", "热量", "千卡", "大卡", "健康", "血氧", "脉搏",
                                 "身体", "体质", "体能", "精力", "活力", "身体状况", "恢复",
+                                "休息", "需要休息", "该休息", "不舒服", "难受", "身体不好", "亚健康",
                                 "能运动吗", "适合运动", "能不能练", "能锻炼", "适合锻炼",
-                                "精神", "体力", "recovery", "readiness",
+                                "精神", "体力", "recovery", "readiness", "need rest", "unwell",
                                 "HRV", "hrv", "心率变异", "静息心率",
                                 "爬楼", "楼层", "爬了多少", "几层楼", "爬了几", "几层",
                                 "flights", "climbed",
                                 "走了多远", "跑了多远", "距离多少", "多少公里", "多少距离",
                                 "多远", "几公里",
                                 "体重", "体重变化", "多少斤", "多重", "几斤", "几公斤",
-                                "瘦了", "胖了", "增重", "减重", "称重",
-                                "weight", "body mass", "weigh",
+                                "瘦了", "胖了", "增重", "减重", "称重", "减肥", "瘦身",
+                                "weight", "body mass", "weigh", "lose weight", "diet",
                                 "sleep", "slept", "insomnia",
                                 "heart rate", "heartbeat",
                                 "calories", "health",
@@ -715,6 +718,7 @@ struct SkillRouter {
         // the default .lastWeek makes no sense — they mean today.
         if containsAny(lower, ["日历", "行程", "日程", "计划", "会议", "约会", "活动",
                                 "忙不忙", "忙吗", "忙什么", "在忙什么",
+                                "太忙", "好忙", "忙碌", "忙死",
                                 "有空", "空闲", "空不空", "安排", "待办",
                                 "有啥事", "啥安排", "什么安排", "有没有会", "开会",
                                 "专注", "深度工作", "碎片化", "集中精力", "能专心", "有时间",
@@ -1323,8 +1327,10 @@ struct SkillRouter {
                               "夜醒", "浅眠", "多梦", "嗜睡", "打鼾", "打呼噜",
                               "作息", "生物钟", "日夜颠倒", "昼夜颠倒", "起得早", "起得晚", "几点起的",
                               "sleep", "slept", "insomnia"]) { return "sleep" }
+        if containsAny(text, ["HRV", "hrv", "心率变异", "变异性", "自主神经", "autonomic",
+                              "副交感", "交感神经", "压力指标", "恢复指标"]) { return "hrv" }
         if containsAny(text, ["心率", "心跳", "脉搏", "heart rate", "heartbeat",
-                              "HRV", "hrv", "心率变异", "变异性", "静息心率", "resting heart"]) { return "heartRate" }
+                              "静息心率", "resting heart"]) { return "heartRate" }
         if containsAny(text, ["步数", "走路", "步行", "多少步", "几步", "steps", "walk"]) { return "steps" }
         if containsAny(text, ["卡路里", "热量", "千卡", "大卡", "calories", "burned", "energy"]) { return "calories" }
         if containsAny(text, ["爬楼", "楼层", "几层", "爬了", "flights", "climbed", "floor"]) { return "flights" }

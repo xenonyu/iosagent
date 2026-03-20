@@ -1455,9 +1455,11 @@ struct SkillRouter {
     // MARK: - Health Metric
 
     private static func extractHealthMetric(from text: String) -> String {
+        // Sleep: includes drowsiness symptoms that indicate sleep-related concerns
         if containsAny(text, ["睡眠", "睡了", "睡得", "睡觉", "入睡", "失眠", "熬夜", "早睡", "晚睡",
                               "睡不好", "睡不着", "睡不够", "没睡好", "没睡够",
                               "夜醒", "浅眠", "多梦", "嗜睡", "打鼾", "打呼噜",
+                              "犯困", "好困", "困了", "困死", "打瞌睡",
                               "作息", "生物钟", "日夜颠倒", "昼夜颠倒", "起得早", "起得晚", "几点起的",
                               "sleep", "slept", "insomnia"]) { return "sleep" }
         if containsAny(text, ["HRV", "hrv", "心率变异", "变异性", "自主神经", "autonomic",
@@ -1468,11 +1470,17 @@ struct SkillRouter {
         if containsAny(text, ["卡路里", "热量", "千卡", "大卡", "calories", "burned", "energy"]) { return "calories" }
         if containsAny(text, ["爬楼", "楼层", "几层", "爬了", "flights", "climbed", "floor"]) { return "flights" }
         if containsAny(text, ["多远", "距离", "公里", "几公里", "distance", "km", "far"]) { return "distance" }
+        // Weight: includes diet/weight-loss keywords that imply weight tracking interest
         if containsAny(text, ["体重", "多重", "几斤", "几公斤", "多少斤", "瘦了", "胖了",
-                               "增重", "减重", "称重", "weight", "body mass", "weigh"]) { return "weight" }
+                               "增重", "减重", "称重", "减肥", "瘦身",
+                               "weight", "body mass", "weigh", "lose weight", "diet"]) { return "weight" }
+        // Recovery: includes rest/unwell symptoms that need recovery assessment
         if containsAny(text, ["恢复", "精力", "精神", "活力", "体力", "状态好不好",
                                "能运动", "适合运动", "能不能练", "能锻炼", "适合锻炼",
-                               "recovery", "readiness", "energy level", "ready to train"]) { return "recovery" }
+                               "休息", "需要休息", "该休息",
+                               "不舒服", "难受", "身体不好", "亚健康",
+                               "recovery", "readiness", "energy level", "ready to train",
+                               "need rest", "unwell"]) { return "recovery" }
         if containsAny(text, ["血氧", "氧饱和", "spo2", "oxygen", "blood oxygen", "氧含量"]) { return "bloodOxygen" }
         if containsAny(text, ["vo2", "vo2max", "摄氧量", "最大摄氧", "有氧耐力", "心肺适能",
                                "cardio fitness", "aerobic capacity"]) { return "vo2max" }

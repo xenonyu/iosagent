@@ -159,8 +159,9 @@ final class ContextMemory {
         let peopleKw = ["老婆", "妻子", "老公", "丈夫", "妈妈", "爸爸", "孩子", "朋友", "同事", "boss", "女朋友", "男朋友"]
         peopleKw.forEach { if lower.contains($0) { mentionedPeople.insert($0) } }
 
-        // Topics
-        let topicKw = ["运动", "健康", "位置", "地点", "心情", "工作", "睡眠", "计划", "日历", "照片"]
+        // Topics — covers core iOS data categories for context-aware follow-ups
+        let topicKw = ["运动", "健康", "位置", "地点", "心情", "工作", "睡眠", "计划", "日历", "照片",
+                        "体重", "心率", "恢复", "步数", "距离", "卡路里"]
         topicKw.forEach { if lower.contains($0) && !mentionedTopics.contains($0) {
             mentionedTopics.append($0)
         }}

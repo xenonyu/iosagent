@@ -1770,9 +1770,23 @@ final class GPTContextBuilder {
                 .prefix(4)
                 .map { "\($0.key)\($0.value)个" }
                 .joined(separator: "、")
+            // Total meeting time across all past events for "最近开了多少小时会？" queries.
+            // Excludes all-day events (holidays, birthdays) which don't represent meeting time.
+            let totalMeetingMins = past.filter { !$0.isAllDay }
+                .map { Int($0.duration / 60) }.reduce(0, +)
+            let meetingTimeSuffix: String
+            if totalMeetingMins >= 60 {
+                let hrs = totalMeetingMins / 60
+                let mins = totalMeetingMins % 60
+                meetingTimeSuffix = mins > 0 ? "，总会议时长\(hrs)小时\(mins)分钟" : "，总会议时长\(hrs)小时"
+            } else if totalMeetingMins > 0 {
+                meetingTimeSuffix = "，总会议时长\(totalMeetingMins)分钟"
+            } else {
+                meetingTimeSuffix = ""
+            }
             let summaryNote = breakdownStr.isEmpty
-                ? "过去14天共\(totalPastEvents)个日程："
-                : "过去14天共\(totalPastEvents)个日程（\(breakdownStr)）："
+                ? "过去14天共\(totalPastEvents)个日程\(meetingTimeSuffix)："
+                : "过去14天共\(totalPastEvents)个日程（\(breakdownStr)）\(meetingTimeSuffix)："
             lines.append(summaryNote)
 
             // Determine the "recent detail threshold": show full event details only
@@ -1817,16 +1831,22 @@ final class GPTContextBuilder {
                         lines.append("    …还有\(dayEvents.count - 5)项")
                     }
                 } else {
-                    // Compact summary for older days — time + title, no notes/location/attendees.
-                    // Includes event time so GPT can answer "上周三几点开的会?" and "上周二下午有什么安排?"
-                    // without which GPT can only see event names but not when they occurred.
+                    // Compact summary for older days — time range + title, no notes/location/attendees.
+                    // Include both start AND end time so GPT can compute event duration for
+                    // queries like "上周最长的会议是哪个?" or "上周开了多久的会?". Previously
+                    // only showed start time, making duration invisible for ~10 days of data.
                     let titles = dayEvents.prefix(4).map { e -> String in
-                        let timePrefix = e.isAllDay ? "全天" : timeFmt.string(from: e.startDate)
+                        let timePrefix = e.isAllDay ? "全天" : "\(timeFmt.string(from: e.startDate))–\(timeFmt.string(from: e.endDate))"
                         var entry = "\(timePrefix) \(e.title)"
                         if !e.calendar.isEmpty { entry += "[\(e.calendar)]" }
                         return entry
                     }
-                    var compactLine = "  \(dayLabel)：\(dayEvents.count)个日程"
+                    // Calculate total meeting time for the day so GPT can answer
+                    // "哪天会议最多" or "上周开了多少小时的会" without manual arithmetic.
+                    let dayMeetingMins = dayEvents.filter { !$0.isAllDay }
+                        .map { Int($0.duration / 60) }.reduce(0, +)
+                    let meetingNote = dayMeetingMins > 0 ? "，共\(dayMeetingMins)分钟会议" : ""
+                    var compactLine = "  \(dayLabel)：\(dayEvents.count)个日程\(meetingNote)"
                     compactLine += "（\(titles.joined(separator: "、"))）"
                     if dayEvents.count > 4 {
                         compactLine += "等"
@@ -1877,12 +1897,25 @@ final class GPTContextBuilder {
                 lines.append(line)
             }
 
-            // Summary: how many done vs remaining
+            // Summary: how many done vs remaining, plus total meeting time
             let nonAllDay = todayEvents.filter { !$0.isAllDay }
             let doneCount = nonAllDay.filter { $0.endDate <= now }.count
             let remainCount = nonAllDay.filter { $0.startDate > now }.count
-            if nonAllDay.count >= 3 {
-                lines.append("  （已完成\(doneCount)项，还剩\(remainCount)项待进行）")
+            if nonAllDay.count >= 2 {
+                let todayTotalMins = nonAllDay.map { Int($0.duration / 60) }.reduce(0, +)
+                let doneMins = nonAllDay.filter { $0.endDate <= now }.map { Int($0.duration / 60) }.reduce(0, +)
+                let remainMins = todayTotalMins - doneMins
+                var summaryParts: [String] = ["已完成\(doneCount)项", "还剩\(remainCount)项"]
+                if todayTotalMins >= 60 {
+                    let hrs = todayTotalMins / 60
+                    let mins = todayTotalMins % 60
+                    let timeStr = mins > 0 ? "\(hrs)小时\(mins)分钟" : "\(hrs)小时"
+                    summaryParts.append("全天共\(timeStr)会议")
+                    if remainMins > 0 && doneMins > 0 {
+                        summaryParts.append("剩余约\(remainMins)分钟")
+                    }
+                }
+                lines.append("  （\(summaryParts.joined(separator: "，"))）")
             }
         }
 
@@ -1951,15 +1984,18 @@ final class GPTContextBuilder {
                         lines.append("    …还有\(dayEvents.count - 8)项")
                     }
                 } else {
-                    // Compact summary for further-out days — saves tokens while keeping
-                    // enough info for GPT to answer "下周三有什么？"
+                    // Compact summary for further-out days — include both start AND end time
+                    // so GPT can compute duration for "下周三的会要开多久?" queries.
                     let titles = dayEvents.prefix(4).map { e -> String in
-                        let timePrefix = e.isAllDay ? "全天" : timeFmt.string(from: e.startDate)
+                        let timePrefix = e.isAllDay ? "全天" : "\(timeFmt.string(from: e.startDate))–\(timeFmt.string(from: e.endDate))"
                         var entry = "\(timePrefix) \(e.title)"
                         if !e.calendar.isEmpty { entry += "[\(e.calendar)]" }
                         return entry
                     }
-                    var compactLine = "  \(dayHeader)：\(dayEvents.count)项"
+                    let dayMeetingMins = dayEvents.filter { !$0.isAllDay }
+                        .map { Int($0.duration / 60) }.reduce(0, +)
+                    let meetingNote = dayMeetingMins > 0 ? "，共\(dayMeetingMins)分钟" : ""
+                    var compactLine = "  \(dayHeader)：\(dayEvents.count)项\(meetingNote)"
                     compactLine += "（\(titles.joined(separator: "、"))）"
                     if dayEvents.count > 4 {
                         compactLine += "等"

@@ -2025,7 +2025,6 @@ final class GPTContextBuilder {
                 deltas.append("\(label)：持平")
                 return
             }
-            let pct = Int((diff / lastVal) * 100)
             let arrow: String
             let qualifier: String
             if diff > 0 {
@@ -2042,7 +2041,19 @@ final class GPTContextBuilder {
             } else {
                 absDiff = "\(Int(abs(diff)))"
             }
-            deltas.append("\(label)：\(arrow)\(absDiff)\(unit)（\(pct >= 0 ? "+" : "")\(pct)%）\(qualifier)")
+            // Safe percentage: when lastVal is 0 (e.g. no exercise last week but
+            // exercised this week), division by zero produces infinity and Int(inf)
+            // causes a Swift runtime crash. Show "新增" instead of a percentage.
+            let pctStr: String
+            if lastVal == 0 {
+                pctStr = "新增"
+            } else if thisVal == 0 {
+                pctStr = "-100%"
+            } else {
+                let pct = Int((diff / lastVal) * 100)
+                pctStr = "\(pct >= 0 ? "+" : "")\(pct)%"
+            }
+            deltas.append("\(label)：\(arrow)\(absDiff)\(unit)（\(pctStr)）\(qualifier)")
         }
 
         let thisCount = Double(thisWeek.count)

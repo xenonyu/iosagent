@@ -2198,12 +2198,24 @@ final class GPTContextBuilder {
                               locationRecords: [CDLocationRecord] = []) -> String {
         let cal = Calendar.current
         let total = photos.count
-        let videos = photos.filter { $0.isVideo }.count
+        let videoItems = photos.filter { $0.isVideo }
+        let videos = videoItems.count
         let geoTagged = photos.filter { $0.hasLocation }.count
         let favorites = photos.filter { $0.isFavorite }.count
         let screenshots = photos.filter { $0.isScreenshot }.count
         var lines = ["[照片统计（近14天）]"]
-        lines.append("共 \(total - videos) 张照片，\(videos) 个视频")
+        // Include total video duration so GPT can answer "最近拍了多长时间的视频？"
+        let totalVideoDuration = videoItems.map(\.duration).reduce(0, +)
+        if videos > 0 && totalVideoDuration >= 60 {
+            let totalMins = Int(totalVideoDuration / 60)
+            let totalSecs = Int(totalVideoDuration.truncatingRemainder(dividingBy: 60))
+            let durStr = totalSecs > 0 ? "\(totalMins)分\(totalSecs)秒" : "\(totalMins)分钟"
+            lines.append("共 \(total - videos) 张照片，\(videos) 个视频（总时长\(durStr)）")
+        } else if videos > 0 && totalVideoDuration > 0 {
+            lines.append("共 \(total - videos) 张照片，\(videos) 个视频（总时长\(Int(totalVideoDuration))秒）")
+        } else {
+            lines.append("共 \(total - videos) 张照片，\(videos) 个视频")
+        }
         if geoTagged > 0 { lines.append("含地理位置：\(geoTagged) 张") }
         if favorites > 0 { lines.append("已收藏：\(favorites) 张") }
         if screenshots > 0 { lines.append("截图：\(screenshots) 张") }
@@ -2233,11 +2245,20 @@ final class GPTContextBuilder {
             lines.append("每日拍摄：")
             for day in sortedDays.prefix(14) {
                 guard let dayPhotos = dayGroups[day] else { continue }
+                // Use consistent relative day labels matching calendar/location/health sections.
+                // Previously missing "前天" caused GPT to fail matching temporal hints
+                // (e.g. [时间聚焦] says "前天=3月19日" but photo section showed "3月19日(周三)").
                 let dayLabel: String
                 if cal.isDateInToday(day) {
                     dayLabel = "今天"
                 } else if cal.isDateInYesterday(day) {
                     dayLabel = "昨天"
+                } else if let twoDaysAgo = cal.date(byAdding: .day, value: -2, to: cal.startOfDay(for: Date())),
+                          cal.isDate(day, inSameDayAs: twoDaysAgo) {
+                    dayLabel = "前天"
+                } else if let threeDaysAgo = cal.date(byAdding: .day, value: -3, to: cal.startOfDay(for: Date())),
+                          cal.isDate(day, inSameDayAs: threeDaysAgo) {
+                    dayLabel = "大前天"
                 } else {
                     dayLabel = "\(dateFmt.string(from: day))(\(weekdayFmt.string(from: day)))"
                 }
@@ -2246,7 +2267,22 @@ final class GPTContextBuilder {
                 let dayVideos = dayPhotos.filter { $0.isVideo }
                 var countParts: [String] = []
                 if !dayPhotosOnly.isEmpty { countParts.append("\(dayPhotosOnly.count)张照片") }
-                if !dayVideos.isEmpty { countParts.append("\(dayVideos.count)个视频") }
+                if !dayVideos.isEmpty {
+                    // Surface video duration so GPT can answer "昨天录了多长时间的视频?"
+                    // PhotoMetadataItem.duration is populated from PHAsset but was previously
+                    // unused in the prompt — GPT saw "2个视频" but couldn't report total length.
+                    let totalDuration = dayVideos.map(\.duration).reduce(0, +)
+                    if totalDuration >= 60 {
+                        let mins = Int(totalDuration / 60)
+                        let secs = Int(totalDuration.truncatingRemainder(dividingBy: 60))
+                        let durStr = secs > 0 ? "\(mins)分\(secs)秒" : "\(mins)分钟"
+                        countParts.append("\(dayVideos.count)个视频（共\(durStr)）")
+                    } else if totalDuration > 0 {
+                        countParts.append("\(dayVideos.count)个视频（共\(Int(totalDuration))秒）")
+                    } else {
+                        countParts.append("\(dayVideos.count)个视频")
+                    }
+                }
 
                 // Show media kind breakdown for variety (portrait, live, panorama, etc.)
                 var kindCounts: [String: Int] = [:]

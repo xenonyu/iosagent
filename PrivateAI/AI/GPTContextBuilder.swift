@@ -272,7 +272,7 @@ final class GPTContextBuilder {
         - 如果用户用英文提问，用英文回答。
         - 引用具体数据时，必须使用下方提供的真实数据，不要编造任何数字。
         - 如果某项数据为 0 或为空，坦诚说明「暂无该数据」或「尚未授权」，不要猜测。
-        - 回答健康、运动相关问题时，优先引用准确数值，再给出简短解读或鼓励。
+        - 回答健康、运动相关问题时，优先引用准确数值，再结合[健康参考标准]给出个性化解读（如「离建议的7000步还差1500步」），不要只说数字。
         - 涉及多天数据时，可引用「近7天趋势」进行对比分析，指出趋势变化。
         - 周统计中会标注「X天中Y天有运动」，回答时要如实反映活跃天数，不要把少数几天的数据当作每天都达到了。例如7天中2天运动共60分钟，应该说「这周运动了2天，共60分钟」，而不是「日均运动30分钟」。
         - 不要重复罗列所有数据，只回答用户问到的内容。
@@ -319,6 +319,13 @@ final class GPTContextBuilder {
 
         if !profileParts.isEmpty {
             parts.append("[用户信息]\n\(profileParts.joined(separator: "\n"))")
+        }
+
+        // HEALTH REFERENCE BENCHMARKS — age-adjusted so GPT can give personalized insights
+        // e.g. "离推荐的8000步还差1500步" instead of just "你走了6500步"
+        let benchmarks = healthBenchmarks()
+        if !benchmarks.isEmpty {
+            parts.append(benchmarks)
         }
 
         // TODAY'S HEALTH
@@ -481,6 +488,69 @@ final class GPTContextBuilder {
     }
 
     // MARK: - Section Builders
+
+    /// Generates age-adjusted health reference benchmarks so GPT can provide
+    /// contextual, personalized insights ("你达到了推荐步数目标的80%") instead
+    /// of just repeating raw numbers. Sources: WHO, ACSM, NSF guidelines.
+    private func healthBenchmarks() -> String {
+        // Compute user's age from profile birthday
+        let userAge: Int? = {
+            guard let bd = profile.birthday else { return nil }
+            let age = Calendar.current.dateComponents([.year], from: bd, to: Date()).year ?? 0
+            return age > 0 ? age : nil
+        }()
+
+        var lines = ["[健康参考标准]"]
+
+        // Steps — WHO/studies suggest 7000-10000 for adults, adjust by age
+        let stepsTarget: String
+        if let age = userAge {
+            if age < 18 {
+                stepsTarget = "青少年建议每天10000-12000步"
+            } else if age < 60 {
+                stepsTarget = "成人建议每天7000-10000步"
+            } else {
+                stepsTarget = "60岁以上建议每天6000-8000步"
+            }
+        } else {
+            stepsTarget = "成人建议每天7000-10000步"
+        }
+        lines.append("步数：\(stepsTarget)")
+
+        // Exercise — WHO recommends 150-300 min/week moderate intensity
+        let exerciseTarget: String
+        if let age = userAge, age >= 65 {
+            exerciseTarget = "65+岁建议每周≥150分钟中等强度运动，含平衡/力量训练"
+        } else {
+            exerciseTarget = "成人建议每周150-300分钟中等强度运动（约每天22-43分钟）"
+        }
+        lines.append("运动：\(exerciseTarget)")
+
+        // Sleep — National Sleep Foundation guidelines by age
+        let sleepTarget: String
+        if let age = userAge {
+            if age < 18 {
+                sleepTarget = "青少年建议8-10小时"
+            } else if age < 65 {
+                sleepTarget = "成人建议7-9小时，深睡占比15-25%为佳"
+            } else {
+                sleepTarget = "65+岁建议7-8小时，深睡比例自然下降属正常"
+            }
+        } else {
+            sleepTarget = "成人建议7-9小时，深睡占比15-25%为佳"
+        }
+        lines.append("睡眠：\(sleepTarget)")
+
+        // Resting heart rate — Mayo Clinic reference
+        lines.append("静息心率：正常60-100bpm，经常运动者可低至40-60bpm")
+
+        // HRV
+        lines.append("HRV：数值因人而异，趋势比绝对值更重要，持续下降可能提示疲劳或压力")
+
+        lines.append("⚠️ 以上为一般参考，回答时结合用户实际数据自然引用，不要生硬罗列标准。用户没问具体指标时不必主动提及。")
+
+        return lines.joined(separator: "\n")
+    }
 
     private func healthSection(_ h: HealthSummary,
                                weeklyHealth: [HealthSummary] = [],

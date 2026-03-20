@@ -677,10 +677,16 @@ final class GPTContextBuilder {
         let lower = query.lowercased()
         var topics: Set<QueryTopic> = []
 
+        // NOTE on Chinese single-character matching: avoid standalone single chars
+        // like "步" that appear in many non-health words ("下一步", "进步", "步骤").
+        // Use 2+ char compounds instead (e.g. "步数", "步行", "散步"). Similarly,
+        // "约" matches "大约" (approximately), "远" matches "远程" (remote) — removed
+        // and replaced with more specific compounds to reduce false-positive topic tags
+        // that dilute the relevance hint's focus.
         let healthWords = [
-            "步数", "步", "走路", "走了", "跑步", "跑了", "运动", "锻炼", "健身",
+            "步数", "走步", "步行", "走路", "走了", "跑步", "跑了", "运动", "锻炼", "健身",
             "睡眠", "睡觉", "睡了", "睡得", "入睡", "起床", "失眠", "早起", "熬夜", "晚睡",
-            "补觉", "作息", "规律", "赖床",
+            "补觉", "作息", "赖床",
             "心率", "心跳", "卡路里", "热量", "消耗", "能量",
             "体重", "胖", "瘦", "血氧", "VO2", "减肥", "增重",
             // Direct health/body terms — "我的健康数据怎么样" or "身体状况如何"
@@ -692,7 +698,7 @@ final class GPTContextBuilder {
             // Ball sports — common in Chinese daily life
             "打球", "篮球", "足球", "网球", "乒乓", "羽毛球", "排球", "高尔夫",
             // Physical condition — often relates to health/sleep data
-            "累", "疲劳", "精力", "恢复", "酸痛", "状态",
+            "好累", "太累", "疲劳", "精力", "恢复", "酸痛",
             // Activity Rings (Apple Watch) — users commonly ask "圆环合了吗？"
             "圆环", "活动圆环", "站立", "站了",
             "exercise", "sleep", "step", "heart", "workout", "calorie", "weight",
@@ -704,12 +710,13 @@ final class GPTContextBuilder {
         }
 
         let calendarWords = [
-            "日程", "日历", "会议", "安排", "行程", "活动", "计划", "开会",
-            // Appointment & work-related terms
-            "约", "预约", "面试", "上班", "下班", "提醒", "截止", "deadline",
-            "见面", "聚餐", "聚会", "约会",
+            "日程", "日历", "会议", "安排", "行程", "计划", "开会",
+            // Appointment & work-related terms — "约" removed (matches "大约"),
+            // "活动" removed (matches "运动活动量"), kept specific compounds only
+            "预约", "面试", "上班", "下班", "提醒", "截止", "deadline",
+            "见面", "聚餐", "聚会", "约会", "约了",
             // Recurring event queries — "这个会每周都有吗？" "有哪些固定会议？"
-            "重复", "固定", "例会", "周会", "站会", "recurring",
+            "重复", "例会", "周会", "站会", "recurring",
             // Free time / availability queries — map to calendar for free slot analysis
             "有空", "空闲", "有时间", "忙不忙", "忙吗", "free", "available", "busy",
             "schedule", "calendar", "meeting", "event", "appointment", "interview"
@@ -721,8 +728,9 @@ final class GPTContextBuilder {
         let locationWords = [
             "去了", "去过", "地方", "位置", "在哪", "哪里", "足迹", "出门",
             "城市", "回家", "公司", "地点",
-            // Movement & commute terms
-            "附近", "通勤", "出差", "旅行", "路线", "距离", "远", "逛",
+            // Movement & commute terms — "远" removed (matches "远程", "远不如"),
+            // replaced with more specific patterns
+            "附近", "通勤", "出差", "旅行", "路线", "距离", "好远", "多远", "逛",
             "location", "where", "place", "travel", "commute", "nearby"
         ]
         if locationWords.contains(where: { lower.contains($0) }) {
@@ -2718,15 +2726,19 @@ final class GPTContextBuilder {
                         lines.append("    …还有\(dayEvents.count - 5)项")
                     }
                 } else {
-                    // Compact summary for older days — time range + title, no notes/location/attendees.
+                    // Compact summary for older days — time range + title + location (if any).
                     // Include both start AND end time so GPT can compute event duration for
                     // queries like "上周最长的会议是哪个?" or "上周开了多久的会?". Previously
                     // only showed start time, making duration invisible for ~10 days of data.
+                    // Location is included because users commonly ask "上周在哪开的会？" or
+                    // "上周三那个会在什么地方？" — without it, GPT can't answer location-specific
+                    // calendar queries for events older than 3 days.
                     let titles = dayEvents.prefix(4).map { e -> String in
                         let timePrefix = e.isAllDay ? "全天" : "\(timeFmt.string(from: e.startDate))–\(timeFmt.string(from: e.endDate))"
                         var entry = "\(timePrefix) \(e.title)"
                         if !e.calendar.isEmpty { entry += "[\(e.calendar)]" }
                         if !e.recurrenceDescription.isEmpty { entry += "🔄" }
+                        if !e.location.isEmpty { entry += "(\(e.location))" }
                         return entry
                     }
                     // Calculate total meeting time for the day so GPT can answer
@@ -2980,11 +2992,13 @@ final class GPTContextBuilder {
                 } else {
                     // Compact summary for further-out days — include both start AND end time
                     // so GPT can compute duration for "下周三的会要开多久?" queries.
+                    // Location included so GPT can answer "下周的会在哪？" for distant days.
                     let titles = dayEvents.prefix(4).map { e -> String in
                         let timePrefix = e.isAllDay ? "全天" : "\(timeFmt.string(from: e.startDate))–\(timeFmt.string(from: e.endDate))"
                         var entry = "\(timePrefix) \(e.title)"
                         if !e.calendar.isEmpty { entry += "[\(e.calendar)]" }
                         if !e.recurrenceDescription.isEmpty { entry += "🔄" }
+                        if !e.location.isEmpty { entry += "(\(e.location))" }
                         return entry
                     }
                     let dayMeetingMins = dayEvents.filter { !$0.isAllDay }

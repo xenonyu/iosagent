@@ -350,6 +350,7 @@ final class GPTContextBuilder {
         - 周统计中会标注「X天中Y天有运动」，回答时要如实反映活跃天数，不要把少数几天的数据当作每天都达到了。例如7天中2天运动共60分钟，应该说「这周运动了2天，共60分钟」，而不是「日均运动30分钟」。
         - ⚠️ 跨周对比时，务必使用「日均」数据进行公平比较，因为本周天数可能不足7天。例如本周4天日均消耗2100kcal vs 上周7天日均2000kcal → 说明本周消耗更高，而不是比较总量（8400 vs 14000）得出本周更少的错误结论。
         - ⚠️ 体重数据说明：趋势表和周统计中会包含体重数据（如有记录）。体重数据来自智能体重秤或手动录入，不一定每天都有。回答体重趋势时，关注变化方向和幅度，短期波动（0.5kg以内）通常是正常的水分变化，不要过度解读。如果只有1-2天的记录，说明数据有限，不宜下趋势结论。
+        - [生活模式洞察] 包含系统自动分析的跨领域关联（如运动→睡眠、晚睡→步数、会议→运动等）。用户问「为什么睡不好」「运动有用吗」「怎么改善」「有什么规律」时，直接引用这些洞察数据回答，比泛泛建议更有说服力。例如不要说「建议多运动有助睡眠」，而是说「从你的数据来看，运动的日子平均多睡X小时」。
         - 不要重复罗列所有数据，只回答用户问到的内容。
         - 如果用户提到家人（如"我妈"、"我爸"等），参考下方[用户信息]中的家庭成员数据来回答。
         - 日历日程中 [日历名] 标签表示事件来源（如 [Work]、[个人]、[家庭]），用户问「工作会议」时参考此标签区分。日程的「备注」字段包含议程或描述，用户问「那个会议聊什么」时可引用。日历数据已标注星期几和相对日期（昨天/前天/明天/后天），用户问「周三有什么安排」时直接匹配对应日期即可。
@@ -452,6 +453,22 @@ final class GPTContextBuilder {
             let insights = healthInsightAlerts(weeklyHealth)
             if !insights.isEmpty {
                 parts.append(insights)
+            }
+        }
+
+        // CROSS-DOMAIN INSIGHTS — correlations between exercise, sleep, calendar, and activity.
+        // GPT cannot compute cross-table joins across separate data sections (health trend table,
+        // calendar listing, location records). Pre-computing correlations like "exercise days →
+        // better sleep" or "busy meeting days → less exercise" lets GPT give genuinely insightful
+        // answers to "why" questions (e.g. "为什么最近睡不好？" → "你不运动的日子平均少睡1h").
+        if weeklyHealth.count >= 5 {
+            let allPastEvents = pastEvents + todayEvents
+            let crossInsights = crossDomainInsights(
+                healthSummaries: weeklyHealth,
+                calendarEvents: allPastEvents
+            )
+            if !crossInsights.isEmpty {
+                parts.append(crossInsights)
             }
         }
 
@@ -799,7 +816,7 @@ final class GPTContextBuilder {
 
         var sectionNames: [String] = []
         if topics.contains(.health) {
-            sectionNames.append("[今日健康数据]、[近14天健康趋势]、[睡眠质量分析]、[运动记录]")
+            sectionNames.append("[今日健康数据]、[近14天健康趋势]、[睡眠质量分析]、[运动记录]、[生活模式洞察]")
         }
         if topics.contains(.calendar) {
             sectionNames.append("[日历日程]")
@@ -2124,7 +2141,7 @@ final class GPTContextBuilder {
             }
             // Show absolute delta + percentage for clear communication
             let absDiff: String
-            if unit == "h" {
+            if unit == "h" || unit == "km" {
                 absDiff = String(format: "%.1f", abs(diff))
             } else {
                 absDiff = "\(Int(abs(diff)))"
@@ -4042,6 +4059,199 @@ final class GPTContextBuilder {
 
         guard !alerts.isEmpty else { return "" }
         return "[健康趋势提醒]\n⚠️ 以下为系统自动检测的健康模式变化，在相关问题中可主动提及，但不要在不相关的对话中硬塞：\n" + alerts.joined(separator: "\n")
+    }
+
+    // MARK: - Cross-Domain Insights
+
+    /// Computes correlations across different data domains (health × calendar × activity)
+    /// to surface insights that GPT cannot derive from separate data sections.
+    ///
+    /// Example insights this produces:
+    /// - "运动日平均睡7.3h，休息日仅6.1h" → exercise improves sleep
+    /// - "入睡超过00:00的夜晚，次日平均仅4200步" → late sleep hurts next-day activity
+    /// - "有3+场会议的日子，运动概率仅20%" → busy days block exercise
+    ///
+    /// These cross-domain patterns are exactly what makes iosclaw insightful —
+    /// it's the "mirror" that shows connections the user wouldn't see themselves.
+    private func crossDomainInsights(
+        healthSummaries: [HealthSummary],
+        calendarEvents: [CalendarEventItem]
+    ) -> String {
+        let cal = Calendar.current
+        // Work with completed days only — today's partial data would skew correlations.
+        let completed = healthSummaries
+            .filter { !cal.isDateInToday($0.date) }
+            .sorted { $0.date < $1.date }  // chronological
+
+        guard completed.count >= 5 else { return "" }
+
+        var insights: [String] = []
+
+        // --- 1. Exercise → Sleep quality correlation ---
+        // Compare sleep quality on nights following exercise days vs rest days.
+        // Sleep is attributed to wake-up day, so "exercise on day N → sleep on day N"
+        // means: did the user exercise during the day, and how did they sleep that night?
+        // This is the most valuable correlation — users constantly ask "运动对睡眠有帮助吗？"
+        let exerciseDays = completed.filter { $0.exerciseMinutes > 0 || !$0.workouts.isEmpty }
+        let restDays = completed.filter { $0.exerciseMinutes == 0 && $0.workouts.isEmpty }
+
+        // For "exercise today → tonight's sleep", we need sleep from the NEXT day's row
+        // (because sleep is attributed to wake-up day). Build a date→summary lookup.
+        let summaryByDate: [Date: HealthSummary] = Dictionary(
+            uniqueKeysWithValues: completed.map { (cal.startOfDay(for: $0.date), $0) }
+        )
+
+        let exerciseDaySleepHours: [Double] = exerciseDays.compactMap { day in
+            let nextDay = cal.date(byAdding: .day, value: 1, to: cal.startOfDay(for: day.date))!
+            return summaryByDate[nextDay]?.sleepHours
+        }.filter { $0 > 0 }
+
+        let restDaySleepHours: [Double] = restDays.compactMap { day in
+            let nextDay = cal.date(byAdding: .day, value: 1, to: cal.startOfDay(for: day.date))!
+            return summaryByDate[nextDay]?.sleepHours
+        }.filter { $0 > 0 }
+
+        if exerciseDaySleepHours.count >= 2 && restDaySleepHours.count >= 2 {
+            let exSleepAvg = exerciseDaySleepHours.reduce(0, +) / Double(exerciseDaySleepHours.count)
+            let restSleepAvg = restDaySleepHours.reduce(0, +) / Double(restDaySleepHours.count)
+            let diff = exSleepAvg - restSleepAvg
+
+            if abs(diff) >= 0.3 {
+                if diff > 0 {
+                    insights.append("🏃→😴 运动日当晚平均睡\(String(format: "%.1f", exSleepAvg))h，休息日仅\(String(format: "%.1f", restSleepAvg))h（运动日多睡\(String(format: "%.1f", diff))h）")
+                } else {
+                    insights.append("🏃→😴 运动日当晚平均睡\(String(format: "%.1f", exSleepAvg))h，休息日\(String(format: "%.1f", restSleepAvg))h（休息日反而睡得更多，可能运动时间较晚影响入睡）")
+                }
+            }
+
+            // Deep sleep comparison on exercise vs rest days (if phase data available)
+            let exDeepHours: [Double] = exerciseDays.compactMap { day in
+                let nextDay = cal.date(byAdding: .day, value: 1, to: cal.startOfDay(for: day.date))!
+                guard let s = summaryByDate[nextDay], s.hasSleepPhases else { return nil }
+                return s.sleepDeepHours
+            }.filter { $0 > 0 }
+
+            let restDeepHours: [Double] = restDays.compactMap { day in
+                let nextDay = cal.date(byAdding: .day, value: 1, to: cal.startOfDay(for: day.date))!
+                guard let s = summaryByDate[nextDay], s.hasSleepPhases else { return nil }
+                return s.sleepDeepHours
+            }.filter { $0 > 0 }
+
+            if exDeepHours.count >= 2 && restDeepHours.count >= 2 {
+                let exDeepAvg = exDeepHours.reduce(0, +) / Double(exDeepHours.count)
+                let restDeepAvg = restDeepHours.reduce(0, +) / Double(restDeepHours.count)
+                let deepDiff = exDeepAvg - restDeepAvg
+                if deepDiff >= 0.2 {
+                    insights.append("  深睡方面：运动日均深睡\(String(format: "%.1f", exDeepAvg))h vs 休息日\(String(format: "%.1f", restDeepAvg))h")
+                }
+            }
+        }
+
+        // --- 2. Late bedtime → Next-day activity correlation ---
+        // Users who sleep late tend to be less active the next day. Quantifying this
+        // makes the advice "早点睡" concrete: "你晚睡的第二天平均少走3000步".
+        let daysWithOnset = completed.filter { $0.sleepOnset != nil && $0.sleepHours > 0 }
+        if daysWithOnset.count >= 4 {
+            // Classify bedtimes: "early" (before midnight) vs "late" (after midnight)
+            let midnightThresholdMinutes: Double = 24 * 60  // midnight in normalized minutes (since 18:00 baseline)
+            let toNormMins: (Date) -> Double = { time in
+                let c = cal.dateComponents([.hour, .minute], from: time)
+                var m = Double((c.hour ?? 0) * 60 + (c.minute ?? 0))
+                if m < 18 * 60 { m += 24 * 60 }
+                return m
+            }
+
+            var earlyBedNextDaySteps: [Double] = []
+            var lateBedNextDaySteps: [Double] = []
+
+            for day in daysWithOnset {
+                guard let onset = day.sleepOnset else { continue }
+                let onsetMins = toNormMins(onset)
+                // "day" is the wake-up day (sleep attributed to it). The "next day" for
+                // activity correlation is actually the same day — the user woke up on this
+                // day and their activity happens during this day.
+                if day.steps > 0 {
+                    if onsetMins >= midnightThresholdMinutes {
+                        lateBedNextDaySteps.append(day.steps)
+                    } else {
+                        earlyBedNextDaySteps.append(day.steps)
+                    }
+                }
+            }
+
+            if earlyBedNextDaySteps.count >= 2 && lateBedNextDaySteps.count >= 2 {
+                let earlyAvg = earlyBedNextDaySteps.reduce(0, +) / Double(earlyBedNextDaySteps.count)
+                let lateAvg = lateBedNextDaySteps.reduce(0, +) / Double(lateBedNextDaySteps.count)
+                let stepDiff = earlyAvg - lateAvg
+                if stepDiff >= 1000 {
+                    insights.append("🌙→👟 0点前入睡的日子平均\(Int(earlyAvg))步，0点后入睡的日子仅\(Int(lateAvg))步（早睡多走\(Int(stepDiff))步）")
+                } else if stepDiff <= -1000 {
+                    insights.append("🌙→👟 0点后入睡的日子平均\(Int(lateAvg))步，0点前入睡的日子\(Int(earlyAvg))步（夜猫子反而更活跃）")
+                }
+            }
+        }
+
+        // --- 3. Calendar busyness → Exercise correlation ---
+        // Busy meeting days often block exercise. Quantifying this helps GPT advise
+        // "这周会议多，可以尝试在早上会议前运动" instead of generic tips.
+        if !calendarEvents.isEmpty {
+            // Count non-all-day events per day
+            var eventCountByDay: [Date: Int] = [:]
+            for event in calendarEvents where !event.isAllDay {
+                let dayStart = cal.startOfDay(for: event.startDate)
+                eventCountByDay[dayStart, default: 0] += 1
+            }
+
+            // Classify days as "busy" (≥3 events) vs "light" (0-1 events)
+            var busyDayExercise: [Double] = []
+            var lightDayExercise: [Double] = []
+
+            for day in completed {
+                let dayStart = cal.startOfDay(for: day.date)
+                let eventCount = eventCountByDay[dayStart] ?? 0
+                if eventCount >= 3 {
+                    busyDayExercise.append(day.exerciseMinutes)
+                } else if eventCount <= 1 {
+                    lightDayExercise.append(day.exerciseMinutes)
+                }
+            }
+
+            if busyDayExercise.count >= 2 && lightDayExercise.count >= 2 {
+                let busyExPct = Double(busyDayExercise.filter { $0 > 0 }.count) / Double(busyDayExercise.count) * 100
+                let lightExPct = Double(lightDayExercise.filter { $0 > 0 }.count) / Double(lightDayExercise.count) * 100
+
+                if lightExPct - busyExPct >= 20 {
+                    let busyAvgEx = busyDayExercise.reduce(0, +) / Double(busyDayExercise.count)
+                    let lightAvgEx = lightDayExercise.reduce(0, +) / Double(lightDayExercise.count)
+                    insights.append("📅→🏃 会议较多（≥3场）的日子运动概率\(Int(busyExPct))%（均\(Int(busyAvgEx))分钟），清闲日运动概率\(Int(lightExPct))%（均\(Int(lightAvgEx))分钟）")
+                }
+            }
+        }
+
+        // --- 4. Step count → Resting HR correlation ---
+        // Higher activity levels typically correlate with lower resting HR the next morning.
+        // This validates exercise benefits with the user's own data.
+        let daysWithRHR = completed.filter { $0.restingHeartRate > 0 && $0.steps > 0 }
+        if daysWithRHR.count >= 5 {
+            let sorted = daysWithRHR.sorted { $0.steps < $1.steps }
+            let lowActivityHalf = Array(sorted.prefix(sorted.count / 2))
+            let highActivityHalf = Array(sorted.suffix(sorted.count / 2))
+
+            if !lowActivityHalf.isEmpty && !highActivityHalf.isEmpty {
+                let lowRHR = lowActivityHalf.map(\.restingHeartRate).reduce(0, +) / Double(lowActivityHalf.count)
+                let highRHR = highActivityHalf.map(\.restingHeartRate).reduce(0, +) / Double(highActivityHalf.count)
+                let rhrDiff = lowRHR - highRHR
+
+                if rhrDiff >= 3 {
+                    let lowStepsAvg = Int(lowActivityHalf.map(\.steps).reduce(0, +) / Double(lowActivityHalf.count))
+                    let highStepsAvg = Int(highActivityHalf.map(\.steps).reduce(0, +) / Double(highActivityHalf.count))
+                    insights.append("👟→❤️ 活动量高的日子（≈\(highStepsAvg)步）静息心率均\(Int(highRHR))bpm，活动量低的日子（≈\(lowStepsAvg)步）均\(Int(lowRHR))bpm")
+                }
+            }
+        }
+
+        guard !insights.isEmpty else { return "" }
+        return "[生活模式洞察]\n以下为系统分析的跨领域关联（基于近\(completed.count)天数据），在用户问「为什么」「有什么规律」「怎么改善」等问题时可引用：\n" + insights.joined(separator: "\n")
     }
 
     // MARK: - Photo Search

@@ -464,37 +464,148 @@ struct MoodSkill: ClawSkill {
         let isNegative: Bool
     }
 
-    /// Build empathy that mirrors the user's actual emotion word instead of a generic template.
-    private func buildPersonalizedEmpathy(query: String) -> EmpathyResult {
-        // Fatigue / Exhaustion / Pressure
-        if SkillRouter.containsAny(query, ["累", "疲惫"]) {
-            return EmpathyResult(text: "听起来你很疲惫，辛苦了 🫂", isNegative: true)
+    /// Emotion intensity level — detected from Chinese modifiers surrounding the emotion word.
+    private enum EmotionIntensity {
+        case mild      // 有点、略微、稍微
+        case moderate  // no modifier, or neutral modifier
+        case strong    // 很、好、太、非常、特别、超级、真的、实在
+        case extreme   // 累死了、崩溃、受不了、要疯了、扛不住 (hyperbolic expressions)
+    }
+
+    /// Detect emotion intensity from Chinese modifier patterns.
+    /// e.g. "有点累" → mild, "累" → moderate, "好累" → strong, "累死了" → extreme
+    private func detectIntensity(query: String, emotionWord: String) -> EmotionIntensity {
+        // Extreme: hyperbolic suffixes or inherently extreme words
+        let extremeSuffixes = ["死了", "死我了", "炸了", "爆了", "透了", "惨了", "坏了"]
+        for suffix in extremeSuffixes {
+            if query.contains(emotionWord + suffix) { return .extreme }
         }
+        let extremeStandalone = ["崩溃", "扛不住", "受不了", "要疯了", "快疯了", "撑不住", "顶不住"]
+        if extremeStandalone.contains(where: { query.contains($0) }) { return .extreme }
+
+        // Strong: intensity amplifiers before the emotion word
+        let strongPrefixes = ["很", "好", "太", "非常", "特别", "超", "超级", "真的", "实在",
+                              "相当", "极其", "十分", "万分", "无比", "格外"]
+        for prefix in strongPrefixes {
+            if query.contains(prefix + emotionWord) { return .strong }
+        }
+        // Also catch "太…了" pattern (e.g. "太累了")
+        if query.contains("太" + emotionWord) { return .strong }
+
+        // Mild: softening modifiers
+        let mildPrefixes = ["有点", "有些", "略微", "稍微", "稍稍", "一点", "一丝", "些许", "多少有点"]
+        for prefix in mildPrefixes {
+            if query.contains(prefix + emotionWord) || query.contains(prefix + "儿" + emotionWord) { return .mild }
+        }
+        // "不太" pattern (e.g. "不太开心" = mildly negative)
+        if query.contains("不太" + emotionWord) { return .mild }
+
+        return .moderate
+    }
+
+    /// Build empathy that mirrors the user's actual emotion word AND intensity level.
+    /// "有点累" gets gentle acknowledgment; "累死了" gets strong validation.
+    private func buildPersonalizedEmpathy(query: String) -> EmpathyResult {
+        // Fatigue / Exhaustion
+        if SkillRouter.containsAny(query, ["累", "疲惫", "没精神", "困"]) {
+            let intensity = detectIntensity(query: query, emotionWord: query.contains("疲惫") ? "疲惫" : "累")
+            switch intensity {
+            case .mild:
+                return EmpathyResult(text: "有点累了？注意休息 ☕", isNegative: true)
+            case .moderate:
+                return EmpathyResult(text: "听起来你挺累的，辛苦了 🫂", isNegative: true)
+            case .strong:
+                return EmpathyResult(text: "真的辛苦了，你已经很努力了 🫂", isNegative: true)
+            case .extreme:
+                return EmpathyResult(text: "能感觉到你已经筋疲力尽了，先别硬撑，让自己喘口气 🫂", isNegative: true)
+            }
+        }
+        // Pressure / Breakdown
         if SkillRouter.containsAny(query, ["压力", "崩溃", "扛不住", "受不了"]) {
-            return EmpathyResult(text: "压力大的时候能说出来就好，我在听 🫂", isNegative: true)
+            let intensity = detectIntensity(query: query, emotionWord: "压力")
+            switch intensity {
+            case .mild:
+                return EmpathyResult(text: "有些压力是正常的，能意识到就好 💪", isNegative: true)
+            case .moderate:
+                return EmpathyResult(text: "压力大的时候能说出来就好，我在听 🫂", isNegative: true)
+            case .strong, .extreme:
+                return EmpathyResult(text: "压力大到这种程度真的不容易，你不用一个人扛着 🫂\n先放下手头的事，深呼吸几次。", isNegative: true)
+            }
         }
         // Anxiety
         if SkillRouter.containsAny(query, ["焦虑", "紧张", "不安", "慌"]) {
-            return EmpathyResult(text: "感受到你现在有些焦虑，先深呼吸一下 🫂", isNegative: true)
+            let intensity = detectIntensity(query: query, emotionWord: query.contains("焦虑") ? "焦虑" : "紧张")
+            switch intensity {
+            case .mild:
+                return EmpathyResult(text: "有点紧张？没关系，这很正常 😊", isNegative: true)
+            case .moderate:
+                return EmpathyResult(text: "感受到你现在有些焦虑，先深呼吸一下 🫂", isNegative: true)
+            case .strong, .extreme:
+                return EmpathyResult(text: "焦虑感很强的时候，试着把注意力放到呼吸上，一呼一吸 🫂\n你现在是安全的。", isNegative: true)
+            }
         }
         // Sadness / Low mood
         if SkillRouter.containsAny(query, ["难过", "伤心", "沮丧", "郁闷", "低落", "丧"]) {
-            return EmpathyResult(text: "抱抱你，不开心的时候能说出来就好 🫂", isNegative: true)
+            let coreWord = ["难过", "伤心", "沮丧", "郁闷", "低落", "丧"].first(where: { query.contains($0) }) ?? "难过"
+            let intensity = detectIntensity(query: query, emotionWord: coreWord)
+            switch intensity {
+            case .mild:
+                return EmpathyResult(text: "心情有点低？没事的，每个人都会有这样的时候 🤗", isNegative: true)
+            case .moderate:
+                return EmpathyResult(text: "抱抱你，不开心的时候能说出来就好 🫂", isNegative: true)
+            case .strong, .extreme:
+                return EmpathyResult(text: "听到你这么难过，真的很心疼 🫂\n想哭就哭出来吧，不用忍着。", isNegative: true)
+            }
         }
         // Frustration / Anger
         if SkillRouter.containsAny(query, ["烦", "恼火", "生气", "愤怒"]) {
-            return EmpathyResult(text: "听起来今天遇到了烦心事 😮‍💨", isNegative: true)
+            let coreWord = ["愤怒", "恼火", "生气", "烦"].first(where: { query.contains($0) }) ?? "烦"
+            let intensity = detectIntensity(query: query, emotionWord: coreWord)
+            switch intensity {
+            case .mild:
+                return EmpathyResult(text: "有点不顺心？说出来就好了 😮‍💨", isNegative: true)
+            case .moderate:
+                return EmpathyResult(text: "听起来今天遇到了烦心事 😮‍💨", isNegative: true)
+            case .strong, .extreme:
+                return EmpathyResult(text: "能感受到你真的很生气 😤 这种感受完全可以理解。", isNegative: true)
+            }
         }
         // Loneliness
         if SkillRouter.containsAny(query, ["孤独", "寂寞", "空虚", "无聊"]) {
-            return EmpathyResult(text: "我陪着你呢，有什么想聊的都可以说 🤗", isNegative: true)
+            let intensity = detectIntensity(query: query, emotionWord: query.contains("孤独") ? "孤独" : "无聊")
+            switch intensity {
+            case .mild:
+                return EmpathyResult(text: "有点无聊？来跟我聊聊天吧 😊", isNegative: true)
+            case .moderate:
+                return EmpathyResult(text: "我陪着你呢，有什么想聊的都可以说 🤗", isNegative: true)
+            case .strong, .extreme:
+                return EmpathyResult(text: "孤独的感觉很难受，但你不是一个人 🫂\n想聊什么都可以，我一直在。", isNegative: true)
+            }
         }
         // Positive emotions
         if SkillRouter.containsAny(query, ["开心", "高兴", "快乐", "兴奋", "激动"]) {
-            return EmpathyResult(text: "能感受到你的开心！什么好事？😊", isNegative: false)
+            let coreWord = ["开心", "高兴", "快乐", "兴奋", "激动"].first(where: { query.contains($0) }) ?? "开心"
+            let intensity = detectIntensity(query: query, emotionWord: coreWord)
+            switch intensity {
+            case .mild:
+                return EmpathyResult(text: "有好事发生？😊", isNegative: false)
+            case .moderate:
+                return EmpathyResult(text: "能感受到你的开心！什么好事？😊", isNegative: false)
+            case .strong, .extreme:
+                return EmpathyResult(text: "哇，看得出你超开心的！🎉 快说说发生了什么好事！", isNegative: false)
+            }
         }
         if SkillRouter.containsAny(query, ["满足", "充实", "舒服", "放松", "惬意", "愉快"]) {
-            return EmpathyResult(text: "这种状态很好，享受当下 ☀️", isNegative: false)
+            let coreWord = ["满足", "充实", "舒服", "放松", "惬意", "愉快"].first(where: { query.contains($0) }) ?? "舒服"
+            let intensity = detectIntensity(query: query, emotionWord: coreWord)
+            switch intensity {
+            case .mild:
+                return EmpathyResult(text: "不错的状态 ☀️", isNegative: false)
+            case .moderate:
+                return EmpathyResult(text: "这种状态很好，享受当下 ☀️", isNegative: false)
+            case .strong, .extreme:
+                return EmpathyResult(text: "这种感觉太好了！值得好好记住这一刻 🌟", isNegative: false)
+            }
         }
         if SkillRouter.containsAny(query, ["平静", "安心"]) {
             return EmpathyResult(text: "内心平静是最好的状态 🌿", isNegative: false)
@@ -503,31 +614,34 @@ struct MoodSkill: ClawSkill {
     }
 
     /// Extract the most prominent emotion word from the query for natural record suggestions.
+    /// Uses intensity detection so "有点累" suggests "有点累", "累死了" suggests "累死了".
     private func extractDominantEmotion(from query: String) -> String? {
-        // Try to extract a natural phrase segment containing the emotion
-        let emotionPhrases: [(keywords: [String], phrase: String)] = [
-            (["好累", "很累", "太累"], "今天好累"),
-            (["累"], "有点累"),
-            (["疲惫"], "感觉疲惫"),
-            (["压力大", "压力好大"], "压力大"),
-            (["压力"], "有压力"),
-            (["崩溃"], "快崩溃了"),
-            (["焦虑"], "有些焦虑"),
-            (["紧张"], "有点紧张"),
-            (["难过"], "有点难过"),
-            (["伤心"], "很伤心"),
-            (["郁闷", "低落", "丧", "沮丧"], "心情低落"),
-            (["烦", "烦躁"], "有点烦"),
-            (["开心", "高兴"], "很开心"),
-            (["兴奋", "激动"], "很兴奋"),
-            (["放松", "舒服", "惬意"], "很放松"),
-            (["满足", "充实"], "很充实"),
-            (["无聊"], "有点无聊"),
-            (["孤独", "寂寞"], "感觉孤独"),
+        // Each entry: (core emotion word, mild phrase, moderate phrase, strong/extreme phrase)
+        let emotionMap: [(words: [String], mild: String, moderate: String, strong: String)] = [
+            (["累", "疲惫", "困", "没精神"],  "有点累",     "今天挺累的",   "累到不行"),
+            (["压力"],                        "有些压力",    "压力挺大",     "压力爆表"),
+            (["崩溃", "扛不住", "受不了"],     "快崩溃了",    "快崩溃了",     "快崩溃了"),
+            (["焦虑", "不安"],                "有些焦虑",    "比较焦虑",     "焦虑到不行"),
+            (["紧张", "慌"],                  "有点紧张",    "很紧张",       "紧张到不行"),
+            (["难过", "伤心"],                "有点难过",    "很难过",       "特别难过"),
+            (["沮丧", "郁闷", "低落", "丧"],   "心情有点低", "心情低落",     "心情糟透了"),
+            (["烦", "烦躁", "恼火"],          "有点烦",      "很烦",        "烦透了"),
+            (["生气", "愤怒"],                "有点生气",    "很生气",       "气炸了"),
+            (["孤独", "寂寞"],                "有点孤独",    "感觉孤独",     "特别孤独"),
+            (["空虚", "无聊"],                "有点无聊",    "很无聊",       "无聊到不行"),
+            (["开心", "高兴", "快乐"],         "有点开心",    "很开心",       "超级开心"),
+            (["兴奋", "激动"],                "有点兴奋",    "很兴奋",       "超级兴奋"),
+            (["放松", "舒服", "惬意"],         "挺放松",     "很放松",       "超级放松"),
+            (["满足", "充实"],                "挺充实",      "很充实",       "特别充实"),
         ]
-        for ep in emotionPhrases {
-            if ep.keywords.contains(where: { query.contains($0) }) {
-                return ep.phrase
+
+        for entry in emotionMap {
+            guard let matchedWord = entry.words.first(where: { query.contains($0) }) else { continue }
+            let intensity = detectIntensity(query: query, emotionWord: matchedWord)
+            switch intensity {
+            case .mild:    return entry.mild
+            case .moderate: return entry.moderate
+            case .strong, .extreme: return entry.strong
             }
         }
         return nil

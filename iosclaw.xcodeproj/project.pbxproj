@@ -35,6 +35,7 @@
 		5548A4F9F8B9B9B3780BC82E /* MathSkill.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D0677EAD4A98FD7B4BB601E /* MathSkill.swift */; };
 		57821817DDEDADC9CEE666C4 /* ExpenseSkill.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F796E57D97A09EC743748D0 /* ExpenseSkill.swift */; };
 		59E9D92FFAA8322E750ECBC5 /* CalendarSkill.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42167BD1FB1325E7A4A9B494 /* CalendarSkill.swift */; };
+		5EE02A196A3FC5981B0A0C83 /* RawGPTService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 69B00A54F7A85E6D41104B35 /* RawGPTService.swift */; };
 		5F55F004A36BA18AD2F8F2B4 /* RecordSkill.swift in Sources */ = {isa = PBXBuildFile; fileRef = 749BA5F94BA2252D4E0744BB /* RecordSkill.swift */; };
 		627302E4EF03E18DC0A07877 /* UserNotifications.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 341C694DEFD6C8643C51D40A /* UserNotifications.framework */; };
 		668EC27CA3E0CC1ACBDB0D94 /* QuickRecordView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FDCFA7B0F9CFCCAA2C6B874F /* QuickRecordView.swift */; };
@@ -124,6 +125,7 @@
 		5D0677EAD4A98FD7B4BB601E /* MathSkill.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MathSkill.swift; sourceTree = "<group>"; };
 		5D806134713EBA25781AD08B /* SettingsViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsViewModel.swift; sourceTree = "<group>"; };
 		666F826153CDFB7991D2EADB /* ContextMemory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContextMemory.swift; sourceTree = "<group>"; };
+		69B00A54F7A85E6D41104B35 /* RawGPTService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RawGPTService.swift; sourceTree = "<group>"; };
 		6F94565A3BA37E7BA8CD84C2 /* PersistenceController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersistenceController.swift; sourceTree = "<group>"; };
 		73F65F3E181B65302631AF67 /* NotificationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationService.swift; sourceTree = "<group>"; };
 		749BA5F94BA2252D4E0744BB /* RecordSkill.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordSkill.swift; sourceTree = "<group>"; };
@@ -334,6 +336,7 @@
 				93E7F9209DB80408CB8E91D4 /* PhotoIndexService.swift */,
 				FD7475206AF12DD9FDE4E568 /* PhotoMetadataService.swift */,
 				56B2FE7E27D4FAA1D6E8940E /* PhotoSearchService.swift */,
+				69B00A54F7A85E6D41104B35 /* RawGPTService.swift */,
 				31757FD0C5225CD41F60B836 /* SpeechService.swift */,
 			);
 			path = Services;
@@ -609,6 +612,7 @@
 				E81CDB4DE8DFE9297B1AE31B /* ProfileViewModel.swift in Sources */,
 				668EC27CA3E0CC1ACBDB0D94 /* QuickRecordView.swift in Sources */,
 				C5464F52399B2A24B1E691EE /* RandomDecisionSkill.swift in Sources */,
+				5EE02A196A3FC5981B0A0C83 /* RawGPTService.swift in Sources */,
 				0570EE17ED17F727A06A3B0D /* RecommendationSkill.swift in Sources */,
 				5F55F004A36BA18AD2F8F2B4 /* RecordSkill.swift in Sources */,
 				195FDBF0F8436297FF05E18B /* ReminderSkill.swift in Sources */,
@@ -810,7 +814,7 @@
 				CODE_SIGN_ENTITLEMENTS = PrivateAIWidgetExtension/PrivateAIWidgetExtension.entitlements;
 				ENABLE_PREVIEWS = YES;
 				INFOPLIST_FILE = PrivateAIWidgetExtension/Info.plist;
-				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks";
 				PRODUCT_BUNDLE_IDENTIFIER = com.iosclaw.assistant.widget;
 				SDKROOT = iphoneos;
@@ -825,7 +829,7 @@
 				CODE_SIGN_ENTITLEMENTS = PrivateAIWidgetExtension/PrivateAIWidgetExtension.entitlements;
 				ENABLE_PREVIEWS = YES;
 				INFOPLIST_FILE = PrivateAIWidgetExtension/Info.plist;
-				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks";
 				PRODUCT_BUNDLE_IDENTIFIER = com.iosclaw.assistant.widget;
 				SDKROOT = iphoneos;

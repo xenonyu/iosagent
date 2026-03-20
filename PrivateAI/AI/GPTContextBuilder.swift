@@ -394,13 +394,16 @@ final class GPTContextBuilder {
             parts.append(trendSection(weeklyHealth))
         }
 
-        // 7-DAY SLEEP QUALITY (per-day phase breakdown for sleep analysis)
+        // 14-DAY SLEEP QUALITY (per-day phase breakdown for sleep analysis)
+        // Uses all 14 days so GPT can answer "上周睡得怎么样" with per-night details,
+        // not just the aggregate from buildPerWeekStats.
         let sleepAnalysis = weeklySleepSection(weeklyHealth)
         if !sleepAnalysis.isEmpty {
             parts.append(sleepAnalysis)
         }
 
-        // 7-DAY WORKOUT HISTORY (individual sessions GPT can reference)
+        // 14-DAY WORKOUT HISTORY (individual sessions GPT can reference)
+        // Uses all 14 days so GPT can answer "上周做了什么运动" with session details.
         let workoutHistory = weeklyWorkoutSection(weeklyHealth)
         if !workoutHistory.isEmpty {
             parts.append(workoutHistory)
@@ -1485,17 +1488,21 @@ final class GPTContextBuilder {
 
     // MARK: - Weekly Workout History
 
-    /// Extracts individual workout sessions from weekly summaries so GPT can answer
-    /// questions like "when was my last run?" or "how many times did I exercise this week?"
+    /// Extracts individual workout sessions from all available summaries (up to 14 days)
+    /// so GPT can answer questions like "when was my last run?" or "上周做了什么运动?"
+    /// with specific session details, not just aggregate stats from buildPerWeekStats.
     private func weeklyWorkoutSection(_ summaries: [HealthSummary]) -> String {
         let cal = Calendar.current
         let dateFmt = DateFormatter(); dateFmt.dateFormat = "M/d"
         let weekdayFmt = DateFormatter(); weekdayFmt.locale = Locale(identifier: "zh_CN"); weekdayFmt.dateFormat = "EEE"
         let timeFmt = DateFormatter(); timeFmt.dateFormat = "HH:mm"
 
-        // Collect all workouts from all days, tagged with their date
+        // Collect all workouts from ALL days (14-day window), not just 7.
+        // This ensures GPT can see individual workout sessions from last week,
+        // matching the per-week stats from buildPerWeekStats. Without this,
+        // GPT sees "上周 3天运动共90分钟" but can't name the actual workouts.
         var allWorkouts: [(date: Date, workout: WorkoutRecord)] = []
-        for s in summaries.prefix(7) {
+        for s in summaries {
             for w in s.workouts {
                 allWorkouts.append((date: s.date, workout: w))
             }
@@ -1506,7 +1513,8 @@ final class GPTContextBuilder {
         // Sort chronologically (newest first) for easy reading
         allWorkouts.sort { $0.workout.startDate > $1.workout.startDate }
 
-        var lines = ["[近7天运动记录]"]
+        let dayCount = Set(summaries.map { cal.startOfDay(for: $0.date) }).count
+        var lines = ["[近\(dayCount)天运动记录]"]
         // Summary line
         let totalSessions = allWorkouts.count
         let activeDays = Set(allWorkouts.map { cal.startOfDay(for: $0.date) }).count
@@ -1552,9 +1560,9 @@ final class GPTContextBuilder {
 
     // MARK: - Weekly Sleep Analysis
 
-    /// Builds a per-day sleep quality breakdown for the past 7 days.
-    /// Enables GPT to answer "最近睡眠质量怎么样？", "哪天睡得最好？",
-    /// "我入睡时间规律吗？" with precise phase-level data.
+    /// Builds a per-day sleep quality breakdown for all available days (up to 14).
+    /// Enables GPT to answer "上周睡得怎么样？", "哪天睡得最好？",
+    /// "我入睡时间规律吗？" with precise phase-level data from both this week and last.
     /// Returns empty string if fewer than 2 days have sleep data.
     private func weeklySleepSection(_ summaries: [HealthSummary]) -> String {
         let cal = Calendar.current
@@ -1564,11 +1572,14 @@ final class GPTContextBuilder {
         weekdayFmt.dateFormat = "EEE"
         let timeFmt = DateFormatter(); timeFmt.dateFormat = "HH:mm"
 
-        // Only include days that have sleep data
-        let daysWithSleep = summaries.prefix(7).filter { $0.sleepHours > 0 }
+        // Use ALL summaries (up to 14 days) so GPT has per-night details for last week too.
+        // Without this, "上周睡得怎么样" only gets aggregate stats from buildPerWeekStats
+        // but no individual night data (onset time, phases, efficiency).
+        let daysWithSleep = summaries.filter { $0.sleepHours > 0 }
         guard daysWithSleep.count >= 2 else { return "" }
 
-        var lines = ["[近7天睡眠质量分析]"]
+        let dayCount = Set(summaries.map { cal.startOfDay(for: $0.date) }).count
+        var lines = ["[近\(dayCount)天睡眠质量分析]"]
 
         // Show oldest → newest for natural trend reading
         let chronological = Array(daysWithSleep.reversed())

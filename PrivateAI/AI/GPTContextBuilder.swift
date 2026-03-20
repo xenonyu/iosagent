@@ -1293,12 +1293,14 @@ final class GPTContextBuilder {
                         lines.append("    …还有\(dayEvents.count - 5)项")
                     }
                 } else {
-                    // Compact summary for older days — titles only, no notes/location/attendees.
-                    // Saves tokens while letting GPT answer "上周二有什么会?" with event names.
+                    // Compact summary for older days — time + title, no notes/location/attendees.
+                    // Includes event time so GPT can answer "上周三几点开的会?" and "上周二下午有什么安排?"
+                    // without which GPT can only see event names but not when they occurred.
                     let titles = dayEvents.prefix(4).map { e -> String in
-                        var title = e.title
-                        if !e.calendar.isEmpty { title += "[\(e.calendar)]" }
-                        return title
+                        let timePrefix = e.isAllDay ? "全天" : timeFmt.string(from: e.startDate)
+                        var entry = "\(timePrefix) \(e.title)"
+                        if !e.calendar.isEmpty { entry += "[\(e.calendar)]" }
+                        return entry
                     }
                     var compactLine = "  \(dayLabel)：\(dayEvents.count)个日程"
                     compactLine += "（\(titles.joined(separator: "、"))）"

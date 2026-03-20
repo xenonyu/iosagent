@@ -675,6 +675,29 @@ final class GPTContextBuilder {
         return lines.joined(separator: "\n")
     }
 
+    /// Extracts a display name for a location record with coordinate fallback.
+    /// When both placeName and address are empty, provides lat/lon so GPT can
+    /// approximate the location (GPT knows world geography well).
+    private func locationDisplayName(for r: CDLocationRecord) -> String {
+        if let name = r.placeName, !name.isEmpty { return name }
+        if let addr = r.address, !addr.isEmpty { return addr }
+        // Coordinate fallback — GPT can identify approximate area from lat/lon
+        if r.latitude != 0 || r.longitude != 0 {
+            return String(format: "%.3f°N, %.3f°E", r.latitude, r.longitude)
+        }
+        return "未知地点"
+    }
+
+    /// Extracts the city component from the address field.
+    /// Address format from CLGeocoder is typically "街道, 城市, 省份" (Chinese locale).
+    private func cityFromAddress(_ address: String?) -> String? {
+        guard let addr = address, !addr.isEmpty else { return nil }
+        let parts = addr.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+        // The second component is typically the city (e.g. "南京西路, 上海市, 上海" → "上海市")
+        if parts.count >= 2 { return parts[1] }
+        return parts.first
+    }
+
     private func locationSection(_ records: [CDLocationRecord]) -> String {
         let cal = Calendar.current
         let dateFmt = DateFormatter(); dateFmt.dateFormat = "M月d日（EEEE）"
@@ -682,6 +705,21 @@ final class GPTContextBuilder {
         let timeFmt = DateFormatter(); timeFmt.dateFormat = "HH:mm"
 
         var lines = ["[位置记录（近7天）]"]
+
+        // City/district aggregation so GPT can answer "去了几个城市？" or "在哪个区？"
+        var cityCounts: [String: Int] = [:]
+        for r in records {
+            if let city = cityFromAddress(r.address), !city.isEmpty {
+                cityCounts[city, default: 0] += 1
+            }
+        }
+        if cityCounts.count >= 2 {
+            let cityList = cityCounts.sorted { $0.value > $1.value }
+                .map { "\($0.key)(\($0.value)次)" }
+            lines.append("活动城市/区域：\(cityList.joined(separator: "、"))")
+        } else if let singleCity = cityCounts.keys.first {
+            lines.append("活动区域：\(singleCity)")
+        }
 
         // Group records by day for temporal clarity — GPT can answer "where did I go yesterday?"
         var dayGroups: [Date: [CDLocationRecord]] = [:]
@@ -698,13 +736,17 @@ final class GPTContextBuilder {
                            cal.isDateInYesterday(day) ? "昨天" :
                            dateFmt.string(from: day)
             // Deduplicate by place name, keep chronological order and visit times
-            var seenPlaces: [String: (count: Int, times: [String])] = [:]
+            var seenPlaces: [String: (count: Int, times: [String], address: String?)] = [:]
             var placeOrder: [String] = []
             for r in dayRecords.sorted(by: { ($0.timestamp ?? .distantPast) < ($1.timestamp ?? .distantPast) }) {
-                let name = (r.placeName?.isEmpty == false ? r.placeName : r.address) ?? "未知地点"
-                if seenPlaces[name] == nil { placeOrder.append(name) }
+                let name = locationDisplayName(for: r)
+                if seenPlaces[name] == nil {
+                    placeOrder.append(name)
+                    // Store address alongside for extra context when place name is short
+                    seenPlaces[name] = (count: 0, times: [], address: r.address)
+                }
                 let timeStr = r.timestamp.map { timeFmt.string(from: $0) } ?? ""
-                seenPlaces[name, default: (count: 0, times: [])].count += 1
+                seenPlaces[name]!.count += 1
                 if !timeStr.isEmpty && seenPlaces[name]!.times.count < 3 {
                     seenPlaces[name]!.times.append(timeStr)
                 }
@@ -713,18 +755,25 @@ final class GPTContextBuilder {
             let placeParts = placeOrder.prefix(6).map { name -> String in
                 let info = seenPlaces[name]!
                 var part = name
+                // Append city/district context if place name differs from address
+                // (e.g., "星巴克" → "星巴克@上海市" helps GPT know which city)
+                if let addr = info.address, !addr.isEmpty,
+                   let city = self.cityFromAddress(addr),
+                   !name.contains(city) {
+                    part += "@\(city)"
+                }
                 if !info.times.isEmpty { part += "（\(info.times.joined(separator: "、"))）" }
                 if info.count > 1 { part += "×\(info.count)" }
                 return part
             }
-            dayLine += placeParts.joined(separator: "→")
+            dayLine += placeParts.joined(separator: " → ")
             lines.append(dayLine)
         }
 
         // Summary: frequently visited places across the week
         var totalCounts: [String: Int] = [:]
         for r in records {
-            let name = (r.placeName?.isEmpty == false ? r.placeName : r.address) ?? "未知地点"
+            let name = locationDisplayName(for: r)
             totalCounts[name, default: 0] += 1
         }
         let topPlaces = totalCounts.sorted { $0.value > $1.value }.prefix(5)

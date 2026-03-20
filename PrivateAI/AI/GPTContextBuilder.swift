@@ -233,7 +233,7 @@ final class GPTContextBuilder {
         let boundaryFmt = DateFormatter(); boundaryFmt.dateFormat = "M月d日"
         let dataStartDate = Calendar.current.date(byAdding: .day, value: -13, to: now) ?? now
         let healthRangeStart = dataStartDate
-        let healthBoundary = "健康/运动/睡眠数据：\(boundaryFmt.string(from: healthRangeStart))~\(boundaryFmt.string(from: now))（共14天，近7天有详细趋势表，完整覆盖本周+上周）"
+        let healthBoundary = "健康/运动/睡眠数据：\(boundaryFmt.string(from: healthRangeStart))~\(boundaryFmt.string(from: now))（共14天，每天有详细趋势数据，完整覆盖本周+上周）"
         let locationBoundary = locationRecords.isEmpty ? "" : {
             let timestamps = locationRecords.compactMap { $0.timestamp }
             if let earliest = timestamps.min(), let latest = timestamps.max() {
@@ -332,7 +332,7 @@ final class GPTContextBuilder {
         - ⚠️ 今日健康数据标注了「截至X点」。如果现在还在上午或下午，今天的步数/运动/卡路里等数据还会继续增长，不要过早下结论说「今天步数偏少」「运动不够」。应该说「截至目前…」或「到目前为止…」，必要时可鼓励用户继续保持。只有晚上10点之后的数据才接近当天最终值。
         - ⚠️ 卡路里说明：「活动kcal」是运动/活动消耗，「总消耗kcal」= 活动 + 基础代谢（身体维持生命所需能量）。用户问「今天消耗了多少卡路里」时，应回答总消耗值。基础代谢约占总消耗60-75%，这是正常的。
         - ⚠️ 活动圆环（Apple Watch 三圆环）说明：用户问「圆环合了吗」「三个圆环怎么样」时，结合活动卡路里（🔴Move）、运动分钟数（🟢Exercise）和站立时间（🔵Stand）来评估。如果某个圆环数据为0或缺失，说明可能未佩戴 Apple Watch。站立时间衡量的是「一天中有几个小时站起来活动了」。
-        - 涉及多天数据时，可引用「近7天趋势」进行对比分析，指出趋势变化。
+        - 涉及多天数据时，可引用「近14天趋势」进行对比分析，指出趋势变化。
         - 周统计中会标注「X天中Y天有运动」，回答时要如实反映活跃天数，不要把少数几天的数据当作每天都达到了。例如7天中2天运动共60分钟，应该说「这周运动了2天，共60分钟」，而不是「日均运动30分钟」。
         - ⚠️ 跨周对比时，务必使用「日均」数据进行公平比较，因为本周天数可能不足7天。例如本周4天日均消耗2100kcal vs 上周7天日均2000kcal → 说明本周消耗更高，而不是比较总量（8400 vs 14000）得出本周更少的错误结论。
         - ⚠️ 体重数据说明：趋势表和周统计中会包含体重数据（如有记录）。体重数据来自智能体重秤或手动录入，不一定每天都有。回答体重趋势时，关注变化方向和幅度，短期波动（0.5kg以内）通常是正常的水分变化，不要过度解读。如果只有1-2天的记录，说明数据有限，不宜下趋势结论。
@@ -403,7 +403,7 @@ final class GPTContextBuilder {
             }
         }
 
-        // 7-DAY HEALTH TREND
+        // 14-DAY HEALTH TREND (full per-day table for all available data)
         if weeklyHealth.count >= 3 {
             parts.append(trendSection(weeklyHealth))
         }
@@ -689,7 +689,7 @@ final class GPTContextBuilder {
 
         var sectionNames: [String] = []
         if topics.contains(.health) {
-            sectionNames.append("[今日健康数据]、[近7天健康趋势]、[睡眠质量分析]、[运动记录]")
+            sectionNames.append("[今日健康数据]、[近14天健康趋势]、[睡眠质量分析]、[运动记录]")
         }
         if topics.contains(.calendar) {
             sectionNames.append("[日历日程]")
@@ -967,14 +967,18 @@ final class GPTContextBuilder {
         let fmt = DateFormatter(); fmt.dateFormat = "M/d"
         let weekdayFmt = DateFormatter(); weekdayFmt.locale = Locale(identifier: "zh_CN"); weekdayFmt.dateFormat = "EEE"
         let cal = Calendar.current
-        // Check if any day in the trend window has weight data — if so, add column
-        let trendDays = Array(summaries.prefix(7).reversed())
+        // Show ALL available days (up to 14) so GPT can answer per-day questions
+        // like "上周三走了多少步" with actual data, not just aggregate stats.
+        // Previously limited to 7 days, which left days 8-14 invisible in the trend
+        // table even though per-week stats and sleep/workout sections used all 14 days.
+        let trendDays = Array(summaries.reversed()) // chronological: oldest→newest
         let hasWeightData = trendDays.contains { $0.bodyMassKg > 0 }
 
         let hasStandData = trendDays.contains { $0.standMinutes > 0 }
         let headerWeight = hasWeightData ? " | 体重(kg)" : ""
         let headerStand = hasStandData ? " | 站立(分)" : ""
-        var lines = ["[近7天健康趋势]", "日期  | 步数  | 运动(分) | 活动kcal | 总消耗kcal | 睡眠(h)（对应哪晚） | 心率avg(min~max)bpm\(headerStand)\(headerWeight)"]
+        let dayCount = trendDays.count
+        var lines = ["[近\(dayCount)天健康趋势]", "日期  | 步数  | 运动(分) | 活动kcal | 总消耗kcal | 睡眠(h)（对应哪晚） | 心率avg(min~max)bpm\(headerStand)\(headerWeight)"]
         // Show oldest→newest so GPT can naturally read the trend direction
         let chronological = trendDays
         for s in chronological {

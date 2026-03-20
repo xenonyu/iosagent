@@ -1248,6 +1248,11 @@ final class GPTContextBuilder {
             var line = "能量消耗：活动\(Int(h.activeCalories))kcal"
             if h.basalCalories > 0 {
                 line += " + 基础代谢\(Int(h.basalCalories))kcal = 总计\(totalCal)kcal"
+            } else {
+                // CRITICAL: Without basal data, GPT might tell the user their total daily
+                // expenditure is only 200-500 kcal (active only), when real TDEE is typically
+                // 1500-2500+ kcal. This note prevents that significant misrepresentation.
+                line += "（⚠️ 基础代谢数据不可用，此值仅为运动/活动消耗。真实总消耗 = 活动 + 基础代谢，通常远高于此值。回答用户「消耗了多少卡路里」时务必说明这只是活动消耗，不含基础代谢。）"
             }
             lines.append(line)
         }
@@ -1366,7 +1371,7 @@ final class GPTContextBuilder {
             if y.basalCalories > 0 {
                 lines.append("能量消耗：活动\(Int(y.activeCalories))kcal + 基础代谢\(Int(y.basalCalories))kcal = 总计\(total)kcal")
             } else {
-                lines.append("活动消耗：\(Int(y.activeCalories))kcal")
+                lines.append("活动消耗：\(Int(y.activeCalories))kcal（仅运动/活动消耗，不含基础代谢）")
             }
         }
         if y.sleepHours > 0 {
@@ -1410,13 +1415,20 @@ final class GPTContextBuilder {
         // detecting stress accumulation, overtraining, or illness onset.
         let hasRestingHRData = trendDays.contains { $0.restingHeartRate > 0 }
         let hasHRVData = trendDays.contains { $0.hrv > 0 }
+        // Only show "总消耗kcal" column when basal (resting) calorie data exists.
+        // Without basal data, the "总消耗" column would show the same values as "活动kcal",
+        // misleading GPT into treating active-only calories (200-500kcal) as total daily
+        // expenditure (real TDEE is typically 1500-2500+kcal). Hiding the column prevents
+        // this confusion entirely — GPT only sees "活动kcal" and knows it's partial.
+        let hasBasalCalData = trendDays.contains { $0.basalCalories > 0 }
         let headerWeight = hasWeightData ? " | 体重(kg)" : ""
         let headerStand = hasStandData ? " | 站立(分)" : ""
         let headerDistance = hasDistanceData ? " | 距离(km)" : ""
         let headerRHR = hasRestingHRData ? " | 静息HR" : ""
         let headerHRV = hasHRVData ? " | HRV(ms)" : ""
+        let headerTotalCal = hasBasalCalData ? " | 总消耗kcal" : ""
         let dayCount = trendDays.count
-        var lines = ["[近\(dayCount)天健康趋势]", "日期  | 步数  | 运动(分) | 活动kcal | 总消耗kcal | 睡眠(h)（对应哪晚） | 心率avg(min~max)bpm\(headerRHR)\(headerHRV)\(headerDistance)\(headerStand)\(headerWeight)"]
+        var lines = ["[近\(dayCount)天健康趋势]", "日期  | 步数  | 运动(分) | 活动kcal\(headerTotalCal) | 睡眠(h)（对应哪晚） | 心率avg(min~max)bpm\(headerRHR)\(headerHRV)\(headerDistance)\(headerStand)\(headerWeight)"]
         // Show oldest→newest so GPT can naturally read the trend direction
         let chronological = trendDays
         for s in chronological {
@@ -1450,7 +1462,10 @@ final class GPTContextBuilder {
             let steps = s.steps > 0 ? "\(Int(s.steps))" : "-"
             let ex = s.exerciseMinutes > 0 ? "\(Int(s.exerciseMinutes))" : "-"
             let activeCal = s.activeCalories > 0 ? "\(Int(s.activeCalories))" : "-"
-            let totalCal = (s.activeCalories + s.basalCalories) > 0 ? "\(Int(s.activeCalories + s.basalCalories))" : "-"
+            let totalCalCol = hasBasalCalData ? {
+                let val = s.activeCalories + s.basalCalories
+                return val > 0 ? "  | \(Int(val))" : "  | -"
+            }() : ""
             // Annotate sleep with the actual night it represents (sleep is attributed to
             // wake-up day, so "today" row = last night's sleep). This prevents GPT from
             // giving wrong data when user asks "昨晚睡了多久" and GPT looks at "yesterday" row.
@@ -1477,7 +1492,7 @@ final class GPTContextBuilder {
             let distCol = hasDistanceData ? (s.distanceKm > 0.01 ? "  | \(String(format: "%.1f", s.distanceKm))" : "  | -") : ""
             let standCol = hasStandData ? (s.standMinutes > 0 ? "  | \(Int(s.standMinutes))" : "  | -") : ""
             let weightCol = hasWeightData ? (s.bodyMassKg > 0 ? "  | \(String(format: "%.1f", s.bodyMassKg))" : "  | -") : ""
-            lines.append("\(dateLabel)  | \(steps)  | \(ex)  | \(activeCal)  | \(totalCal)  | \(sl)  | \(hr)\(rhrCol)\(hrvCol)\(distCol)\(standCol)\(weightCol)")
+            lines.append("\(dateLabel)  | \(steps)  | \(ex)  | \(activeCal)\(totalCalCol)  | \(sl)  | \(hr)\(rhrCol)\(hrvCol)\(distCol)\(standCol)\(weightCol)")
         }
         // Add weekly totals and averages with active-day counts so GPT can give
         // honest answers. E.g. "6天中有3天运动，共90分钟" is more useful than "日均30分钟"
@@ -1521,7 +1536,7 @@ final class GPTContextBuilder {
             if totalAll > totalActive {
                 avgParts.append("周总消耗\(totalAll)kcal（活动\(totalActive)kcal）")
             } else {
-                avgParts.append("周活动消耗\(totalActive)kcal")
+                avgParts.append("周活动消耗\(totalActive)kcal（仅运动/活动消耗，不含基础代谢）")
             }
         }
         // Distance — total walking+running km for the period.

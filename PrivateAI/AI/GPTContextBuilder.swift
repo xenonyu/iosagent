@@ -1280,7 +1280,59 @@ final class GPTContextBuilder {
         let sleepDays = days.filter { $0.sleepHours > 0 }
         if !sleepDays.isEmpty {
             let avg = sleepDays.map(\.sleepHours).reduce(0, +) / Double(sleepDays.count)
-            items.append("均睡\(String(format: "%.1f", avg))h")
+            var sleepDesc = "\(sleepDays.count)/\(days.count)天有睡眠，均\(String(format: "%.1f", avg))h"
+
+            // Deep sleep & REM averages — key quality metrics for cross-week comparison.
+            // Without these, GPT sees "均睡7.2h" for both weeks but can't tell that one week
+            // had much better deep sleep quality. Users asking "这周和上周睡眠哪个好" need
+            // quality metrics, not just duration.
+            let phaseDays = sleepDays.filter { $0.hasSleepPhases }
+            if !phaseDays.isEmpty {
+                let avgDeep = phaseDays.map(\.sleepDeepHours).reduce(0, +) / Double(phaseDays.count)
+                let avgREM = phaseDays.map(\.sleepREMHours).reduce(0, +) / Double(phaseDays.count)
+                sleepDesc += "（深睡\(String(format: "%.1f", avgDeep))h/REM\(String(format: "%.1f", avgREM))h"
+
+                // Deep sleep ratio for quality assessment
+                let avgTotal = phaseDays.map(\.sleepHours).reduce(0, +) / Double(phaseDays.count)
+                if avgTotal > 0 {
+                    let deepRatio = Int((avgDeep / avgTotal) * 100)
+                    sleepDesc += "，深睡占\(deepRatio)%"
+                }
+
+                sleepDesc += "）"
+            }
+
+            // Average sleep efficiency — reveals how well the user actually sleeps in bed.
+            // Two weeks with identical sleep hours can differ greatly: 92% vs 78% efficiency
+            // tells a completely different story about sleep quality.
+            let effDays = sleepDays.filter { $0.inBedHours > 0 && $0.inBedHours >= $0.sleepHours }
+            if !effDays.isEmpty {
+                let avgEff = effDays.map { Int(($0.sleepHours / $0.inBedHours) * 100) }
+                    .reduce(0, +) / effDays.count
+                sleepDesc += "，效率\(avgEff)%"
+            }
+
+            // Average onset time — sleep regularity across the week.
+            // Helps GPT say "这周入睡时间比上周早了30分钟" for meaningful comparison.
+            let cal = Calendar.current
+            let onsets = sleepDays.compactMap { $0.sleepOnset }
+            if onsets.count >= 2 {
+                let onsetMinutes = onsets.map { onset -> Double in
+                    let comps = cal.dateComponents([.hour, .minute], from: onset)
+                    var mins = Double((comps.hour ?? 0) * 60 + (comps.minute ?? 0))
+                    // Normalize: times before 18:00 are next-day (e.g. 01:00 = 25*60)
+                    if mins < 18 * 60 { mins += 24 * 60 }
+                    return mins
+                }
+                let meanMins = onsetMinutes.reduce(0, +) / Double(onsetMinutes.count)
+                // Convert back to HH:mm display
+                let displayMins = Int(meanMins) % (24 * 60)
+                let hh = displayMins / 60
+                let mm = displayMins % 60
+                sleepDesc += "，均入睡\(String(format: "%02d:%02d", hh, mm))"
+            }
+
+            items.append(sleepDesc)
         }
 
         // Show both total and daily average for calories so GPT can fairly compare

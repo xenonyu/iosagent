@@ -154,17 +154,24 @@ final class ChatViewModel: ObservableObject {
     // MARK: - Photo Search Detection
 
     /// Simple keyword check to detect photo search queries.
-    /// False positives are harmless (grid shows alongside GPT text).
+    /// Uses specific photo keywords, and only triggers on generic action words
+    /// (帮我找, 给我找, etc.) when combined with photo-related context — avoids
+    /// false positives like "帮我找明天的会议" triggering a photo grid.
     private func isPhotoSearchQuery(_ text: String) -> Bool {
         let lower = text.lowercased()
-        let keywords = [
+        let specificKeywords = [
             "找照片", "搜照片", "找图片", "搜图片", "找找照片", "照片搜索",
-            "帮我找", "给我找", "搜一下", "找一下",
             "find photo", "search photo", "show me photo",
             "的照片", "的图片", "的相片",
             "photo of", "picture of"
         ]
-        return keywords.contains(where: { lower.contains($0) })
+        if specificKeywords.contains(where: { lower.contains($0) }) { return true }
+
+        // Generic action words only count when query also mentions photos
+        let genericKeywords = ["帮我找", "给我找", "搜一下", "找一下"]
+        let photoContext = ["照片", "图片", "相片", "photo", "picture", "拍", "自拍", "截图", "视频"]
+        return genericKeywords.contains(where: { lower.contains($0) })
+            && photoContext.contains(where: { lower.contains($0) })
     }
 
     // MARK: - Voice Input

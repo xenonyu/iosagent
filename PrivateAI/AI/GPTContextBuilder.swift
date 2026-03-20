@@ -910,15 +910,22 @@ final class GPTContextBuilder {
     /// Detects photo-related queries and runs a local photo search.
     private func searchPhotosIfNeeded(query: String) -> [PhotoSearchService.SearchResult] {
         let lower = query.lowercased()
-        let photoKeywords = [
+        // Specific photo keywords — always trigger search
+        let specificKeywords = [
             "找照片", "搜照片", "找图片", "搜图片", "找找照片", "照片搜索",
-            "帮我找", "给我找", "搜一下", "找一下",
             "find photo", "search photo", "show me photo",
             "的照片", "的图片", "的相片",
             "photo of", "picture of",
             "拍的", "拍了", "拍过"
         ]
-        guard photoKeywords.contains(where: { lower.contains($0) }) else { return [] }
+        // Generic action keywords — only trigger when combined with photo context
+        let genericKeywords = ["帮我找", "给我找", "搜一下", "找一下"]
+        let photoContext = ["照片", "图片", "相片", "photo", "picture", "拍", "自拍", "截图", "视频"]
+
+        let hasSpecific = specificKeywords.contains(where: { lower.contains($0) })
+        let hasGenericWithContext = genericKeywords.contains(where: { lower.contains($0) })
+            && photoContext.contains(where: { lower.contains($0) })
+        guard hasSpecific || hasGenericWithContext else { return [] }
 
         let parsed = photoSearchService.parseQuery(query)
         // Only search if we have meaningful criteria (keywords or location)

@@ -145,6 +145,19 @@ final class GPTContextBuilder {
         dateFmt.dateFormat = "yyyy年M月d日 EEEE HH:mm"
         let weekday = dateFmt.string(from: now)
 
+        // Include timezone so GPT can correctly interpret all timestamps in the prompt.
+        // Without this, GPT might assume UTC or a wrong timezone, causing errors when
+        // users ask about events spanning time zones or when the Azure backend is in a
+        // different region (Japan East).
+        let tzAbbrev = TimeZone.current.abbreviation() ?? "UTC"
+        let tzOffsetSeconds = TimeZone.current.secondsFromGMT()
+        let tzOffsetHours = tzOffsetSeconds / 3600
+        let tzOffsetMins = abs(tzOffsetSeconds % 3600) / 60
+        let tzOffset = tzOffsetMins == 0
+            ? "UTC\(tzOffsetHours >= 0 ? "+" : "")\(tzOffsetHours)"
+            : "UTC\(tzOffsetHours >= 0 ? "+" : "")\(tzOffsetHours):\(String(format: "%02d", tzOffsetMins))"
+        let tzName = TimeZone.current.localizedName(for: .shortGeneric, locale: Locale(identifier: "zh_CN")) ?? tzAbbrev
+
         // Build data availability summary so GPT knows what's available at a glance
         var availableData: [String] = []
         var unavailableData: [String] = []
@@ -271,7 +284,7 @@ final class GPTContextBuilder {
         parts.append("""
         [SYSTEM]
         你是 iosclaw，运行在用户 iPhone 上的私人 AI 助理。你可以读取用户的健康、位置、日历、照片、生活记录等本地数据。
-        当前时间：\(weekday)
+        当前时间：\(weekday)（\(tzName)，\(tzOffset)）
         可用数据源：\(availSummary)\(unavailSummary)
 
         数据时间范围（重要）：
@@ -590,12 +603,14 @@ final class GPTContextBuilder {
             timeContext = "清晨，数据刚开始积累"
         } else if hourOfDay < 12 {
             timeContext = "截至上午\(hourOfDay)点，数据持续更新中"
+        } else if hourOfDay == 12 {
+            timeContext = "截至中午12点，今天还在继续"
         } else if hourOfDay < 18 {
-            timeContext = "截至下午\(hourOfDay > 12 ? hourOfDay - 12 : hourOfDay)点，今天还在继续"
+            timeContext = "截至下午\(hourOfDay - 12)点，今天还在继续"
         } else if hourOfDay < 22 {
-            timeContext = "截至晚上\(hourOfDay > 12 ? hourOfDay - 12 : hourOfDay)点，接近一天结束"
+            timeContext = "截至晚上\(hourOfDay - 12)点，接近一天结束"
         } else {
-            timeContext = "截至晚\(hourOfDay > 12 ? hourOfDay - 12 : hourOfDay)点，今天即将结束"
+            timeContext = "截至晚\(hourOfDay - 12)点，今天即将结束"
         }
         var lines = ["[今日健康数据]（\(timeContext)）"]
 
@@ -965,9 +980,15 @@ final class GPTContextBuilder {
     private func locationDisplayName(for r: CDLocationRecord) -> String {
         if let name = r.placeName, !name.isEmpty { return name }
         if let addr = r.address, !addr.isEmpty { return addr }
-        // Coordinate fallback — GPT can identify approximate area from lat/lon
+        // Coordinate fallback — GPT can identify approximate area from lat/lon.
+        // Use correct hemisphere suffix (N/S for latitude, E/W for longitude)
+        // so GPT interprets the location correctly worldwide.
         if r.latitude != 0 || r.longitude != 0 {
-            return String(format: "%.3f°N, %.3f°E", r.latitude, r.longitude)
+            let latSuffix = r.latitude >= 0 ? "N" : "S"
+            let lonSuffix = r.longitude >= 0 ? "E" : "W"
+            return String(format: "%.3f°%@, %.3f°%@",
+                          abs(r.latitude), latSuffix,
+                          abs(r.longitude), lonSuffix)
         }
         return "未知地点"
     }

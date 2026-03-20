@@ -167,7 +167,7 @@ struct HealthSkill: ClawSkill {
                     }
                 }
             } else {
-                // Multi-day: show totals + daily averages
+                // Multi-day: show totals + daily averages with weekly target tracking
                 if totalSteps > 0 {
                     lines.append("👟 总步数：\(Int(totalSteps).formatted()) 步（日均 \(Int(totalSteps / dayCount).formatted())）")
                 }
@@ -182,6 +182,98 @@ struct HealthSkill: ClawSkill {
                 }
                 if totalFlights > 0 {
                     lines.append("🏢 爬楼：\(Int(totalFlights)) 层")
+                }
+
+                // --- WHO Weekly Exercise Target (150 min/week moderate activity) ---
+                // The WHO recommends ≥150 minutes of moderate exercise per week.
+                // Show progress toward this target for week-scale queries, scaling
+                // proportionally for shorter/longer periods.
+                let spanDays = max(1, Calendar.current.dateComponents([.day], from: interval.start, to: interval.end).day ?? 1)
+                let weeklyTarget = 150.0 * Double(spanDays) / 7.0  // scale target for the period
+                if totalExercise > 0 && spanDays >= 3 {
+                    let progress = min(totalExercise / weeklyTarget, 1.5)
+                    let barFilled = min(Int(progress * 8), 8)
+                    let bar = String(repeating: "▓", count: barFilled) + String(repeating: "░", count: 8 - barFilled)
+                    let pct = Int(min(progress, 1.0) * 100)
+                    lines.append("")
+                    if spanDays >= 6 && spanDays <= 8 {
+                        // Exact week: show WHO 150-min standard
+                        if totalExercise >= 150 {
+                            lines.append("🎯 WHO 周运动目标 [\(bar)] \(pct)% ✅")
+                            if totalExercise >= 300 {
+                                lines.append("   超额完成！≥300 分钟可获得额外健康收益。")
+                            } else {
+                                lines.append("   已达到每周 150 分钟的最低推荐量。")
+                            }
+                        } else {
+                            let remaining = Int(150 - totalExercise)
+                            lines.append("🎯 WHO 周运动目标 [\(bar)] \(pct)%")
+                            let daysLeft = max(0, 7 - spanDays)
+                            if daysLeft > 0 && remaining > 0 {
+                                let perDay = Int(ceil(Double(remaining) / Double(daysLeft)))
+                                lines.append("   还差 \(remaining) 分钟，剩余 \(daysLeft) 天每天 \(perDay) 分钟即可达标。")
+                            } else {
+                                lines.append("   还差 \(remaining) 分钟达到每周 150 分钟推荐量。")
+                            }
+                        }
+                    } else {
+                        // Non-week period: show scaled target
+                        let targetLabel = Int(weeklyTarget)
+                        if totalExercise >= weeklyTarget {
+                            lines.append("🎯 运动达标 [\(bar)] \(pct)%（\(spanDays) 天目标 \(targetLabel) 分钟）✅")
+                        } else {
+                            let remaining = Int(weeklyTarget - totalExercise)
+                            lines.append("🎯 运动进度 [\(bar)] \(pct)%（\(spanDays) 天目标 \(targetLabel) 分钟，还差 \(remaining) 分钟）")
+                        }
+                    }
+                }
+
+                // --- Active vs Rest Day Rhythm ---
+                // Analyze the pattern of exercise/rest days to provide rhythm-based advice.
+                // Good rhythm = exercise most days with 1-2 rest days; bad = long gaps.
+                let activeDays = daysWithData.filter { $0.exerciseMinutes >= 10 }.count
+                let restDays = Int(dayCount) - activeDays
+                if Int(dayCount) >= 5 && activeDays > 0 {
+                    lines.append("")
+                    lines.append("📅 运动节奏：\(activeDays) 天活跃 · \(restDays) 天休息")
+
+                    // Detect longest consecutive rest gap
+                    let sortedDays = daysWithData.sorted { $0.date < $1.date }
+                    var maxGap = 0
+                    var currentGap = 0
+                    for day in sortedDays {
+                        if day.exerciseMinutes < 10 {
+                            currentGap += 1
+                            maxGap = max(maxGap, currentGap)
+                        } else {
+                            currentGap = 0
+                        }
+                    }
+
+                    if activeDays >= 5 && restDays >= 1 {
+                        lines.append("   ✅ 活跃天数充足且有休息日，节奏很健康！")
+                    } else if activeDays >= 3 && maxGap <= 2 {
+                        lines.append("   ✅ 运动间隔合理，身体有足够恢复时间。")
+                    } else if maxGap >= 3 {
+                        lines.append("   💡 有连续 \(maxGap) 天没有运动，建议每隔 1-2 天安排一次活动。")
+                    } else if activeDays <= 2 && Int(dayCount) >= 7 {
+                        lines.append("   💡 一周仅 \(activeDays) 天运动，试试从隔天散步 20 分钟开始建立节奏。")
+                    }
+
+                    // Exercise intensity distribution (if workout data available)
+                    let allWorkoutsForIntensity = daysWithData.flatMap { $0.workouts }
+                    if allWorkoutsForIntensity.count >= 2 {
+                        let lightWorkouts = allWorkoutsForIntensity.filter { $0.duration < 20 * 60 }.count
+                        let moderateWorkouts = allWorkoutsForIntensity.filter { $0.duration >= 20 * 60 && $0.duration < 45 * 60 }.count
+                        let intenseWorkouts = allWorkoutsForIntensity.filter { $0.duration >= 45 * 60 }.count
+                        if lightWorkouts > 0 || moderateWorkouts > 0 || intenseWorkouts > 0 {
+                            var intensityParts: [String] = []
+                            if lightWorkouts > 0 { intensityParts.append("轻度 \(lightWorkouts) 次") }
+                            if moderateWorkouts > 0 { intensityParts.append("中等 \(moderateWorkouts) 次") }
+                            if intenseWorkouts > 0 { intensityParts.append("高强度 \(intenseWorkouts) 次") }
+                            lines.append("   🏋️ 强度分布：\(intensityParts.joined(separator: " · "))")
+                        }
+                    }
                 }
             }
 
@@ -1227,10 +1319,28 @@ struct HealthSkill: ClawSkill {
             guard !withData.isEmpty else {
                 if !context.healthService.isHealthDataAvailable {
                     completion("📊 此设备不支持 HealthKit。\n需要在 iPhone 上使用才能获取健康数据。")
+                } else if range == .today || range == .yesterday {
+                    // Proactively show the most recent day's data instead of
+                    // just suggesting "ask about yesterday" — mirrors the exercise
+                    // handler pattern for a much better early-morning UX.
+                    let recentData = allSummaries.filter { $0.hasData }.sorted { $0.date > $1.date }
+                    if let recent = recentData.first {
+                        let snapshot = self.buildRecentHealthSnapshot(recent)
+                        let dateFmt = DateFormatter()
+                        dateFmt.dateFormat = "M月d日（E）"
+                        dateFmt.locale = Locale(identifier: "zh_CN")
+                        let dateLabel = dateFmt.string(from: recent.date)
+                        var msg = "📊 \(range.label)暂无足够的健康数据。\n"
+                        msg += "\n📋 最近一天的数据（\(dateLabel)）：\n\(snapshot)"
+                        msg += "\n\n💡 随着今天的活动数据积累，再来问我就能看到最新情况。"
+                        completion(msg)
+                    } else {
+                        completion("📊 \(range.label)暂无健康数据。\n请前往「设置 → iosclaw → 健康」确认已开启权限。")
+                    }
                 } else {
                     var msg = "📊 \(range.label)暂无健康数据。\n请前往「设置 → iosclaw → 健康」确认已开启权限。"
-                    if range == .today {
-                        msg += "\n\n💡 也可以试试「昨天健康怎么样」查看已有数据。"
+                    if range.interval.duration < 86400 * 3 {
+                        msg += "\n\n💡 也可以试试扩大时间范围：「这周健康怎么样」"
                     }
                     completion(msg)
                 }
@@ -1270,6 +1380,48 @@ struct HealthSkill: ClawSkill {
     private func respondSleep(summaries: [HealthSummary], range: QueryTimeRange, context: SkillContext, completion: @escaping (String) -> Void) {
         let sleepDays = summaries.filter { $0.sleepHours > 0 }
         guard !sleepDays.isEmpty else {
+            // When today has no sleep data, proactively show last night's sleep
+            // from yesterday's HealthSummary instead of a dead-end message.
+            if range == .today {
+                let cal = Calendar.current
+                let yesterday = cal.startOfDay(for: cal.date(byAdding: .day, value: -1, to: Date()) ?? Date())
+                // Look through all summaries the caller fetched (up to 8 days)
+                let recentSleep = summaries
+                    .filter { $0.sleepHours > 0 }
+                // summaries is already filtered to today; check broader context if available
+                // The caller passes `withData` which is range-filtered. For sleep fallback,
+                // re-invoke with expanded range to find recent sleep data.
+                context.healthService.fetchSummaries(days: 3) { recent in
+                    let recentSleepDays = recent.filter { $0.sleepHours > 0 }.sorted { $0.date > $1.date }
+                    if let lastSleep = recentSleepDays.first {
+                        let dateFmt = DateFormatter()
+                        dateFmt.dateFormat = "M月d日（E）"
+                        dateFmt.locale = Locale(identifier: "zh_CN")
+                        let dateLabel = dateFmt.string(from: lastSleep.date)
+                        var msg = "😴 今天暂无睡眠数据。\n"
+                        msg += "\n🌙 最近一晚的睡眠（\(dateLabel)）："
+                        msg += "\n   💤 睡眠 \(String(format: "%.1f", lastSleep.sleepHours)) 小时"
+                        if lastSleep.hasSleepPhases {
+                            msg += "\n   🟣 深睡 \(String(format: "%.1f", lastSleep.sleepDeepHours))h · REM \(String(format: "%.1f", lastSleep.sleepREMHours))h"
+                        }
+                        if lastSleep.inBedHours > 0 {
+                            let totalBed = lastSleep.inBedHours >= lastSleep.sleepHours
+                                ? lastSleep.inBedHours : lastSleep.inBedHours + lastSleep.sleepHours
+                            let efficiency = Int((lastSleep.sleepHours / totalBed) * 100)
+                            msg += "\n   🛏️ 效率 \(efficiency)%"
+                        }
+                        if let onset = lastSleep.sleepOnset, let wake = lastSleep.wakeTime {
+                            let timeFmt = DateFormatter()
+                            timeFmt.dateFormat = "HH:mm"
+                            msg += "\n   🕐 \(timeFmt.string(from: onset)) → \(timeFmt.string(from: wake))"
+                        }
+                        completion(msg)
+                    } else {
+                        completion("😴 \(range.label)暂无睡眠记录。\n请确保 iPhone 或 Apple Watch 的睡眠追踪已开启。")
+                    }
+                }
+                return
+            }
             completion("😴 \(range.label)暂无睡眠记录。\n请确保 iPhone 或 Apple Watch 的睡眠追踪已开启。")
             return
         }
@@ -6190,6 +6342,52 @@ struct HealthSkill: ClawSkill {
         case .stressed: return 1.5
         case .sad: return 1.0
         }
+    }
+
+    // MARK: - Recent Health Snapshot
+
+    /// Builds a compact snapshot of a single day's key health metrics.
+    /// Used as a proactive fallback when the queried day has no data yet
+    /// (e.g. user asks "今天健康怎么样" early in the morning).
+    private func buildRecentHealthSnapshot(_ day: HealthSummary) -> String {
+        var items: [String] = []
+
+        if day.steps > 0 {
+            items.append("   👟 \(Int(day.steps).formatted()) 步")
+        }
+        if day.exerciseMinutes > 0 {
+            items.append("   ⏱ 运动 \(Int(day.exerciseMinutes)) 分钟")
+        }
+        if day.activeCalories > 0 {
+            items.append("   🔥 消耗 \(Int(day.activeCalories).formatted()) 千卡")
+        }
+        if day.sleepHours > 0 {
+            var sleepLine = "   😴 睡眠 \(String(format: "%.1f", day.sleepHours)) 小时"
+            if day.hasSleepPhases {
+                let deep = String(format: "%.1f", day.sleepDeepHours)
+                let rem = String(format: "%.1f", day.sleepREMHours)
+                sleepLine += "（深睡 \(deep)h · REM \(rem)h）"
+            }
+            items.append(sleepLine)
+        }
+        if day.heartRate > 0 {
+            var hrLine = "   ❤️ 心率 \(Int(day.heartRate)) BPM"
+            if day.restingHeartRate > 0 {
+                hrLine += "（静息 \(Int(day.restingHeartRate))）"
+            }
+            items.append(hrLine)
+        }
+        if day.hrv > 0 {
+            items.append("   📳 HRV \(Int(day.hrv)) ms")
+        }
+        if day.distanceKm > 0.1 {
+            items.append("   📏 距离 \(String(format: "%.1f", day.distanceKm)) km")
+        }
+        if day.flightsClimbed > 0 {
+            items.append("   🏢 爬楼 \(Int(day.flightsClimbed)) 层")
+        }
+
+        return items.isEmpty ? "   暂无详细数据" : items.joined(separator: "\n")
     }
 
     // MARK: - Helpers

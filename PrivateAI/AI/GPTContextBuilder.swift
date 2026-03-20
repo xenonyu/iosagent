@@ -302,6 +302,13 @@ final class GPTContextBuilder {
         2. 基于已有数据给出部分回答（如「近两周内…」）
         3. 不要将有限数据外推为更长时间段的结论
         ⚠️ 「这周」和「近7天」是不同概念。用户说「这周」指本周一至今天，说「上周」指上周一至上周日。回答时务必按上方日期范围筛选对应的数据行，不要把上周的数据算入这周，也不要把这周的数据算入上周。
+        \(hourOfDay < 5 ? """
+        ⚠️ 深夜/凌晨时间语境（重要）：现在是凌晨\(hourOfDay)点多，用户很可能还没有睡觉。在这个时段：
+        - 用户说「今天」很大概率指的是刚刚过去的那一天（即日历上的「昨天」），因为在用户的感知中一天还没有结束。
+        - 回答时优先引用「昨天」的完整数据（见[昨日健康概要]或趋势表中「昨天」行），然后补充说明「新一天（日历上的今天）刚开始，数据还在积累」。
+        - 例如：用户凌晨2点问「今天走了多少步」→ 应该回答「你刚过去的这一天走了X步」并引用昨天的数据，而不是说「今天0步」。
+        - 如果用户明确说「新的一天」或「日历上的今天」，再回答当前日历日的数据。
+        """ : "")
         ⚠️ 睡眠日期归属规则（重要）：睡眠数据按「醒来当天」归属。例如\(boundaryFmt.string(from: Calendar.current.date(byAdding: .day, value: -1, to: now) ?? now))晚23:00入睡→\(boundaryFmt.string(from: now))早7:00起床，这笔睡眠记录在\(boundaryFmt.string(from: now))（今天）的行中，而不是\(boundaryFmt.string(from: Calendar.current.date(byAdding: .day, value: -1, to: now) ?? now))。因此：
         - 用户问「昨晚睡了多久」「昨天晚上睡得怎么样」→ 查看「今天」行的睡眠数据（因为昨晚的睡眠醒来时已是今天）
         - 用户问「前天晚上」→ 查看「昨天」行的睡眠数据
@@ -395,7 +402,11 @@ final class GPTContextBuilder {
 
         // When today's data is empty (e.g. early morning), surface yesterday's key
         // metrics so GPT can still answer "how did I do yesterday?" or "how was my sleep?"
-        if !todayHasHealth && hourOfDay < 10 {
+        // Also always surface yesterday's data during late-night hours (0-5 AM) even if
+        // today has some data (e.g. sleep tracking), because at 2 AM the user's "today"
+        // almost certainly refers to the previous calendar day.
+        let shouldShowYesterday = (!todayHasHealth && hourOfDay < 10) || hourOfDay < 5
+        if shouldShowYesterday {
             if let yesterday = weeklyHealth.first(where: {
                 Calendar.current.isDateInYesterday($0.date) &&
                 ($0.steps > 0 || $0.sleepHours > 0 || $0.exerciseMinutes > 0)
@@ -850,7 +861,9 @@ final class GPTContextBuilder {
         // Without this, GPT sees "步数：5000" at 10am and might say "偏少",
         // when actually 5000 steps by 10am is excellent progress.
         let timeContext: String
-        if hourOfDay < 8 {
+        if hourOfDay < 5 {
+            timeContext = "凌晨\(hourOfDay)点多，新的日历日刚开始，以下为日历「今天」的数据（用户可能指的是「昨天」）"
+        } else if hourOfDay < 8 {
             timeContext = "清晨，数据刚开始积累"
         } else if hourOfDay < 12 {
             timeContext = "截至上午\(hourOfDay)点，数据持续更新中"

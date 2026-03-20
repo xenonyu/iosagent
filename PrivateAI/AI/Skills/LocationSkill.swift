@@ -27,8 +27,30 @@ struct LocationSkill: ClawSkill {
                 return
             }
 
-            let response = buildInsightfulResponse(records: records, range: range, context: context)
-            completion(response)
+            // For multi-day ranges, enrich with HealthKit data for cross-insights
+            let cal = Calendar.current
+            let spanDays = max(1, cal.dateComponents([.day], from: interval.start, to: interval.end).day ?? 1)
+            let daysBack = max(1, cal.dateComponents([.day], from: interval.start, to: Date()).day ?? 0)
+
+            if spanDays >= 3 && context.healthService.isHealthDataAvailable {
+                context.healthService.fetchSummaries(days: daysBack + spanDays) { summaries in
+                    // Filter summaries to match the query range
+                    let rangeSummaries = summaries.filter { s in
+                        s.date >= interval.start && s.date <= interval.end
+                    }
+                    let response = self.buildInsightfulResponse(
+                        records: records, range: range, context: context,
+                        healthSummaries: rangeSummaries
+                    )
+                    completion(response)
+                }
+            } else {
+                let response = buildInsightfulResponse(
+                    records: records, range: range, context: context,
+                    healthSummaries: []
+                )
+                completion(response)
+            }
         default:
             break
         }
@@ -292,7 +314,7 @@ struct LocationSkill: ClawSkill {
 
     // MARK: - Response Builder
 
-    private func buildInsightfulResponse(records: [LocationRecord], range: QueryTimeRange, context: SkillContext) -> String {
+    private func buildInsightfulResponse(records: [LocationRecord], range: QueryTimeRange, context: SkillContext, healthSummaries: [HealthSummary] = []) -> String {
         var sections: [String] = []
 
         // Header
@@ -343,12 +365,19 @@ struct LocationSkill: ClawSkill {
             sections.append(calendarSection)
         }
 
-        // 9. Period-over-period comparison (only for multi-day ranges)
+        // 9. Health-location cross-insights (steps/exercise vs. location patterns)
+        if !healthSummaries.isEmpty {
+            if let healthLocation = buildHealthLocationInsights(records: records, profiles: profiles, healthSummaries: healthSummaries) {
+                sections.append(healthLocation)
+            }
+        }
+
+        // 10. Period-over-period comparison (only for multi-day ranges)
         if let comparison = buildPeriodComparison(currentRecords: records, currentProfiles: profiles, range: range, context: context) {
             sections.append(comparison)
         }
 
-        // 10. Activity summary
+        // 11. Activity summary
         let summary = buildActivitySummary(records: records, range: range)
         sections.append(summary)
 
@@ -1550,6 +1579,199 @@ struct LocationSkill: ClawSkill {
         }
 
         return lines.joined(separator: "\n")
+    }
+
+    // MARK: - Health × Location Cross-Insights
+
+    /// Cross-references HealthKit data with location patterns to reveal how movement
+    /// correlates with physical activity. Groups days by location behavior (explorer vs
+    /// homebody, commute vs rest) and compares health metrics between the groups.
+    private func buildHealthLocationInsights(
+        records: [LocationRecord],
+        profiles: [PlaceProfile],
+        healthSummaries: [HealthSummary]
+    ) -> String? {
+        let cal = Calendar.current
+        let dayFmt = DateFormatter()
+        dayFmt.dateFormat = "yyyy-MM-dd"
+
+        // Group location records by day → count unique places per day
+        var placesByDay: [String: Set<String>] = [:]
+        for r in records {
+            let key = dayFmt.string(from: r.timestamp)
+            placesByDay[key, default: []].insert(r.displayName)
+        }
+
+        // Map health summaries by day key
+        var healthByDay: [String: HealthSummary] = [:]
+        for s in healthSummaries where s.hasData {
+            healthByDay[dayFmt.string(from: s.date)] = s
+        }
+
+        guard !healthByDay.isEmpty else { return nil }
+
+        var insights: [String] = []
+
+        // --- Insight 1: Explorer days (3+ places) vs. routine days (1 place) ---
+        let explorerDays = placesByDay.filter { $0.value.count >= 3 }
+            .compactMap { healthByDay[$0.key] }
+        let routineDays = placesByDay.filter { $0.value.count <= 1 }
+            .compactMap { healthByDay[$0.key] }
+
+        if explorerDays.count >= 2 && routineDays.count >= 2 {
+            let avgExplorerSteps = explorerDays.reduce(0.0) { $0 + $1.steps } / Double(explorerDays.count)
+            let avgRoutineSteps = routineDays.reduce(0.0) { $0 + $1.steps } / Double(routineDays.count)
+
+            if avgExplorerSteps > 0 && avgRoutineSteps > 0 {
+                let diff = avgExplorerSteps - avgRoutineSteps
+                let pct = avgRoutineSteps > 0 ? Int(abs(diff) / avgRoutineSteps * 100) : 0
+
+                if pct >= 20 {
+                    if diff > 0 {
+                        insights.append("🚶 探索日（去 3+ 地方）平均 \(formatSteps(avgExplorerSteps)) 步，比单一地点日多 \(pct)%")
+                    } else {
+                        insights.append("🚶 待在一个地方的日子平均 \(formatSteps(avgRoutineSteps)) 步，比探索日反而多 \(pct)%")
+                    }
+                }
+            }
+
+            // Exercise comparison
+            let avgExplorerExercise = explorerDays.reduce(0.0) { $0 + $1.exerciseMinutes } / Double(explorerDays.count)
+            let avgRoutineExercise = routineDays.reduce(0.0) { $0 + $1.exerciseMinutes } / Double(routineDays.count)
+
+            if avgExplorerExercise >= 10 && avgRoutineExercise >= 5 {
+                let exDiff = avgExplorerExercise - avgRoutineExercise
+                if abs(exDiff) >= 10 {
+                    if exDiff > 0 {
+                        insights.append("💪 探索日运动更多（\(Int(avgExplorerExercise)) 分钟 vs \(Int(avgRoutineExercise)) 分钟）")
+                    } else {
+                        insights.append("💪 待在固定地点的日子运动更多（\(Int(avgRoutineExercise)) 分钟 vs \(Int(avgExplorerExercise)) 分钟）")
+                    }
+                }
+            }
+        }
+
+        // --- Insight 2: Commute days vs. non-commute days (needs home + work) ---
+        if let homeIdx = detectHome(profiles: profiles),
+           let workIdx = detectWork(profiles: profiles, excludeIndices: [homeIdx]) {
+            let homeName = profiles[homeIdx].name
+            let workName = profiles[workIdx].name
+
+            var commuteDayKeys: [String] = []
+            var nonCommuteDayKeys: [String] = []
+
+            for (dayKey, places) in placesByDay {
+                let placeNames = places.joined(separator: " ")
+                let hasHome = placeNames.contains(homeName) || places.contains(homeName)
+                let hasWork = placeNames.contains(workName) || places.contains(workName)
+
+                if hasHome && hasWork {
+                    commuteDayKeys.append(dayKey)
+                } else if !hasWork {
+                    nonCommuteDayKeys.append(dayKey)
+                }
+            }
+
+            let commuteHealth = commuteDayKeys.compactMap { healthByDay[$0] }
+            let nonCommuteHealth = nonCommuteDayKeys.compactMap { healthByDay[$0] }
+
+            if commuteHealth.count >= 2 && nonCommuteHealth.count >= 2 {
+                let avgCommuteSteps = commuteHealth.reduce(0.0) { $0 + $1.steps } / Double(commuteHealth.count)
+                let avgHomeSteps = nonCommuteHealth.reduce(0.0) { $0 + $1.steps } / Double(nonCommuteHealth.count)
+
+                if avgCommuteSteps > 0 && avgHomeSteps > 0 {
+                    let diff = avgCommuteSteps - avgHomeSteps
+                    let pct = avgHomeSteps > 0 ? Int(abs(diff) / avgHomeSteps * 100) : 0
+
+                    if pct >= 15 {
+                        if diff > 0 {
+                            insights.append("🏢 通勤日平均 \(formatSteps(avgCommuteSteps)) 步，比非通勤日多 \(pct)%")
+                        } else {
+                            insights.append("🏠 非通勤日平均 \(formatSteps(avgHomeSteps)) 步，比通勤日多 \(pct)%")
+                        }
+                    }
+                }
+
+                // Sleep comparison: commute days vs. non-commute days
+                let commuteSleep = commuteHealth.filter { $0.sleepHours > 0 }
+                let nonCommuteSleep = nonCommuteHealth.filter { $0.sleepHours > 0 }
+                if commuteSleep.count >= 2 && nonCommuteSleep.count >= 2 {
+                    let avgCSleep = commuteSleep.reduce(0.0) { $0 + $1.sleepHours } / Double(commuteSleep.count)
+                    let avgNSleep = nonCommuteSleep.reduce(0.0) { $0 + $1.sleepHours } / Double(nonCommuteSleep.count)
+                    let sleepDiff = avgNSleep - avgCSleep
+                    if abs(sleepDiff) >= 0.5 {
+                        if sleepDiff > 0 {
+                            insights.append("😴 非通勤日睡眠多 \(String(format: "%.1f", sleepDiff)) 小时（\(String(format: "%.1f", avgNSleep))h vs \(String(format: "%.1f", avgCSleep))h）")
+                        } else {
+                            insights.append("😴 通勤日反而睡得更多（\(String(format: "%.1f", avgCSleep))h vs \(String(format: "%.1f", avgNSleep))h）")
+                        }
+                    }
+                }
+            }
+        }
+
+        // --- Insight 3: Location variety → activity correlation ---
+        // Compare days with 0 location records (stayed home all day) to active days
+        let allDayKeys = Set(healthByDay.keys)
+        let locationDayKeys = Set(placesByDay.keys)
+        let stayHomeDayKeys = allDayKeys.subtracting(locationDayKeys)
+
+        let stayHomeHealth = stayHomeDayKeys.compactMap { healthByDay[$0] }
+        let activeHealth = locationDayKeys.compactMap { healthByDay[$0] }
+
+        if stayHomeHealth.count >= 2 && activeHealth.count >= 2 {
+            let avgStaySteps = stayHomeHealth.reduce(0.0) { $0 + $1.steps } / Double(stayHomeHealth.count)
+            let avgActiveSteps = activeHealth.reduce(0.0) { $0 + $1.steps } / Double(activeHealth.count)
+
+            if avgStaySteps > 0 && avgActiveSteps > 0 {
+                let pct = avgStaySteps > 0 ? Int((avgActiveSteps - avgStaySteps) / avgStaySteps * 100) : 0
+                if pct >= 30 {
+                    insights.append("🏃 出门日比宅家日多走 \(pct)% 的步数（\(formatSteps(avgActiveSteps)) vs \(formatSteps(avgStaySteps))）")
+                } else if pct <= -20 {
+                    insights.append("🏠 宅家日步数反而更高，可能是室内运动的功劳")
+                }
+            }
+        }
+
+        // --- Insight 4: Best activity place (which place correlates with highest step days) ---
+        if profiles.count >= 3 {
+            var placeStepCorrelation: [(name: String, avgSteps: Double, days: Int)] = []
+
+            for profile in profiles.prefix(8) {
+                // Find days when user visited this place
+                let visitDays = placesByDay.filter { $0.value.contains(profile.name) }
+                    .compactMap { healthByDay[$0.key] }
+                guard visitDays.count >= 2 else { continue }
+
+                let avgSteps = visitDays.reduce(0.0) { $0 + $1.steps } / Double(visitDays.count)
+                placeStepCorrelation.append((name: profile.name, avgSteps: avgSteps, days: visitDays.count))
+            }
+
+            if placeStepCorrelation.count >= 2 {
+                let sorted = placeStepCorrelation.sorted { $0.avgSteps > $1.avgSteps }
+                if let best = sorted.first, let worst = sorted.last,
+                   best.avgSteps > worst.avgSteps * 1.3 && best.avgSteps >= 3000 {
+                    insights.append("📍 去「\(best.name)」的日子步数最高（日均 \(formatSteps(best.avgSteps))），去「\(worst.name)」时最低（\(formatSteps(worst.avgSteps))）")
+                }
+            }
+        }
+
+        // Cap at 3 insights to avoid information overload
+        guard !insights.isEmpty else { return nil }
+        let selected = Array(insights.prefix(3))
+
+        var lines: [String] = ["🔗 健康 × 位置关联"]
+        lines.append(contentsOf: selected)
+
+        return lines.joined(separator: "\n")
+    }
+
+    /// Formats step count for display (e.g. 8523 → "8,523")
+    private func formatSteps(_ steps: Double) -> String {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        formatter.maximumFractionDigits = 0
+        return formatter.string(from: NSNumber(value: steps)) ?? "\(Int(steps))"
     }
 
     // MARK: - Period-over-Period Comparison

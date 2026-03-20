@@ -442,12 +442,22 @@ final class GPTContextBuilder {
 
     private func trendSection(_ summaries: [HealthSummary]) -> String {
         let fmt = DateFormatter(); fmt.dateFormat = "M/d"
+        let weekdayFmt = DateFormatter(); weekdayFmt.locale = Locale(identifier: "zh_CN"); weekdayFmt.dateFormat = "EEE"
         let cal = Calendar.current
         var lines = ["[近7天健康趋势]", "日期  | 步数  | 运动(分) | 卡路里(kcal) | 睡眠(h) | 心率(bpm)"]
         // Show oldest→newest so GPT can naturally read the trend direction
         let chronological = Array(summaries.prefix(7).reversed())
         for s in chronological {
-            let dateLabel = cal.isDateInToday(s.date) ? "\(fmt.string(from: s.date))(今天)" : fmt.string(from: s.date)
+            // Include weekday name (周一~周日) so GPT can answer "周三运动了吗？" without date math
+            let dayName: String
+            if cal.isDateInToday(s.date) {
+                dayName = "今天"
+            } else if cal.isDateInYesterday(s.date) {
+                dayName = "昨天"
+            } else {
+                dayName = weekdayFmt.string(from: s.date)
+            }
+            let dateLabel = "\(fmt.string(from: s.date))(\(dayName))"
             let steps = s.steps > 0 ? "\(Int(s.steps))" : "-"
             let ex = s.exerciseMinutes > 0 ? "\(Int(s.exerciseMinutes))" : "-"
             let cal_ = s.activeCalories > 0 ? "\(Int(s.activeCalories))" : "-"
@@ -734,6 +744,7 @@ final class GPTContextBuilder {
     private func weeklyWorkoutSection(_ summaries: [HealthSummary]) -> String {
         let cal = Calendar.current
         let dateFmt = DateFormatter(); dateFmt.dateFormat = "M/d"
+        let weekdayFmt = DateFormatter(); weekdayFmt.locale = Locale(identifier: "zh_CN"); weekdayFmt.dateFormat = "EEE"
         let timeFmt = DateFormatter(); timeFmt.dateFormat = "HH:mm"
 
         // Collect all workouts from all days, tagged with their date
@@ -759,9 +770,14 @@ final class GPTContextBuilder {
         for item in allWorkouts.prefix(15) {
             let w = item.workout
             let name = "\(w.typeEmoji) \(w.typeName)"
-            let dayLabel = cal.isDateInToday(item.date) ? "今天" :
-                           cal.isDateInYesterday(item.date) ? "昨天" :
-                           dateFmt.string(from: item.date)
+            let dayLabel: String
+            if cal.isDateInToday(item.date) {
+                dayLabel = "今天"
+            } else if cal.isDateInYesterday(item.date) {
+                dayLabel = "昨天"
+            } else {
+                dayLabel = "\(dateFmt.string(from: item.date))(\(weekdayFmt.string(from: item.date)))"
+            }
             let timeStr = timeFmt.string(from: w.startDate)
             let dur = Int(w.duration / 60)
             var line = "\(dayLabel) \(timeStr) \(name) \(dur)分钟"

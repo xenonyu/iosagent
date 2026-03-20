@@ -101,6 +101,26 @@ final class ContextMemory {
         // Reset follow-up mode for all non-elaboration paths
         lastFollowUpMode = .none
 
+        // Scenario 2c: Inline evaluation / advice in a first-turn data query.
+        //
+        // "今天步数够了吗", "我的睡眠正常吗", "这周运动怎么改善"
+        // SkillRouter successfully parses these to a known data intent (health/exercise/calendar),
+        // BUT the evaluation/advice phrase ("够了吗", "正常吗", "怎么改善") is silently ignored
+        // because scenario 2b only fires on .unknown intents.
+        //
+        // Fix: when the resolved intent is a data-bearing intent AND the query text also
+        // contains evaluation/advice/reason phrases, set lastFollowUpMode so the Skill can
+        // deliver a targeted response (evaluation, judgment, advice) instead of raw data.
+        //
+        // This works for BOTH first-turn queries (no previous context needed) and mid-conversation
+        // queries where the user switches topics with an evaluative tone ("睡眠正常吗" after "步数").
+        if !newIntent.isUnknown && isDataBearingIntent(newIntent) {
+            let inlineMode = detectFollowUpMode(trimmed)
+            if inlineMode != .none {
+                lastFollowUpMode = inlineMode
+            }
+        }
+
         // Scenario 1 & 2: Unknown intent → inherit previous skill entirely
         if (isFollowUp || isTimeOnly), let last = lastIntent, newIntent.isUnknown {
             return inheritIntent(last, withRange: newRange)
@@ -278,6 +298,27 @@ final class ContextMemory {
     /// Legacy compatibility — checks if the text matches any follow-up mode.
     private func isElaborationFollowUp(_ text: String) -> Bool {
         return detectFollowUpMode(text) != .none
+    }
+
+    /// Identifies intents that return quantitative iOS data (health, calendar, location, photos).
+    /// Used by inline evaluation detection (Scenario 2c) to decide whether an evaluative phrase
+    /// like "够了吗" or "正常吗" embedded in a data query should trigger follow-up mode.
+    /// Only data-bearing intents benefit from evaluation/advice overlays — utility intents
+    /// (math, password, unit conversion) produce deterministic outputs where evaluation is meaningless.
+    private func isDataBearingIntent(_ intent: QueryIntent) -> Bool {
+        switch intent {
+        case .exercise, .exerciseLastOccurrence,
+             .health,
+             .calendar, .calendarNext, .calendarSearch,
+             .location, .locationPlace,
+             .photos, .photoSearch,
+             .mood,
+             .summary, .events, .weeklyInsight,
+             .streak, .comparison:
+            return true
+        default:
+            return false
+        }
     }
 
     /// Checks whether the query text contains an explicit time reference (e.g. "今天", "上周", "this month").

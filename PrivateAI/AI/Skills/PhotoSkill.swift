@@ -127,6 +127,14 @@ struct PhotoSkill: ClawSkill {
             }
         }
 
+        // --- Photo events/moments timeline ---
+        let events = detectPhotoEvents(photos: photos, context: context)
+        if !events.isEmpty {
+            let eventSection = buildEventTimeline(events: events, totalPhotos: photos.count)
+            lines.append("")
+            lines.append(contentsOf: eventSection)
+        }
+
         // Location clusters
         if !locationClusters.isEmpty {
             lines.append("\n📍 **拍照地点分布**:")
@@ -153,6 +161,194 @@ struct PhotoSkill: ClawSkill {
         }
 
         return lines.joined(separator: "\n")
+    }
+
+    // MARK: - Photo Event Detection
+
+    /// A cluster of photos taken within a short time span, representing a life moment.
+    private struct PhotoEvent {
+        let photos: [PhotoMetadataItem]
+        var startDate: Date { photos.first?.date ?? Date() }
+        var endDate: Date { photos.last?.date ?? Date() }
+        var count: Int { photos.count }
+        var favorites: Int { photos.filter { $0.isFavorite }.count }
+        var locationPhotos: [PhotoMetadataItem] { photos.filter { $0.hasLocation } }
+        var locationName: String = ""
+
+        /// Duration in minutes between first and last photo.
+        var durationMinutes: Int {
+            Int(endDate.timeIntervalSince(startDate) / 60)
+        }
+    }
+
+    /// Clusters photos into events based on time proximity.
+    /// Photos within `gapThreshold` (2 hours) of each other belong to the same event.
+    /// Only events with 3+ photos are considered meaningful.
+    private func detectPhotoEvents(photos: [PhotoMetadataItem], context: SkillContext) -> [PhotoEvent] {
+        guard photos.count >= 3 else { return [] }
+
+        let sorted = photos.sorted { $0.date < $1.date }
+        let gapThreshold: TimeInterval = 2 * 3600 // 2 hours
+
+        var events: [PhotoEvent] = []
+        var currentCluster: [PhotoMetadataItem] = [sorted[0]]
+
+        for i in 1..<sorted.count {
+            let gap = sorted[i].date.timeIntervalSince(sorted[i - 1].date)
+            if gap > gapThreshold {
+                // End current cluster, start new one
+                if currentCluster.count >= 3 {
+                    events.append(PhotoEvent(photos: currentCluster))
+                }
+                currentCluster = [sorted[i]]
+            } else {
+                currentCluster.append(sorted[i])
+            }
+        }
+        // Don't forget the last cluster
+        if currentCluster.count >= 3 {
+            events.append(PhotoEvent(photos: currentCluster))
+        }
+
+        // Resolve location names for events using the user's location history
+        let knownPlaces = loadKnownPlaces(from: context)
+        events = events.map { event in
+            var e = event
+            e.locationName = resolveEventLocation(event: event, knownPlaces: knownPlaces)
+            return e
+        }
+
+        // Sort by photo count descending (most significant events first)
+        events.sort { $0.count > $1.count }
+        return events
+    }
+
+    /// Picks the best location name for a photo event by finding the most common
+    /// location among its geotagged photos.
+    private func resolveEventLocation(event: PhotoEvent, knownPlaces: [KnownPlace]) -> String {
+        let locPhotos = event.locationPhotos
+        guard !locPhotos.isEmpty else { return "" }
+
+        // Use median photo's coordinates as representative location
+        let midIdx = locPhotos.count / 2
+        let representative = locPhotos.sorted { $0.date < $1.date }[midIdx]
+        guard let lat = representative.latitude, let lon = representative.longitude else { return "" }
+
+        return resolveLocationName(lat: lat, lon: lon, knownPlaces: knownPlaces)
+    }
+
+    /// Formats detected photo events into a narrative timeline section.
+    private func buildEventTimeline(events: [PhotoEvent], totalPhotos: Int) -> [String] {
+        // Don't show events section if photos are too evenly distributed (no clear moments)
+        // or if there's only 1 event that covers all photos (no added value)
+        if events.isEmpty { return [] }
+        if events.count == 1 && events[0].count == totalPhotos { return [] }
+
+        let cal = Calendar.current
+        let dayDf = DateFormatter()
+        dayDf.locale = Locale(identifier: "zh_CN")
+        dayDf.dateFormat = "M月d日"
+
+        let timeDf = DateFormatter()
+        timeDf.locale = Locale(identifier: "zh_CN")
+        timeDf.dateFormat = "HH:mm"
+
+        var lines: [String] = ["📸 **生活瞬间**:"]
+
+        let eventsInTimeOrder = events.prefix(6).sorted { $0.startDate < $1.startDate }
+
+        for event in eventsInTimeOrder {
+            var parts: [String] = []
+
+            // Date + time of day
+            let dayStr = dayDf.string(from: event.startDate)
+            let period = timeOfDayLabel(hour: cal.component(.hour, from: event.startDate))
+            parts.append("\(dayStr) \(period)")
+
+            // Location if available
+            if !event.locationName.isEmpty {
+                parts.append("在\(event.locationName)")
+            }
+
+            // Photo count
+            parts.append("拍了 \(event.count) 张")
+
+            // Duration context — long events suggest trips/outings
+            if event.durationMinutes >= 60 {
+                let hours = event.durationMinutes / 60
+                let mins = event.durationMinutes % 60
+                if hours > 0 && mins > 0 {
+                    parts.append("持续 \(hours)h\(mins)min")
+                } else if hours > 0 {
+                    parts.append("持续 \(hours) 小时")
+                }
+            }
+
+            // Favorites hint
+            if event.favorites > 0 {
+                parts.append("❤️×\(event.favorites)")
+            }
+
+            // Guess the event type based on signals
+            let eventHint = guessEventType(event: event)
+
+            var line = "  · \(parts.joined(separator: "，"))"
+            if !eventHint.isEmpty {
+                line += "  \(eventHint)"
+            }
+            lines.append(line)
+        }
+
+        // Summary insight
+        let eventPhotoTotal = events.prefix(6).reduce(0) { $0 + $1.count }
+        let eventCoverage = Double(eventPhotoTotal) / Double(max(1, totalPhotos))
+        if events.count >= 2 && eventCoverage > 0.6 {
+            lines.append("\n💡 这段时间的照片集中在 \(events.count) 个时刻，你的记录很有节奏感")
+        } else if events.count >= 3 {
+            lines.append("\n💡 识别到 \(events.count) 个拍照时刻，生活挺丰富的")
+        }
+
+        return lines
+    }
+
+    /// Infers a likely event type from photo signals (count, duration, time, location).
+    private func guessEventType(event: PhotoEvent) -> String {
+        let cal = Calendar.current
+        let hour = cal.component(.hour, from: event.startDate)
+        let duration = event.durationMinutes
+        let count = event.count
+        let hasLocation = !event.locationName.isEmpty
+        let isWeekend = {
+            let wd = cal.component(.weekday, from: event.startDate)
+            return wd == 1 || wd == 7
+        }()
+
+        // Long duration + many photos + location → trip/outing
+        if duration > 180 && count >= 15 && hasLocation {
+            return "🏖️ 可能是一次出游"
+        }
+
+        // Evening + moderate photos → dinner/gathering
+        if hour >= 18 && hour <= 22 && count >= 5 && count <= 25 {
+            return "🍽️ 可能是一次聚餐"
+        }
+
+        // Weekend + long duration + many photos → day trip
+        if isWeekend && duration > 120 && count >= 10 {
+            return "🚶 周末出行"
+        }
+
+        // Morning/afternoon + short burst → quick moment
+        if duration < 30 && count >= 5 {
+            return "📱 一段集中拍照"
+        }
+
+        // Many favorites → special moment
+        if event.favorites >= 3 || (event.favorites > 0 && Double(event.favorites) / Double(count) > 0.3) {
+            return "✨ 值得收藏的时刻"
+        }
+
+        return ""
     }
 
     // MARK: - Content Analysis (Vision Tags)

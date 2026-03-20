@@ -681,6 +681,12 @@ final class GPTContextBuilder {
                     if !e.calendar.isEmpty { desc += " [\(e.calendar)]" }
                     if !e.location.isEmpty { desc += "（\(e.location)）" }
                     if let label = e.attendeeLabel { desc += " \(label)" }
+                    // Include notes for past events so GPT can answer "昨天那个会议聊什么？"
+                    let trimmedNotes = e.notes.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !trimmedNotes.isEmpty {
+                        let preview = trimmedNotes.count > 80 ? String(trimmedNotes.prefix(80)) + "…" : trimmedNotes
+                        desc += " 备注：\(preview)"
+                    }
                     return desc
                 }
                 lines.append("  \(dayLabel)：\(eventDescs.joined(separator: "；"))")

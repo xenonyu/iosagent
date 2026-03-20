@@ -207,6 +207,7 @@ final class GPTContextBuilder {
         - 如果某项数据为 0 或为空，坦诚说明「暂无该数据」或「尚未授权」，不要猜测。
         - 回答健康、运动相关问题时，优先引用准确数值，再给出简短解读或鼓励。
         - 涉及多天数据时，可引用「近7天趋势」进行对比分析，指出趋势变化。
+        - 周统计中会标注「X天中Y天有运动」，回答时要如实反映活跃天数，不要把少数几天的数据当作每天都达到了。例如7天中2天运动共60分钟，应该说「这周运动了2天，共60分钟」，而不是「日均运动30分钟」。
         - 不要重复罗列所有数据，只回答用户问到的内容。
         - 如果用户提到家人（如"我妈"、"我爸"等），参考下方[用户信息]中的家庭成员数据来回答。
 
@@ -385,25 +386,35 @@ final class GPTContextBuilder {
             let hr = s.heartRate > 0 ? "\(Int(s.heartRate))" : "-"
             lines.append("\(dateLabel)  | \(steps)  | \(ex)  | \(sl)  | \(hr)")
         }
-        // Add weekly averages for quick reference
-        let validStepsDays = summaries.prefix(7).filter { $0.steps > 0 }
-        let validSleepDays = summaries.prefix(7).filter { $0.sleepHours > 0 }
-        let validExDays = summaries.prefix(7).filter { $0.exerciseMinutes > 0 }
+        // Add weekly totals and averages with active-day counts so GPT can give
+        // honest answers. E.g. "7天中有3天运动，共90分钟" is more useful than "日均30分钟"
+        // which hides that the user only exercised 3 out of 7 days.
+        let totalDays = min(summaries.count, 7)
+        let week = summaries.prefix(7)
+        let validStepsDays = week.filter { $0.steps > 0 }
+        let validSleepDays = week.filter { $0.sleepHours > 0 }
+        let validExDays = week.filter { $0.exerciseMinutes > 0 }
         var avgParts: [String] = []
         if !validStepsDays.isEmpty {
-            let avg = validStepsDays.map(\.steps).reduce(0, +) / Double(validStepsDays.count)
-            avgParts.append("日均步数\(Int(avg))")
+            let total = validStepsDays.map(\.steps).reduce(0, +)
+            let avg = total / Double(totalDays)
+            avgParts.append("\(totalDays)天日均步数\(Int(avg))")
         }
         if !validExDays.isEmpty {
-            let avg = validExDays.map(\.exerciseMinutes).reduce(0, +) / Double(validExDays.count)
-            avgParts.append("日均运动\(Int(avg))分钟")
+            let totalMin = Int(validExDays.map(\.exerciseMinutes).reduce(0, +))
+            avgParts.append("\(totalDays)天中\(validExDays.count)天有运动，共\(totalMin)分钟")
         }
         if !validSleepDays.isEmpty {
-            let avg = validSleepDays.map(\.sleepHours).reduce(0, +) / Double(validSleepDays.count)
-            avgParts.append("日均睡眠\(String(format: "%.1f", avg))h")
+            let total = validSleepDays.map(\.sleepHours).reduce(0, +)
+            let avg = total / Double(validSleepDays.count)
+            if validSleepDays.count < totalDays {
+                avgParts.append("\(validSleepDays.count)/\(totalDays)天有睡眠数据，均\(String(format: "%.1f", avg))h")
+            } else {
+                avgParts.append("日均睡眠\(String(format: "%.1f", avg))h")
+            }
         }
         if !avgParts.isEmpty {
-            lines.append("周均值：\(avgParts.joined(separator: "，"))")
+            lines.append("周统计：\(avgParts.joined(separator: "，"))")
         }
         return lines.joined(separator: "\n")
     }

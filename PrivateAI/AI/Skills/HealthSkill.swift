@@ -4213,7 +4213,124 @@ struct HealthSkill: ClawSkill {
             lines.append("💡 最容易提升的维度：\(weak.emoji) \(weak.name) — \(weak.tip)")
         }
 
+        // --- Today: Calendar-Aware Readiness ---
+        // When showing today's health overview, cross-reference with calendar events
+        // to give a holistic "readiness" verdict. This connects "how your body is"
+        // with "what your day demands" — the core iosclaw cross-data insight.
+        if range == .today && context.calendarService.isAuthorized {
+            let calLines = self.buildCalendarReadiness(
+                summaries: summaries,
+                context: context
+            )
+            if !calLines.isEmpty {
+                lines.append("")
+                lines.append(contentsOf: calLines)
+            }
+        }
+
         completion(lines.joined(separator: "\n"))
+    }
+
+    // MARK: - Calendar-Aware Readiness for Health Overview
+
+    /// Builds a brief "readiness vs demands" section for today's health overview.
+    /// Connects health state (sleep, HRV, resting HR) with calendar load (meetings,
+    /// total scheduled time) to produce actionable advice.
+    private func buildCalendarReadiness(
+        summaries: [HealthSummary],
+        context: SkillContext
+    ) -> [String] {
+        let cal = Calendar.current
+        let now = Date()
+        let dayStart = cal.startOfDay(for: now)
+        let dayEnd = cal.date(byAdding: .day, value: 1, to: dayStart) ?? now
+        let events = context.calendarService.fetchEvents(from: dayStart, to: dayEnd)
+
+        let timedEvents = events.filter { !$0.isAllDay }
+        // Only show this section when there's meaningful calendar load
+        guard timedEvents.count >= 2 else { return [] }
+
+        let totalMinutes = timedEvents.reduce(0.0) { $0 + $1.duration } / 60.0
+        let remaining = timedEvents.filter { $0.endDate > now }
+        let remainingCount = remaining.count
+
+        // Detect back-to-back meetings (gap < 15 min)
+        let sorted = timedEvents.sorted { $0.startDate < $1.startDate }
+        var backToBackCount = 0
+        for i in 0..<(sorted.count - 1) {
+            let gap = sorted[i + 1].startDate.timeIntervalSince(sorted[i].endDate) / 60
+            if gap < 15 { backToBackCount += 1 }
+        }
+
+        // Assess schedule intensity
+        let isHeavy = timedEvents.count >= 5 || totalMinutes >= 300
+        let isMedium = timedEvents.count >= 3 || totalMinutes >= 120
+
+        // Assess health readiness from today's data
+        let today = summaries.first(where: { cal.isDateInToday($0.date) })
+        let yesterday = summaries.first(where: { cal.isDateInYesterday($0.date) })
+        let sleepHours = (today?.sleepHours ?? 0) > 0
+            ? today!.sleepHours
+            : (yesterday?.sleepHours ?? 0)
+        let hrv = today?.hrv ?? 0
+        let restingHR = today?.restingHeartRate ?? 0
+
+        // Personal baseline for HRV and RHR
+        let baselineDays = summaries.filter { !cal.isDateInToday($0.date) && $0.hasData }
+        let baselineHRV = baselineDays.filter { $0.hrv > 0 }
+        let avgHRV = baselineHRV.isEmpty ? 0.0
+            : baselineHRV.reduce(0) { $0 + $1.hrv } / Double(baselineHRV.count)
+        let baselineRHR = baselineDays.filter { $0.restingHeartRate > 0 }
+        let avgRHR = baselineRHR.isEmpty ? 0.0
+            : baselineRHR.reduce(0) { $0 + $1.restingHeartRate } / Double(baselineRHR.count)
+
+        // Readiness signals
+        let sleepGood = sleepHours >= 7.0
+        let sleepPoor = sleepHours > 0 && sleepHours < 6.0
+        let hrvLow = hrv > 0 && avgHRV > 0 && hrv < avgHRV * 0.8
+        let hrvHigh = hrv > 0 && avgHRV > 0 && hrv >= avgHRV * 1.1
+        let rhrElevated = restingHR > 0 && avgRHR > 0 && restingHR > avgRHR + 5
+
+        var lines: [String] = []
+
+        // Schedule summary line
+        var scheduleLine = "📅 今日日程："
+        if remainingCount > 0 {
+            scheduleLine += "\(timedEvents.count) 个安排（还剩 \(remainingCount) 个）"
+        } else {
+            scheduleLine += "\(timedEvents.count) 个安排（已全部结束）"
+        }
+        if totalMinutes >= 60 {
+            let hours = Int(totalMinutes / 60)
+            let mins = Int(totalMinutes.truncatingRemainder(dividingBy: 60))
+            scheduleLine += "，共约 \(hours)h\(mins > 0 ? "\(mins)m" : "")"
+        }
+        lines.append(scheduleLine)
+
+        if backToBackCount >= 2 {
+            lines.append("  ⚠️ \(backToBackCount + 1) 个会议连轴转")
+        }
+
+        // Readiness verdict: combine health state with schedule demands
+        if remainingCount > 0 {
+            if isHeavy && sleepPoor {
+                lines.append("  🔴 密集日程 + 睡眠不足 → 优先在会议间隙休息，避免高强度运动")
+            } else if isHeavy && hrvLow {
+                lines.append("  🟡 日程密集且恢复状态偏低 → 会议间喝水、起身走动，帮助恢复")
+            } else if isHeavy && (sleepGood || hrvHigh) {
+                lines.append("  🟢 虽然日程密集，但身体状态不错 → 节奏从容，精力足够应对")
+            } else if isHeavy && rhrElevated {
+                lines.append("  🟡 密集日程 + 静息心率偏高 → 注意别透支，保持补水")
+            } else if isMedium && sleepPoor {
+                lines.append("  🟡 睡眠不足遇上一般日程 → 利用空闲时段补个短休")
+            } else if isMedium && (sleepGood || hrvHigh) {
+                lines.append("  🟢 身体恢复充分，日程适中 → 适合安排运动或挑战性任务")
+            } else if isMedium {
+                lines.append("  🟢 日程适中，状态正常")
+            }
+        }
+
+        return lines
     }
 
     // MARK: - Holistic Health Score

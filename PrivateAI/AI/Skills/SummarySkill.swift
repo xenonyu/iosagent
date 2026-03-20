@@ -1482,7 +1482,83 @@ struct SummarySkill: ClawSkill {
             }
         }
 
-        // --- 5. Activity level trend (overall energy) ---
+        // --- 5. Resting heart rate elevation (illness/overtraining signal) ---
+        // A sustained RHR increase of 5+ BPM above personal baseline is one of the
+        // strongest early indicators of illness onset, overtraining, or acute stress.
+        // Unlike HRV (which fluctuates), consecutive RHR elevation is clinically meaningful.
+        let rhrDays = pastDays.filter { $0.restingHeartRate > 0 }
+        if rhrDays.count >= 4 {
+            // Baseline: first half of data. Elevated: check last 2+ consecutive days.
+            let baselineRHR = rhrDays.prefix(max(rhrDays.count - 2, 2))
+            let avgBaseline = baselineRHR.reduce(0.0) { $0 + $1.restingHeartRate } / Double(baselineRHR.count)
+
+            var consecutiveElevated = 0
+            for day in rhrDays.reversed() {
+                if day.restingHeartRate >= avgBaseline + 5 {
+                    consecutiveElevated += 1
+                } else {
+                    break
+                }
+            }
+            if consecutiveElevated >= 2 {
+                let currentRHR = Int(rhrDays.last!.restingHeartRate)
+                let elevation = Int(rhrDays.last!.restingHeartRate - avgBaseline)
+                if consecutiveElevated >= 3 {
+                    alerts.append("🫀 静息心率连续 \(consecutiveElevated) 天偏高（\(currentRHR) BPM，高于基线 +\(elevation)），可能是身体在对抗感染或过度疲劳，建议减少高强度活动")
+                } else {
+                    alerts.append("🫀 静息心率连续 \(consecutiveElevated) 天高于基线 \(elevation) BPM（\(currentRHR) BPM），关注身体是否有不适信号")
+                }
+            }
+        }
+
+        // --- 6. Severe sleep deprivation (< 6h for 2+ consecutive nights) ---
+        // The check in section 1 catches < 7h for 3+ days (sleep debt accumulation).
+        // This catches the more acute case: < 6h is medically concerning even for 2 nights,
+        // correlating with significant cognitive impairment and immune suppression.
+        if sleepDays.count >= 2 {
+            var consecutiveSevere = 0
+            for day in sleepDays.reversed() {
+                if day.sleepHours < 6.0 && day.sleepHours > 0 {
+                    consecutiveSevere += 1
+                } else {
+                    break
+                }
+            }
+            if consecutiveSevere >= 2 {
+                let avgSevere = sleepDays.suffix(consecutiveSevere)
+                    .reduce(0.0) { $0 + $1.sleepHours } / Double(consecutiveSevere)
+                // Only add if the milder <7h alert wasn't already triggered (avoid doubling)
+                let hasMildAlert = alerts.contains { $0.hasPrefix("😴 已连续") }
+                if !hasMildAlert {
+                    alerts.append("🚨 连续 \(consecutiveSevere) 晚睡眠不足 6 小时（均 \(String(format: "%.1f", avgSevere))h），严重影响免疫力和注意力，今晚请优先保证睡眠")
+                }
+            }
+        }
+
+        // --- 7. Sleep regularity (high variance across nights) ---
+        // Even if average sleep is 7h, large swings (e.g., 5h → 9h → 5.5h) disrupt
+        // circadian rhythm. Social jet lag research shows irregular sleep schedules
+        // impair metabolism and mood regardless of total sleep hours.
+        if sleepDays.count >= 4 {
+            let sleepValues = sleepDays.map { $0.sleepHours }
+            let mean = sleepValues.reduce(0, +) / Double(sleepValues.count)
+            if mean > 0 {
+                let variance = sleepValues.reduce(0.0) { $0 + ($1 - mean) * ($1 - mean) } / Double(sleepValues.count)
+                let stdDev = variance.squareRoot()
+                let cv = stdDev / mean  // Coefficient of variation
+
+                let minSleep = sleepValues.min() ?? 0
+                let maxSleep = sleepValues.max() ?? 0
+                let spread = maxSleep - minSleep
+
+                // CV > 0.2 or spread > 3h indicates highly irregular sleep
+                if cv > 0.2 && spread >= 2.5 {
+                    alerts.append("🔀 睡眠时长波动大（\(String(format: "%.1f", minSleep))h～\(String(format: "%.1f", maxSleep))h），不规律的睡眠比偶尔熬夜对身体影响更大，试试固定就寝时间")
+                }
+            }
+        }
+
+        // --- 8. Activity level trend (overall energy) ---
         // Detect if daily steps have been consistently declining over 4+ days
         if pastDays.count >= 4 {
             let recentDays = Array(pastDays.suffix(5))
@@ -1506,8 +1582,8 @@ struct SummarySkill: ClawSkill {
             }
         }
 
-        // Cap at 3 alerts to avoid overwhelming the daily review
-        return Array(alerts.prefix(3))
+        // Cap at 4 alerts to surface important health signals while staying digestible
+        return Array(alerts.prefix(4))
     }
 
     // MARK: - Cross-Domain Insights (Calendar × Health)

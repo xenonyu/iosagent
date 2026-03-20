@@ -311,10 +311,114 @@ final class PhotoSearchService {
             q.keywords.append(contentsOf: ["car", "vehicle"])
         }
 
+        // --- Date/Time range ---
+        // Parse temporal expressions so "昨天拍的照片" or "上周的照片"
+        // correctly filters by date instead of returning all-time results.
+        let (dateFrom, dateTo) = parseDateRange(lower)
+        q.dateFrom = dateFrom
+        q.dateTo = dateTo
+
         return q
     }
 
     // MARK: - Helpers
+
+    /// Parses common temporal expressions (Chinese & English) into a date range.
+    /// Returns (from, to) where nil means unbounded on that side.
+    /// Uses Monday-based weeks consistent with GPTContextBuilder's weekBoundaryText.
+    private func parseDateRange(_ text: String) -> (Date?, Date?) {
+        let cal = Calendar.current
+        let now = Date()
+        let todayStart = cal.startOfDay(for: now)
+
+        // "今天" / "today"
+        if containsAny(text, ["今天", "today"]) {
+            let todayEnd = cal.date(byAdding: .day, value: 1, to: todayStart)!
+            return (todayStart, todayEnd)
+        }
+
+        // "昨天" / "yesterday"
+        if containsAny(text, ["昨天", "yesterday"]) {
+            let yesterdayStart = cal.date(byAdding: .day, value: -1, to: todayStart)!
+            return (yesterdayStart, todayStart)
+        }
+
+        // "前天" / "day before yesterday"
+        if containsAny(text, ["前天"]) {
+            let start = cal.date(byAdding: .day, value: -2, to: todayStart)!
+            let end = cal.date(byAdding: .day, value: -1, to: todayStart)!
+            return (start, end)
+        }
+
+        // "这周" / "本周" / "this week" — Monday to now
+        if containsAny(text, ["这周", "本周", "this week"]) {
+            let todayWeekday = cal.component(.weekday, from: now) // 1=Sun..7=Sat
+            let daysSinceMonday = (todayWeekday + 5) % 7
+            let thisMonday = cal.date(byAdding: .day, value: -daysSinceMonday, to: todayStart)!
+            let end = cal.date(byAdding: .day, value: 1, to: todayStart)!
+            return (thisMonday, end)
+        }
+
+        // "上周" / "last week" — last Monday to last Sunday
+        if containsAny(text, ["上周", "last week"]) {
+            let todayWeekday = cal.component(.weekday, from: now)
+            let daysSinceMonday = (todayWeekday + 5) % 7
+            let thisMonday = cal.date(byAdding: .day, value: -daysSinceMonday, to: todayStart)!
+            let lastMonday = cal.date(byAdding: .day, value: -7, to: thisMonday)!
+            return (lastMonday, thisMonday)
+        }
+
+        // "这个月" / "本月" / "this month"
+        if containsAny(text, ["这个月", "本月", "this month"]) {
+            let comps = cal.dateComponents([.year, .month], from: now)
+            let monthStart = cal.date(from: comps)!
+            let end = cal.date(byAdding: .day, value: 1, to: todayStart)!
+            return (monthStart, end)
+        }
+
+        // "上个月" / "last month"
+        if containsAny(text, ["上个月", "上月", "last month"]) {
+            let comps = cal.dateComponents([.year, .month], from: now)
+            let thisMonthStart = cal.date(from: comps)!
+            let lastMonthStart = cal.date(byAdding: .month, value: -1, to: thisMonthStart)!
+            return (lastMonthStart, thisMonthStart)
+        }
+
+        // "最近三天" / "最近3天" / "近三天"
+        if text.contains("最近") || text.contains("近") {
+            // Try to extract a number of days
+            let dayPatterns: [(String, Int)] = [
+                ("三天", 3), ("3天", 3), ("两天", 2), ("2天", 2),
+                ("五天", 5), ("5天", 5), ("七天", 7), ("7天", 7),
+                ("十天", 10), ("10天", 10), ("半个月", 15), ("一个月", 30), ("30天", 30)
+            ]
+            for (pattern, days) in dayPatterns {
+                if text.contains(pattern) {
+                    let start = cal.date(byAdding: .day, value: -days, to: todayStart)!
+                    let end = cal.date(byAdding: .day, value: 1, to: todayStart)!
+                    return (start, end)
+                }
+            }
+        }
+
+        // "去年" / "last year"
+        if containsAny(text, ["去年", "last year"]) {
+            let year = cal.component(.year, from: now) - 1
+            let start = cal.date(from: DateComponents(year: year, month: 1, day: 1))!
+            let end = cal.date(from: DateComponents(year: year + 1, month: 1, day: 1))!
+            return (start, end)
+        }
+
+        // "今年" / "this year"
+        if containsAny(text, ["今年", "this year"]) {
+            let year = cal.component(.year, from: now)
+            let start = cal.date(from: DateComponents(year: year, month: 1, day: 1))!
+            let end = cal.date(byAdding: .day, value: 1, to: todayStart)!
+            return (start, end)
+        }
+
+        return (nil, nil)
+    }
 
     private func containsAny(_ text: String, _ keywords: [String]) -> Bool {
         keywords.contains { text.contains($0) }

@@ -176,13 +176,19 @@ final class ChatViewModel: ObservableObject {
     /// Uses specific photo keywords, and only triggers on generic action words
     /// (帮我找, 给我找, etc.) when combined with photo-related context — avoids
     /// false positives like "帮我找明天的会议" triggering a photo grid.
+    /// Detects photo search queries — keyword list must stay in sync with
+    /// GPTContextBuilder.searchPhotosIfNeeded() so the photo grid appears
+    /// whenever GPT receives photo search results (and vice versa).
     private func isPhotoSearchQuery(_ text: String) -> Bool {
         let lower = text.lowercased()
         let specificKeywords = [
             "找照片", "搜照片", "找图片", "搜图片", "找找照片", "照片搜索",
             "find photo", "search photo", "show me photo",
             "的照片", "的图片", "的相片",
-            "photo of", "picture of"
+            "photo of", "picture of",
+            // "拍的/拍了/拍过" — natural Chinese phrasing for "photos I took",
+            // e.g. "海边拍的照片", "昨天拍了什么", "去年拍过的风景"
+            "拍的", "拍了", "拍过"
         ]
         if specificKeywords.contains(where: { lower.contains($0) }) { return true }
 

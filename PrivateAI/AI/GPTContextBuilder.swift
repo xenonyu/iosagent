@@ -220,6 +220,7 @@ final class GPTContextBuilder {
         - 周统计中会标注「X天中Y天有运动」，回答时要如实反映活跃天数，不要把少数几天的数据当作每天都达到了。例如7天中2天运动共60分钟，应该说「这周运动了2天，共60分钟」，而不是「日均运动30分钟」。
         - 不要重复罗列所有数据，只回答用户问到的内容。
         - 如果用户提到家人（如"我妈"、"我爸"等），参考下方[用户信息]中的家庭成员数据来回答。
+        - 日历日程中 [日历名] 标签表示事件来源（如 [Work]、[个人]、[家庭]），用户问「工作会议」时参考此标签区分。日程的「备注」字段包含议程或描述，用户问「那个会议聊什么」时可引用。
 
         回复格式：
         - 简单问题（如「今天几步」「心率多少」）：直接回答数值+一句话点评，不超过2-3行。
@@ -491,6 +492,13 @@ final class GPTContextBuilder {
 
         var lines = ["[日历日程]"]
 
+        // Summarize calendar sources so GPT can distinguish work/personal/family events
+        let allEvents = todayEvents + upcoming + past
+        let calendarNames = Set(allEvents.map { $0.calendar }.filter { !$0.isEmpty })
+        if calendarNames.count > 1 {
+            lines.append("日历来源：\(calendarNames.sorted().joined(separator: "、"))")
+        }
+
         // Past events grouped by day — enables "what did I do yesterday?" queries
         if !past.isEmpty {
             // Group by day
@@ -512,6 +520,7 @@ final class GPTContextBuilder {
                 let eventDescs = dayEvents.prefix(5).map { e -> String in
                     let timeStr = e.isAllDay ? "全天" : "\(timeFmt.string(from: e.startDate))–\(timeFmt.string(from: e.endDate))"
                     var desc = "\(timeStr) \(e.title)"
+                    if !e.calendar.isEmpty { desc += " [\(e.calendar)]" }
                     if !e.location.isEmpty { desc += "（\(e.location)）" }
                     if let label = e.attendeeLabel { desc += " \(label)" }
                     return desc
@@ -530,8 +539,15 @@ final class GPTContextBuilder {
             lines.append("今天：")
             for e in todayEvents.prefix(10) {
                 var line = "  \(e.timeDisplay) \(e.title)"
+                if !e.calendar.isEmpty { line += " [\(e.calendar)]" }
                 if !e.location.isEmpty { line += "（\(e.location)）" }
                 if let label = e.attendeeLabel { line += " \(label)" }
+                // Include truncated notes for meeting context (agenda, description)
+                let trimmedNotes = e.notes.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmedNotes.isEmpty {
+                    let preview = trimmedNotes.count > 80 ? String(trimmedNotes.prefix(80)) + "…" : trimmedNotes
+                    line += " 备注：\(preview)"
+                }
                 lines.append(line)
             }
         }
@@ -544,8 +560,15 @@ final class GPTContextBuilder {
                 let dateStr = df.string(from: e.startDate)
                 let timeStr = e.isAllDay ? "全天" : "\(timeFmt.string(from: e.startDate))–\(timeFmt.string(from: e.endDate))"
                 var line = "  \(dateStr) \(timeStr) \(e.title)"
+                if !e.calendar.isEmpty { line += " [\(e.calendar)]" }
                 if !e.location.isEmpty { line += "（\(e.location)）" }
                 if let label = e.attendeeLabel { line += " \(label)" }
+                // Include notes for upcoming events too — helps GPT answer "what's that meeting about?"
+                let trimmedNotes = e.notes.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmedNotes.isEmpty {
+                    let preview = trimmedNotes.count > 80 ? String(trimmedNotes.prefix(80)) + "…" : trimmedNotes
+                    line += " 备注：\(preview)"
+                }
                 lines.append(line)
             }
         }

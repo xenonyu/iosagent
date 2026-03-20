@@ -302,6 +302,27 @@ struct LocationSkill: ClawSkill {
             }
         }
 
+        // --- Health × Place Cross-Insights ---
+        // Cross-reference HealthKit data on visit days vs. non-visit days to surface
+        // personal patterns like "gym days = more steps" or "office days = less sleep".
+        // This is a core iosclaw insight: connecting location data with health data.
+        let visitDaySet = uniqueDays
+        if visitDaySet.count >= 3 && context.healthService.isHealthDataAvailable {
+            // Fetch enough health data to cover the visit window + surrounding days
+            let daysBack = max(1, cal.dateComponents([.day], from: matches.last!.timestamp, to: Date()).day ?? 30)
+            context.healthService.fetchSummaries(days: daysBack + 7) { allSummaries in
+                let healthInsights = self.buildPlaceHealthInsights(
+                    visitDays: visitDaySet, allSummaries: allSummaries, placeName: displayName
+                )
+                if !healthInsights.isEmpty {
+                    lines.append("")
+                    lines.append(contentsOf: healthInsights)
+                }
+                completion(lines.joined(separator: "\n"))
+            }
+            return
+        }
+
         completion(lines.joined(separator: "\n"))
     }
 
@@ -310,6 +331,122 @@ struct LocationSkill: ClawSkill {
         var counts: [String: Int] = [:]
         for r in records { counts[r.displayName, default: 0] += 1 }
         return counts.max(by: { $0.value < $1.value })?.key ?? records.first?.displayName ?? "未知"
+    }
+
+    // MARK: - Place × Health Cross-Insights
+
+    /// Compares HealthKit metrics on days the user visited a specific place vs. days they didn't.
+    /// Surfaces patterns like "gym days = 15k steps vs 8k normally" or "office days = less sleep".
+    /// Only shows insights where the difference is meaningful (≥20% or clinically relevant).
+    private func buildPlaceHealthInsights(
+        visitDays: Set<Date>, allSummaries: [HealthSummary], placeName: String
+    ) -> [String] {
+        let cal = Calendar.current
+        // Split summaries into visit-day vs non-visit-day
+        let validSummaries = allSummaries.filter { $0.hasData }
+        var visitHealth: [HealthSummary] = []
+        var otherHealth: [HealthSummary] = []
+
+        for s in validSummaries {
+            let dayStart = cal.startOfDay(for: s.date)
+            if visitDays.contains(dayStart) {
+                visitHealth.append(s)
+            } else {
+                otherHealth.append(s)
+            }
+        }
+
+        // Need sufficient data in both groups for meaningful comparison
+        guard visitHealth.count >= 2 && otherHealth.count >= 3 else { return [] }
+
+        var insights: [String] = []
+
+        // --- Steps comparison ---
+        let visitSteps = visitHealth.filter { $0.steps > 0 }
+        let otherSteps = otherHealth.filter { $0.steps > 0 }
+        if visitSteps.count >= 2 && otherSteps.count >= 3 {
+            let visitAvg = visitSteps.reduce(0) { $0 + $1.steps } / Double(visitSteps.count)
+            let otherAvg = otherSteps.reduce(0) { $0 + $1.steps } / Double(otherSteps.count)
+            let diff = visitAvg - otherAvg
+            let pctDiff = otherAvg > 0 ? abs(diff) / otherAvg * 100 : 0
+
+            if pctDiff >= 20 && abs(diff) >= 1500 {
+                if diff > 0 {
+                    insights.append("👟 去\(placeName)的日子日均 \(Int(visitAvg).formatted()) 步，其他日子 \(Int(otherAvg).formatted()) 步（多 \(Int(pctDiff))%）")
+                } else {
+                    insights.append("👟 去\(placeName)的日子日均 \(Int(visitAvg).formatted()) 步，其他日子 \(Int(otherAvg).formatted()) 步（少 \(Int(pctDiff))%）")
+                }
+            }
+        }
+
+        // --- Exercise comparison ---
+        let visitExercise = visitHealth.filter { $0.exerciseMinutes > 0 }
+        let otherExercise = otherHealth.filter { $0.exerciseMinutes > 0 }
+        if visitExercise.count >= 2 && otherExercise.count >= 2 {
+            let visitAvg = visitExercise.reduce(0) { $0 + $1.exerciseMinutes } / Double(visitExercise.count)
+            let otherAvg = otherExercise.reduce(0) { $0 + $1.exerciseMinutes } / Double(otherExercise.count)
+            let diff = visitAvg - otherAvg
+
+            if abs(diff) >= 10 {
+                if diff > 0 {
+                    insights.append("⏱ 到访日运动 \(Int(visitAvg)) 分钟 vs 其他日 \(Int(otherAvg)) 分钟 — 这里让你更活跃")
+                } else {
+                    insights.append("⏱ 到访日运动 \(Int(visitAvg)) 分钟 vs 其他日 \(Int(otherAvg)) 分钟 — 到访日活动量偏少")
+                }
+            }
+        }
+
+        // --- Sleep comparison (sleep on the night of a visit day vs. other nights) ---
+        let visitSleep = visitHealth.filter { $0.sleepHours > 0 }
+        let otherSleep = otherHealth.filter { $0.sleepHours > 0 }
+        if visitSleep.count >= 2 && otherSleep.count >= 3 {
+            let visitAvg = visitSleep.reduce(0) { $0 + $1.sleepHours } / Double(visitSleep.count)
+            let otherAvg = otherSleep.reduce(0) { $0 + $1.sleepHours } / Double(otherSleep.count)
+            let diff = visitAvg - otherAvg
+
+            if abs(diff) >= 0.3 {
+                if diff > 0 {
+                    insights.append("😴 到访日平均睡 \(String(format: "%.1f", visitAvg))h vs 其他日 \(String(format: "%.1f", otherAvg))h — 到访后睡得更好")
+                } else {
+                    insights.append("😴 到访日平均睡 \(String(format: "%.1f", visitAvg))h vs 其他日 \(String(format: "%.1f", otherAvg))h — 到访日睡得稍少")
+                }
+            }
+        }
+
+        // --- Calories comparison ---
+        let visitCal = visitHealth.filter { $0.activeCalories > 0 }
+        let otherCal = otherHealth.filter { $0.activeCalories > 0 }
+        if visitCal.count >= 2 && otherCal.count >= 3 {
+            let visitAvg = visitCal.reduce(0) { $0 + $1.activeCalories } / Double(visitCal.count)
+            let otherAvg = otherCal.reduce(0) { $0 + $1.activeCalories } / Double(otherCal.count)
+            let pctDiff = otherAvg > 0 ? (visitAvg - otherAvg) / otherAvg * 100 : 0
+
+            if abs(pctDiff) >= 25 && abs(visitAvg - otherAvg) >= 80 {
+                if pctDiff > 0 {
+                    insights.append("🔥 到访日消耗 \(Int(visitAvg).formatted()) 千卡 vs 其他日 \(Int(otherAvg).formatted()) 千卡（多 \(Int(pctDiff))%）")
+                } else {
+                    insights.append("🔥 到访日消耗 \(Int(visitAvg).formatted()) 千卡 vs 其他日 \(Int(otherAvg).formatted()) 千卡（少 \(Int(abs(pctDiff)))%）")
+                }
+            }
+        }
+
+        guard !insights.isEmpty else { return [] }
+
+        // Build final section with header and actionable summary
+        var lines: [String] = ["🔗 去\(placeName)对健康的影响"]
+        lines.append(contentsOf: insights)
+
+        // Actionable summary: determine overall positive/negative correlation
+        let positiveCount = insights.filter { $0.contains("更活跃") || $0.contains("更好") || $0.contains("多 ") }.count
+        let negativeCount = insights.filter { $0.contains("偏少") || $0.contains("稍少") || $0.contains("少 ") }.count
+
+        if positiveCount > negativeCount && positiveCount >= 2 {
+            lines.append("✅ 去\(placeName)的日子整体更活跃、更健康 — 保持这个好习惯！")
+        } else if negativeCount > positiveCount && negativeCount >= 2 {
+            lines.append("💡 去\(placeName)的日子活动量偏低，试试到访前后安排一段步行时间。")
+        }
+
+        return lines
     }
 
     // MARK: - Response Builder

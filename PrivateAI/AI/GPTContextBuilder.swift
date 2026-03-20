@@ -323,6 +323,7 @@ final class GPTContextBuilder {
         - 涉及多天数据时，可引用「近7天趋势」进行对比分析，指出趋势变化。
         - 周统计中会标注「X天中Y天有运动」，回答时要如实反映活跃天数，不要把少数几天的数据当作每天都达到了。例如7天中2天运动共60分钟，应该说「这周运动了2天，共60分钟」，而不是「日均运动30分钟」。
         - ⚠️ 跨周对比时，务必使用「日均」数据进行公平比较，因为本周天数可能不足7天。例如本周4天日均消耗2100kcal vs 上周7天日均2000kcal → 说明本周消耗更高，而不是比较总量（8400 vs 14000）得出本周更少的错误结论。
+        - ⚠️ 体重数据说明：趋势表和周统计中会包含体重数据（如有记录）。体重数据来自智能体重秤或手动录入，不一定每天都有。回答体重趋势时，关注变化方向和幅度，短期波动（0.5kg以内）通常是正常的水分变化，不要过度解读。如果只有1-2天的记录，说明数据有限，不宜下趋势结论。
         - 不要重复罗列所有数据，只回答用户问到的内容。
         - 如果用户提到家人（如"我妈"、"我爸"等），参考下方[用户信息]中的家庭成员数据来回答。
         - 日历日程中 [日历名] 标签表示事件来源（如 [Work]、[个人]、[家庭]），用户问「工作会议」时参考此标签区分。日程的「备注」字段包含议程或描述，用户问「那个会议聊什么」时可引用。日历数据已标注星期几和相对日期（昨天/前天/明天/后天），用户问「周三有什么安排」时直接匹配对应日期即可。
@@ -598,6 +599,9 @@ final class GPTContextBuilder {
         // HRV
         lines.append("HRV：数值因人而异，趋势比绝对值更重要，持续下降可能提示疲劳或压力")
 
+        // Weight — BMI reference only when user has provided height or has weight data
+        lines.append("体重：健康体重因身高而异，短期（1-3天）波动0.5-1kg属正常水分变化，关注周均趋势更有意义")
+
         lines.append("⚠️ 以上为一般参考，回答时结合用户实际数据自然引用，不要生硬罗列标准。用户没问具体指标时不必主动提及。")
 
         return lines.joined(separator: "\n")
@@ -760,9 +764,14 @@ final class GPTContextBuilder {
         let fmt = DateFormatter(); fmt.dateFormat = "M/d"
         let weekdayFmt = DateFormatter(); weekdayFmt.locale = Locale(identifier: "zh_CN"); weekdayFmt.dateFormat = "EEE"
         let cal = Calendar.current
-        var lines = ["[近7天健康趋势]", "日期  | 步数  | 运动(分) | 活动kcal | 总消耗kcal | 睡眠(h)（对应哪晚） | 心率(bpm)"]
+        // Check if any day in the trend window has weight data — if so, add column
+        let trendDays = Array(summaries.prefix(7).reversed())
+        let hasWeightData = trendDays.contains { $0.bodyMassKg > 0 }
+
+        let headerWeight = hasWeightData ? " | 体重(kg)" : ""
+        var lines = ["[近7天健康趋势]", "日期  | 步数  | 运动(分) | 活动kcal | 总消耗kcal | 睡眠(h)（对应哪晚） | 心率(bpm)\(headerWeight)"]
         // Show oldest→newest so GPT can naturally read the trend direction
-        let chronological = Array(summaries.prefix(7).reversed())
+        let chronological = trendDays
         for s in chronological {
             // Include weekday name (周一~周日) so GPT can answer "周三运动了吗？" without date math.
             // Also include "前天" for consistency with calendar/location/life-event sections —
@@ -795,7 +804,8 @@ final class GPTContextBuilder {
                 sl = "-"
             }
             let hr = s.heartRate > 0 ? "\(Int(s.heartRate))" : "-"
-            lines.append("\(dateLabel)  | \(steps)  | \(ex)  | \(activeCal)  | \(totalCal)  | \(sl)  | \(hr)")
+            let weightCol = hasWeightData ? (s.bodyMassKg > 0 ? "  | \(String(format: "%.1f", s.bodyMassKg))" : "  | -") : ""
+            lines.append("\(dateLabel)  | \(steps)  | \(ex)  | \(activeCal)  | \(totalCal)  | \(sl)  | \(hr)\(weightCol)")
         }
         // Add weekly totals and averages with active-day counts so GPT can give
         // honest answers. E.g. "6天中有3天运动，共90分钟" is more useful than "日均30分钟"
@@ -851,6 +861,29 @@ final class GPTContextBuilder {
                 avgParts.append("日均睡眠\(String(format: "%.1f", avg))h")
             }
         }
+        // Weight trend — show change when multiple days have weight data.
+        // Users often ask "这周瘦了吗？" or "体重趋势", and GPT needs directional
+        // context beyond just today's snapshot weight in [今日健康数据].
+        let validWeightDays = completedDays.filter { $0.bodyMassKg > 0 }
+            .sorted { $0.date < $1.date } // chronological for trend direction
+        if validWeightDays.count >= 2 {
+            let earliest = validWeightDays.first!
+            let latest = validWeightDays.last!
+            let change = latest.bodyMassKg - earliest.bodyMassKg
+            let direction: String
+            if abs(change) < 0.2 {
+                direction = "基本持平"
+            } else if change > 0 {
+                direction = "增加了\(String(format: "%.1f", change))kg"
+            } else {
+                direction = "减少了\(String(format: "%.1f", abs(change)))kg"
+            }
+            let wFmt = DateFormatter(); wFmt.dateFormat = "M/d"
+            avgParts.append("体重\(String(format: "%.1f", latest.bodyMassKg))kg（\(wFmt.string(from: earliest.date))→\(wFmt.string(from: latest.date))\(direction)，\(validWeightDays.count)次记录）")
+        } else if let singleWeight = validWeightDays.first {
+            avgParts.append("体重\(String(format: "%.1f", singleWeight.bodyMassKg))kg（仅1次记录）")
+        }
+
         // Note today's partial contribution if it has any data
         if let today = todaySummary, today.hasData {
             avgParts.append("今天数据尚在积累中，未计入统计")
@@ -978,6 +1011,18 @@ final class GPTContextBuilder {
             } else {
                 let dailyAvg = Int(Double(activeTotal) / Double(days.count))
                 items.append("活动消耗\(activeTotal)kcal（日均\(dailyAvg)kcal）")
+            }
+        }
+
+        // Weight — include latest reading and trend direction for per-week comparison
+        let weightDays = days.filter { $0.bodyMassKg > 0 }.sorted { $0.date < $1.date }
+        if let latest = weightDays.last {
+            if weightDays.count >= 2, let earliest = weightDays.first {
+                let change = latest.bodyMassKg - earliest.bodyMassKg
+                let dir = abs(change) < 0.2 ? "持平" : (change > 0 ? "+\(String(format: "%.1f", change))" : "\(String(format: "%.1f", change))")
+                items.append("体重\(String(format: "%.1f", latest.bodyMassKg))kg(\(dir))")
+            } else {
+                items.append("体重\(String(format: "%.1f", latest.bodyMassKg))kg")
             }
         }
 

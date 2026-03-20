@@ -950,6 +950,52 @@ final class GPTContextBuilder {
             hints.append("「\(fewDaysWords.first { lower.contains($0) } ?? "前几天")」→ 大约\(dateFmt.string(from: threeDaysAgoDate))~\(dateFmt.string(from: now))（近3~4天）")
         }
 
+        // --- Month references ---
+        // Users commonly ask "这个月运动了几次" or "上个月睡得怎么样".
+        // Without explicit month boundaries, GPT has to calculate month start/end
+        // from the date string and often gets it wrong, especially near month
+        // transitions (e.g. on March 2, "上个月" = Feb 1-28, not "近30天").
+        // Also clarify data coverage: we only have 14 days, so most month queries
+        // will be partial — GPT must communicate this honestly.
+
+        let thisMonthStart = cal.date(from: cal.dateComponents([.year, .month], from: now))!
+        let dayOfMonth = cal.component(.day, from: now)
+
+        let lastMonthWords = ["上个月", "上月", "last month"]
+        if lastMonthWords.contains(where: { lower.contains($0) }) {
+            let lastMonthDate = cal.date(byAdding: .month, value: -1, to: thisMonthStart)!
+            let lastMonthEnd = cal.date(byAdding: .day, value: -1, to: thisMonthStart)!
+            let lastMonthDays = cal.component(.day, from: lastMonthEnd)
+            let lastMonthFmt = DateFormatter(); lastMonthFmt.dateFormat = "M月"
+            let monthName = lastMonthFmt.string(from: lastMonthDate)
+            // How many days of last month fall within our 14-day window?
+            let dataStart = cal.date(byAdding: .day, value: -13, to: cal.startOfDay(for: now))!
+            let coveredStart = max(lastMonthDate, dataStart)
+            let coveredEnd = min(lastMonthEnd, cal.startOfDay(for: now))
+            if coveredStart <= coveredEnd {
+                let coveredDays = cal.dateComponents([.day], from: coveredStart, to: coveredEnd).day.map { $0 + 1 } ?? 0
+                if coveredDays >= lastMonthDays {
+                    hints.append("「上个月」= \(monthName)（\(dateFmt.string(from: lastMonthDate))~\(dateFmt.string(from: lastMonthEnd))，共\(lastMonthDays)天，数据完整覆盖）")
+                } else {
+                    hints.append("「上个月」= \(monthName)（\(dateFmt.string(from: lastMonthDate))~\(dateFmt.string(from: lastMonthEnd))，共\(lastMonthDays)天）⚠️ 我们只有近14天数据，仅覆盖\(monthName)的\(coveredDays)天（\(dateFmt.string(from: coveredStart))起），请说明数据不完整")
+                }
+            } else {
+                hints.append("「上个月」= \(monthName)（\(dateFmt.string(from: lastMonthDate))~\(dateFmt.string(from: lastMonthEnd))）⚠️ 超出14天数据范围，无法回答，请告知用户")
+            }
+        }
+
+        let thisMonthWords = ["这个月", "本月", "这月", "this month"]
+        if thisMonthWords.contains(where: { lower.contains($0) }) {
+            let thisMonthFmt = DateFormatter(); thisMonthFmt.dateFormat = "M月"
+            let monthName = thisMonthFmt.string(from: now)
+            if dayOfMonth <= 14 {
+                hints.append("「这个月」= \(monthName)（\(dateFmt.string(from: thisMonthStart))~\(dateFmt.string(from: now))，已过\(dayOfMonth)天，数据完整覆盖）")
+            } else {
+                let dataStart = cal.date(byAdding: .day, value: -13, to: cal.startOfDay(for: now))!
+                hints.append("「这个月」= \(monthName)（\(dateFmt.string(from: thisMonthStart))~\(dateFmt.string(from: now))，已过\(dayOfMonth)天）⚠️ 我们只有近14天数据，仅覆盖\(dateFmt.string(from: dataStart))起，月初\(dayOfMonth - 14)天无数据，请说明")
+            }
+        }
+
         // --- Specific weekday references ---
         // "周三有什么安排？" → resolve to exact date
         let weekdayNames = ["周一": 2, "周二": 3, "周三": 4, "周四": 5, "周五": 6, "周六": 7, "周日": 1,

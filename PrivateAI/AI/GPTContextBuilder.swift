@@ -2181,13 +2181,51 @@ final class GPTContextBuilder {
             "拍的", "拍了", "拍过"
         ]
         // Generic action keywords — only trigger when combined with photo context
-        let genericKeywords = ["帮我找", "给我找", "搜一下", "找一下"]
+        let genericKeywords = [
+            "帮我找", "给我找", "搜一下", "找一下",
+            "看看", "给我看", "看一下", "有没有", "有多少", "有哪些",
+            "show me", "find me", "look for"
+        ]
         let photoContext = ["照片", "图片", "相片", "photo", "picture", "拍", "自拍", "截图", "视频"]
 
         let hasSpecific = specificKeywords.contains(where: { lower.contains($0) })
         let hasGenericWithContext = genericKeywords.contains(where: { lower.contains($0) })
             && photoContext.contains(where: { lower.contains($0) })
-        guard hasSpecific || hasGenericWithContext else { return ([], nil) }
+
+        // Descriptive photo query detection: when a photo context word appears
+        // alongside descriptive content (e.g. "海边照片", "猫照片", "风景照片"),
+        // trigger search even without explicit action verbs. This covers natural
+        // Chinese patterns where users omit "的" between descriptor and "照片".
+        // Require at least 2 chars beyond the photo word to avoid triggering on
+        // bare "照片" (which is a stats question, not a search).
+        let hasDescriptivePhotoQuery: Bool = {
+            let photoWords = ["照片", "图片", "相片", "photo", "picture"]
+            for pw in photoWords {
+                if lower.contains(pw) {
+                    // Strip the photo word and check remaining content is descriptive
+                    let stripped = lower.replacingOccurrences(of: pw, with: "")
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                        .replacingOccurrences(of: "我的", with: "")
+                        .replacingOccurrences(of: "那些", with: "")
+                        .replacingOccurrences(of: "那张", with: "")
+                        .replacingOccurrences(of: "那个", with: "")
+                        .replacingOccurrences(of: "的", with: "")
+                        .replacingOccurrences(of: "吗", with: "")
+                        .replacingOccurrences(of: "呢", with: "")
+                        .replacingOccurrences(of: "？", with: "")
+                        .replacingOccurrences(of: "?", with: "")
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    // After stripping common particles, if 2+ chars of descriptive
+                    // content remain, this is a search query (e.g. "海边", "猫", "风景")
+                    if stripped.count >= 2 {
+                        return true
+                    }
+                }
+            }
+            return false
+        }()
+
+        guard hasSpecific || hasGenericWithContext || hasDescriptivePhotoQuery else { return ([], nil) }
 
         let parsed = photoSearchService.parseQuery(query)
         // Only search if we have meaningful criteria (keywords or location)

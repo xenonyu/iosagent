@@ -587,6 +587,19 @@ final class GPTContextBuilder {
             parts.append(relevanceHint)
         }
 
+        // TEMPORAL FOCUS HINT — resolves relative time expressions ("昨天", "上周",
+        // "前天") to exact calendar dates so GPT can directly match them to the
+        // correct rows in the trend table, sleep analysis, and calendar sections.
+        // Without this, GPT often mismatches temporal references:
+        //   - "昨晚睡得怎么样" → GPT looks at yesterday's sleep row instead of today's
+        //     (sleep is attributed to the wake-up day)
+        //   - "前天去了哪里" → GPT isn't sure which date "前天" is
+        //   - "上周运动了几次" → GPT may include this week's data by mistake
+        let temporalHint = buildTemporalHint(query: userQuery)
+        if !temporalHint.isEmpty {
+            parts.append(temporalHint)
+        }
+
         // CURRENT QUESTION
         parts.append("[当前问题]\n用户说：\(userQuery)")
 
@@ -762,6 +775,147 @@ final class GPTContextBuilder {
         guard !sectionNames.isEmpty else { return "" }
 
         return "[查询重点提示]\n用户问题主要涉及：\(sectionNames.joined(separator: "、"))。请重点参考这些部分的数据回答，其他部分的数据除非明显相关否则无需引用。"
+    }
+
+    // MARK: - Temporal Focus
+
+    /// Detects relative time expressions in the user's query and resolves them
+    /// to exact calendar dates. This eliminates a major source of GPT errors:
+    /// when the user says "昨天" or "前天", GPT has to mentally calculate dates
+    /// from the "当前时间" line and match them to data rows — often incorrectly.
+    ///
+    /// Pre-resolving dates also helps with tricky sleep attribution: "昨晚睡得
+    /// 怎么样" needs today's row (sleep is attributed to wake-up day), and without
+    /// an explicit date mapping, GPT consistently looks at yesterday's row.
+    private func buildTemporalHint(query: String) -> String {
+        let lower = query.lowercased()
+        let cal = Calendar.current
+        let now = Date()
+        let dateFmt = DateFormatter(); dateFmt.dateFormat = "M月d日"
+        let weekdayFmt = DateFormatter()
+        weekdayFmt.locale = Locale(identifier: "zh_CN")
+        weekdayFmt.dateFormat = "EEEE"
+
+        var hints: [String] = []
+
+        // --- Single-day references ---
+
+        let yesterdayDate = cal.date(byAdding: .day, value: -1, to: cal.startOfDay(for: now))!
+        let twoDaysAgo = cal.date(byAdding: .day, value: -2, to: cal.startOfDay(for: now))!
+        let threeDaysAgo = cal.date(byAdding: .day, value: -3, to: cal.startOfDay(for: now))!
+        let tomorrowDate = cal.date(byAdding: .day, value: 1, to: cal.startOfDay(for: now))!
+        let dayAfterTomorrow = cal.date(byAdding: .day, value: 2, to: cal.startOfDay(for: now))!
+
+        // "昨天" / "yesterday"
+        let yesterdayWords = ["昨天", "昨日", "yesterday"]
+        if yesterdayWords.contains(where: { lower.contains($0) }) {
+            hints.append("「昨天」= \(dateFmt.string(from: yesterdayDate))（\(weekdayFmt.string(from: yesterdayDate))）→ 趋势表/日历/位置中标记为「昨天」的行")
+        }
+
+        // "昨晚" / "last night" — special: sleep attributed to today's row
+        let lastNightWords = ["昨晚", "昨天晚上", "昨夜", "last night"]
+        if lastNightWords.contains(where: { lower.contains($0) }) {
+            hints.append("「昨晚」的睡眠 → 查看趋势表中「今天」行的睡眠数据（因为昨晚入睡→今天醒来，归属今天）")
+        }
+
+        // "前天" / "the day before yesterday"
+        let twoDaysAgoWords = ["前天", "前日", "day before yesterday"]
+        if twoDaysAgoWords.contains(where: { lower.contains($0) }) {
+            hints.append("「前天」= \(dateFmt.string(from: twoDaysAgo))（\(weekdayFmt.string(from: twoDaysAgo))）→ 趋势表中标记为「前天」的行")
+        }
+
+        // "前天晚上" — sleep attributed to yesterday's row
+        let twoDaysAgoNightWords = ["前天晚上", "前天夜里", "前晚"]
+        if twoDaysAgoNightWords.contains(where: { lower.contains($0) }) {
+            hints.append("「前天晚上」的睡眠 → 查看趋势表中「昨天」行的睡眠数据（前天晚上入睡→昨天醒来，归属昨天）")
+        }
+
+        // "大前天"
+        if lower.contains("大前天") {
+            hints.append("「大前天」= \(dateFmt.string(from: threeDaysAgo))（\(weekdayFmt.string(from: threeDaysAgo))）")
+        }
+
+        // "明天" / "tomorrow"
+        let tomorrowWords = ["明天", "明日", "tomorrow"]
+        if tomorrowWords.contains(where: { lower.contains($0) }) {
+            hints.append("「明天」= \(dateFmt.string(from: tomorrowDate))（\(weekdayFmt.string(from: tomorrowDate))）→ 查看日历日程中「明天」对应的日程")
+        }
+
+        // "后天"
+        let dayAfterWords = ["后天", "day after tomorrow"]
+        if dayAfterWords.contains(where: { lower.contains($0) }) {
+            hints.append("「后天」= \(dateFmt.string(from: dayAfterTomorrow))（\(weekdayFmt.string(from: dayAfterTomorrow))）")
+        }
+
+        // --- Week references ---
+
+        let todayWeekday = cal.component(.weekday, from: now) // 1=Sun..7=Sat
+        let daysSinceMonday = (todayWeekday + 5) % 7
+        let thisMonday = cal.date(byAdding: .day, value: -daysSinceMonday, to: cal.startOfDay(for: now))!
+        let thisSunday = cal.date(byAdding: .day, value: 6, to: thisMonday)!
+        let lastMonday = cal.date(byAdding: .day, value: -7, to: thisMonday)!
+        let lastSunday = cal.date(byAdding: .day, value: -1, to: thisMonday)!
+
+        // "这周" / "本周" / "this week"
+        let thisWeekWords = ["这周", "本周", "这礼拜", "这星期", "this week"]
+        if thisWeekWords.contains(where: { lower.contains($0) }) {
+            hints.append("「这周/本周」= \(dateFmt.string(from: thisMonday))（周一）~\(dateFmt.string(from: now))（今天），已过\(daysSinceMonday + 1)天 → 参考「本周」周统计")
+        }
+
+        // "上周" / "last week"
+        let lastWeekWords = ["上周", "上礼拜", "上星期", "last week"]
+        if lastWeekWords.contains(where: { lower.contains($0) }) {
+            hints.append("「上周」= \(dateFmt.string(from: lastMonday))（周一）~\(dateFmt.string(from: lastSunday))（周日），完整7天 → 参考「上周」周统计")
+        }
+
+        // "下周" / "next week"
+        let nextWeekWords = ["下周", "下礼拜", "下星期", "next week"]
+        if nextWeekWords.contains(where: { lower.contains($0) }) {
+            let nextMonday = cal.date(byAdding: .day, value: 7, to: thisMonday)!
+            let nextSunday = cal.date(byAdding: .day, value: 6, to: nextMonday)!
+            hints.append("「下周」= \(dateFmt.string(from: nextMonday))（周一）~\(dateFmt.string(from: nextSunday))（周日）→ 查看日历日程中对应日期")
+        }
+
+        // --- Ambiguous expressions ---
+
+        // "最近" / "前几天" / "这几天" — common ambiguous terms
+        let recentWords = ["最近", "近来", "近期", "recently", "lately"]
+        if recentWords.contains(where: { lower.contains($0) }) {
+            hints.append("「最近」→ 优先参考近3~7天数据，结合上下文判断具体范围")
+        }
+        let fewDaysWords = ["前几天", "前些天", "这几天", "这两天"]
+        if fewDaysWords.contains(where: { lower.contains($0) }) {
+            let threeDaysAgoDate = cal.date(byAdding: .day, value: -3, to: cal.startOfDay(for: now))!
+            hints.append("「\(fewDaysWords.first { lower.contains($0) } ?? "前几天")」→ 大约\(dateFmt.string(from: threeDaysAgoDate))~\(dateFmt.string(from: now))（近3~4天）")
+        }
+
+        // --- Specific weekday references ---
+        // "周三有什么安排？" → resolve to exact date
+        let weekdayNames = ["周一": 2, "周二": 3, "周三": 4, "周四": 5, "周五": 6, "周六": 7, "周日": 1,
+                            "星期一": 2, "星期二": 3, "星期三": 4, "星期四": 5, "星期五": 6, "星期六": 7, "星期天": 1, "星期日": 1]
+        for (name, targetWeekday) in weekdayNames {
+            guard lower.contains(name) else { continue }
+            // Determine if user means this week or last week's weekday.
+            // If the referenced weekday has already passed this week, it likely
+            // refers to last week (unless context suggests next week). If it hasn't
+            // come yet, it's this week.
+            let targetDaysSinceMonday = (targetWeekday + 5) % 7
+            let targetThisWeek = cal.date(byAdding: .day, value: targetDaysSinceMonday, to: thisMonday)!
+
+            if targetThisWeek <= cal.startOfDay(for: now) {
+                // This weekday has passed — could be this week (past) or last week
+                let targetLastWeek = cal.date(byAdding: .day, value: -7, to: targetThisWeek)!
+                hints.append("「\(name)」→ 本周\(name) = \(dateFmt.string(from: targetThisWeek))（已过），上周\(name) = \(dateFmt.string(from: targetLastWeek))")
+            } else {
+                // This weekday hasn't come yet — this week
+                hints.append("「\(name)」→ 本周\(name) = \(dateFmt.string(from: targetThisWeek))（即将到来）")
+            }
+            break // only resolve one weekday reference
+        }
+
+        guard !hints.isEmpty else { return "" }
+
+        return "[时间聚焦]\n\(hints.joined(separator: "\n"))"
     }
 
     // MARK: - Section Builders

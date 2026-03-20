@@ -15,6 +15,9 @@ final class ContextMemory {
     private(set) var mentionedTopics: [String] = []
     private(set) var lastIntent: QueryIntent? = nil
     private(set) var lastStreakResult: Int? = nil
+    /// The follow-up mode detected during the most recent `resolveIntent` call.
+    /// Skills read this (via SkillContext.followUpMode) to tailor their response.
+    private(set) var lastFollowUpMode: FollowUpMode = .none
 
     // MARK: - Public API
 
@@ -41,6 +44,7 @@ final class ContextMemory {
         mentionedTopics = []
         lastIntent = nil
         lastStreakResult = nil
+        lastFollowUpMode = .none
     }
 
     // MARK: - Context Enrichment
@@ -83,11 +87,19 @@ final class ContextMemory {
         // Must run before Scenario 1 because phrases like "还有呢", "为什么呢" contain "呢"
         // which would match followUpPhrases and incorrectly apply a time range change.
         // Elaboration should preserve the original intent + time range entirely.
+        //
+        // Additionally, we detect the specific follow-up MODE so that skills can give
+        // targeted responses (evaluation, advice, reason) instead of repeating full data.
         if newIntent.isUnknown, let last = lastIntent {
-            if isElaborationFollowUp(trimmed) {
+            let mode = detectFollowUpMode(trimmed)
+            if mode != .none {
+                lastFollowUpMode = mode
                 return last
             }
         }
+
+        // Reset follow-up mode for all non-elaboration paths
+        lastFollowUpMode = .none
 
         // Scenario 1 & 2: Unknown intent → inherit previous skill entirely
         if (isFollowUp || isTimeOnly), let last = lastIntent, newIntent.isUnknown {
@@ -194,51 +206,78 @@ final class ContextMemory {
         if mentionedTopics.count > 5 { mentionedTopics.removeFirst() }
     }
 
-    /// Detects elaboration / evaluation follow-ups — conversational reactions where the user
-    /// wants the SAME data context re-triggered, not a new topic.
+    /// Detects the specific follow-up mode from a conversational reaction.
+    /// Returns `.none` if the text is not a follow-up reaction.
     ///
-    /// Three categories:
-    /// 1. **Evaluation**: "够了吗", "达标了吗", "正常吗", "算多吗", "健康吗" — user judges previous data
-    /// 2. **Elaboration**: "详细说说", "具体说说", "再说说", "展开说", "还有呢" — user wants more detail
-    /// 3. **Confirmation**: "对不对", "是不是", "真的吗", "确定吗" — user double-checks previous answer
-    private func isElaborationFollowUp(_ text: String) -> Bool {
+    /// Five categories, each producing a distinct `FollowUpMode`:
+    /// 1. **Evaluation** (.evaluation): "够了吗", "正常吗", "算多吗" — user judges previous data
+    /// 2. **Elaboration** (.elaboration): "详细说说", "还有呢" — user wants more detail
+    /// 3. **Reason** (.reason): "为什么", "什么原因", "怎么回事" — user wants causal explanation
+    /// 4. **Advice** (.advice): "怎么办", "怎么改善", "有什么建议" — user wants actionable tips
+    /// 5. **Confirmation** (.confirmation): "对不对", "真的吗" — user double-checks answer
+    private func detectFollowUpMode(_ text: String) -> FollowUpMode {
+        // --- Evaluation: judging the data against norms/goals ---
         let evaluationPhrases = [
-            // Goal evaluation
             "够了吗", "够不够", "够了没", "达标了吗", "达标没", "达到了吗",
-            // Normalcy check
             "正常吗", "正不正常", "算正常吗", "健康吗", "算健康吗",
-            // Quantity evaluation
             "算多吗", "算少吗", "多不多", "少不少", "多吗", "少吗",
             "高吗", "低吗", "高不高", "低不低",
-            // Quality evaluation
             "好吗", "好不好", "怎么样", "算好吗", "还行吗",
             "及格吗", "合格吗", "过关吗",
-            // Enough?
             "enough", "is that good", "is that normal", "is it ok"
         ]
+        if evaluationPhrases.contains(where: { text.contains($0) }) {
+            return .evaluation
+        }
+
+        // --- Reason: asking why (must check BEFORE elaboration since "为什么呢" contains "呢") ---
+        let reasonPhrases = [
+            "为什么呢", "为什么", "为啥", "为啥呢", "什么原因",
+            "怎么回事", "咋回事", "啥原因", "是什么导致",
+            "why", "what caused", "how come"
+        ]
+        if reasonPhrases.contains(where: { text.contains($0) }) {
+            return .reason
+        }
+
+        // --- Advice: asking what to do (must check BEFORE elaboration since "怎么办" is specific) ---
+        let advicePhrases = [
+            "怎么办", "咋办", "怎么改善", "怎么提高", "怎么提升",
+            "有什么建议", "有建议吗", "该怎么做", "怎么调整",
+            "如何改善", "如何提高", "如何提升", "怎么补",
+            "any advice", "what should i do", "how to improve", "how to fix"
+        ]
+        if advicePhrases.contains(where: { text.contains($0) }) {
+            return .advice
+        }
+
+        // --- Elaboration: requesting more detail or continuation ---
         let elaborationPhrases = [
-            // Request for more detail
             "详细说说", "具体说说", "再说说", "展开说", "说详细点",
             "具体点", "详细点", "再详细", "再具体",
-            // Continuation
             "还有呢", "还有吗", "然后呢", "接下来呢", "继续",
             "还有什么", "别的呢",
-            // Why / reason
-            "为什么呢", "为什么", "为啥", "为啥呢", "什么原因",
-            "怎么回事", "咋回事",
-            // Advice
-            "怎么办", "咋办", "怎么改善", "怎么提高", "怎么提升",
-            "有什么建议", "有建议吗", "该怎么做",
-            // English
-            "tell me more", "more detail", "why", "any advice", "what should i do"
+            "tell me more", "more detail", "go on", "continue"
         ]
+        if elaborationPhrases.contains(where: { text.contains($0) }) {
+            return .elaboration
+        }
+
+        // --- Confirmation: double-checking the previous answer ---
         let confirmationPhrases = [
             "对不对", "对吗", "是不是", "是吗", "真的吗", "确定吗",
             "没错吧", "对吧", "right", "really", "are you sure"
         ]
+        if confirmationPhrases.contains(where: { text.contains($0) }) {
+            return .confirmation
+        }
 
-        let allPhrases = evaluationPhrases + elaborationPhrases + confirmationPhrases
-        return allPhrases.contains(where: { text.contains($0) })
+        return .none
+    }
+
+    /// Legacy compatibility — checks if the text matches any follow-up mode.
+    private func isElaborationFollowUp(_ text: String) -> Bool {
+        return detectFollowUpMode(text) != .none
     }
 
     /// Checks whether the query text contains an explicit time reference (e.g. "今天", "上周", "this month").

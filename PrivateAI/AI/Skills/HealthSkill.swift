@@ -16,6 +16,13 @@ struct HealthSkill: ClawSkill {
     }
 
     func execute(intent: QueryIntent, context: SkillContext, completion: @escaping (String) -> Void) {
+        // When the user asks a follow-up like "够了吗", "怎么办", "为什么",
+        // give a concise targeted answer instead of repeating the full data dump.
+        if context.followUpMode != .none {
+            respondFollowUp(intent: intent, mode: context.followUpMode, context: context, completion: completion)
+            return
+        }
+
         switch intent {
         case .exercise(let range, let workoutFilter):
             if let filter = workoutFilter {
@@ -33,6 +40,396 @@ struct HealthSkill: ClawSkill {
             respondComparison(range: range, context: context, completion: completion)
         default:
             break
+        }
+    }
+
+    // MARK: - Follow-Up Responses
+
+    /// Produces a concise, targeted response for follow-up questions (evaluation / advice / reason / confirmation).
+    /// Instead of repeating the full data dump, fetches the relevant metrics and answers the specific question.
+    private func respondFollowUp(intent: QueryIntent, mode: FollowUpMode, context: SkillContext, completion: @escaping (String) -> Void) {
+        let range: QueryTimeRange
+        let metric: String
+
+        switch intent {
+        case .exercise(let r, _):
+            range = r; metric = "exercise"
+        case .health(let m, let r):
+            range = r; metric = m
+        case .streak:
+            range = .thisWeek; metric = "streak"
+        case .comparison(let r):
+            range = r; metric = "comparison"
+        default:
+            range = .today; metric = "general"
+        }
+
+        context.healthService.fetchSummaries(days: max(fetchDaysNeeded(for: range), 8)) { [self] summaries in
+            let interval = range.interval
+            let filtered = summaries.filter { interval.contains($0.date) && $0.hasData }
+
+            guard !filtered.isEmpty else {
+                completion("暂无\(range.label)的数据，无法做出判断。试试问我其他时间段的数据？")
+                return
+            }
+
+            let response: String
+            switch mode {
+            case .evaluation:
+                response = self.buildEvaluation(metric: metric, days: filtered, range: range)
+            case .advice:
+                response = self.buildAdvice(metric: metric, days: filtered, range: range)
+            case .reason:
+                response = self.buildReason(metric: metric, days: filtered, allDays: summaries, range: range)
+            case .elaboration:
+                // Elaboration = show more detail → just fall through to the full handler
+                // by calling the normal execution path with followUpMode reset
+                let plainContext = SkillContext(
+                    coreDataContext: context.coreDataContext,
+                    healthService: context.healthService,
+                    calendarService: context.calendarService,
+                    photoService: context.photoService,
+                    locationService: context.locationService,
+                    profile: context.profile,
+                    contextMemory: context.contextMemory,
+                    originalQuery: context.originalQuery,
+                    followUpMode: .none
+                )
+                self.execute(intent: intent, context: plainContext, completion: completion)
+                return
+            case .confirmation:
+                response = self.buildConfirmation(metric: metric, days: filtered, range: range)
+            case .none:
+                // Should not reach here; fall through to full response
+                let plainContext = SkillContext(
+                    coreDataContext: context.coreDataContext,
+                    healthService: context.healthService,
+                    calendarService: context.calendarService,
+                    photoService: context.photoService,
+                    locationService: context.locationService,
+                    profile: context.profile,
+                    contextMemory: context.contextMemory,
+                    originalQuery: context.originalQuery,
+                    followUpMode: .none
+                )
+                self.execute(intent: intent, context: plainContext, completion: completion)
+                return
+            }
+            completion(response)
+        }
+    }
+
+    // MARK: Evaluation ("够了吗", "正常吗", "达标了吗")
+
+    private func buildEvaluation(metric: String, days: [HealthSummary], range: QueryTimeRange) -> String {
+        switch metric {
+        case "sleep":
+            let avgSleep = days.filter { $0.sleepHours > 0 }.map(\.sleepHours)
+            guard !avgSleep.isEmpty else { return "暂无睡眠数据，无法评估。" }
+            let avg = avgSleep.reduce(0, +) / Double(avgSleep.count)
+            if avg >= 7 && avg <= 9 {
+                return "✅ \(String(format: "%.1f", avg)) 小时，在健康范围（7-9h）内，睡眠充足。\n保持这个节奏就好 👍"
+            } else if avg >= 6 && avg < 7 {
+                return "⚠️ \(String(format: "%.1f", avg)) 小时，略低于建议的 7 小时。\n不算严重不足，但长期下来身体恢复会打折扣。"
+            } else if avg < 6 {
+                return "❌ \(String(format: "%.1f", avg)) 小时，明显不足。\n成年人建议 7-9 小时睡眠，低于 6 小时会影响免疫力和注意力。"
+            } else {
+                return "⚠️ \(String(format: "%.1f", avg)) 小时，超过 9 小时。\n偶尔多睡是恢复，但经常性过长睡眠可能需要关注身体状态。"
+            }
+
+        case "heartRate":
+            let hrs = days.compactMap { $0.avgHeartRate > 0 ? $0.avgHeartRate : nil }
+            guard !hrs.isEmpty else { return "暂无心率数据，无法评估。" }
+            let avg = hrs.reduce(0, +) / Double(hrs.count)
+            if avg >= 60 && avg <= 100 {
+                return "✅ 平均 \(Int(avg)) bpm，在正常范围（60-100 bpm）内。\n心率节律健康，无需担心。"
+            } else if avg < 60 {
+                return "💚 平均 \(Int(avg)) bpm，低于 60。\n如果你经常运动，这是很好的体适能表现；否则建议关注是否有头晕等不适。"
+            } else {
+                return "⚠️ 平均 \(Int(avg)) bpm，偏高。\n可能与压力、咖啡因、睡眠不足有关。持续高于 100 建议咨询医生。"
+            }
+
+        case "hrv":
+            let hrvs = days.compactMap { $0.hrvMs > 0 ? $0.hrvMs : nil }
+            guard !hrvs.isEmpty else { return "暂无 HRV 数据，无法评估。" }
+            let avg = hrvs.reduce(0, +) / Double(hrvs.count)
+            if avg >= 30 {
+                return "✅ 平均 HRV \(Int(avg)) ms，身体恢复状态良好。\nHRV 越高通常代表自主神经调节能力越好。"
+            } else if avg >= 20 {
+                return "⚠️ 平均 HRV \(Int(avg)) ms，处于中等水平。\n可能反映近期压力较大或恢复不充分，注意休息。"
+            } else {
+                return "❌ 平均 HRV \(Int(avg)) ms，偏低。\n通常意味着身体处于疲劳或压力状态，建议今天以休息为主。"
+            }
+
+        case "steps":
+            let avgSteps = days.map(\.steps).reduce(0, +) / Double(days.count)
+            let goal = 8000.0
+            let pct = avgSteps / goal * 100
+            if pct >= 100 {
+                return "✅ 平均每天 \(Int(avgSteps)) 步，达标了！\n超过 8000 步的日常目标，活动量很健康 🎉"
+            } else if pct >= 75 {
+                return "👍 平均 \(Int(avgSteps)) 步，完成了目标的 \(Int(pct))%。\n差一点就达标（8000步），再多走一站路就够了。"
+            } else if pct >= 50 {
+                return "⚠️ 平均 \(Int(avgSteps)) 步，完成目标的 \(Int(pct))%。\n还有提升空间，试试午餐后散步 15 分钟。"
+            } else {
+                return "❌ 平均 \(Int(avgSteps)) 步，距离 8000 步目标还有较大差距。\n久坐对健康影响较大，每小时起身走几分钟会有很大帮助。"
+            }
+
+        case "exercise":
+            let totalMin = days.map(\.exerciseMinutes).reduce(0, +)
+            let avgMin = totalMin / Double(days.count)
+            let weeklyTarget = 150.0 // WHO recommendation
+            let weeklyPace = avgMin * 7
+            if weeklyPace >= weeklyTarget {
+                return "✅ 平均每天运动 \(Int(avgMin)) 分钟，按这个节奏一周约 \(Int(weeklyPace)) 分钟。\n达到了 WHO 推荐的每周 150 分钟目标 💪"
+            } else if weeklyPace >= weeklyTarget * 0.7 {
+                return "👍 平均每天 \(Int(avgMin)) 分钟，周节奏约 \(Int(weeklyPace)) 分钟。\n接近 WHO 150分钟/周的目标了，再加把劲！"
+            } else {
+                return "⚠️ 平均每天 \(Int(avgMin)) 分钟，周节奏约 \(Int(weeklyPace)) 分钟。\n距离建议的 150分钟/周还有差距，试试每天增加 10 分钟活动。"
+            }
+
+        case "calories":
+            let avgCal = days.map(\.activeCalories).reduce(0, +) / Double(days.count)
+            if avgCal >= 500 {
+                return "✅ 平均每天消耗 \(Int(avgCal)) 千卡，活动量充足。"
+            } else if avgCal >= 300 {
+                return "👍 平均每天 \(Int(avgCal)) 千卡，活动量适中。想提高的话可以增加有氧运动。"
+            } else {
+                return "⚠️ 平均每天仅 \(Int(avgCal)) 千卡，活动量偏低。尝试每天多走路或做些轻度运动。"
+            }
+
+        case "weight":
+            let weights = days.compactMap { $0.weightKg > 0 ? $0.weightKg : nil }
+            guard let latest = weights.first else { return "暂无体重数据，无法评估。" }
+            return "📊 最近体重 \(String(format: "%.1f", latest)) kg。\n体重是否正常需要结合身高（BMI）判断，你可以问我「帮我算 BMI」。"
+
+        case "bloodOxygen":
+            let values = days.compactMap { $0.bloodOxygenPct > 0 ? $0.bloodOxygenPct : nil }
+            guard !values.isEmpty else { return "暂无血氧数据。" }
+            let avg = values.reduce(0, +) / Double(values.count)
+            if avg >= 95 {
+                return "✅ 血氧 \(Int(avg))%，在正常范围（≥95%），一切正常。"
+            } else if avg >= 90 {
+                return "⚠️ 血氧 \(Int(avg))%，略低于正常值（95%+）。如果持续偏低建议就医。"
+            } else {
+                return "❌ 血氧 \(Int(avg))%，明显偏低，建议尽快咨询医生。"
+            }
+
+        default:
+            // General health overview evaluation
+            let avgSteps = days.map(\.steps).reduce(0, +) / Double(days.count)
+            let avgSleep = days.filter { $0.sleepHours > 0 }.map(\.sleepHours)
+            let sleepAvg = avgSleep.isEmpty ? 0 : avgSleep.reduce(0, +) / Double(avgSleep.count)
+            let avgExMin = days.map(\.exerciseMinutes).reduce(0, +) / Double(days.count)
+
+            var verdicts: [String] = []
+            if avgSteps >= 8000 { verdicts.append("✅ 步数达标") }
+            else { verdicts.append("⚠️ 步数不足") }
+            if sleepAvg >= 7 && sleepAvg <= 9 { verdicts.append("✅ 睡眠充足") }
+            else if sleepAvg > 0 { verdicts.append("⚠️ 睡眠需改善") }
+            if avgExMin * 7 >= 150 { verdicts.append("✅ 运动达标") }
+            else { verdicts.append("⚠️ 运动偏少") }
+
+            return verdicts.joined(separator: "\n") + "\n\n想了解具体哪项的详情，可以直接问我。"
+        }
+    }
+
+    // MARK: Advice ("怎么办", "怎么改善", "有什么建议")
+
+    private func buildAdvice(metric: String, days: [HealthSummary], range: QueryTimeRange) -> String {
+        switch metric {
+        case "sleep":
+            let avgSleep = days.filter { $0.sleepHours > 0 }.map(\.sleepHours)
+            let avg = avgSleep.isEmpty ? 0 : avgSleep.reduce(0, +) / Double(avgSleep.count)
+            var tips: [String] = ["💡 改善睡眠的建议：\n"]
+            if avg < 7 {
+                tips.append("• 尝试每天提前 30 分钟上床，逐步调整")
+                tips.append("• 睡前 1 小时放下手机，减少蓝光刺激")
+                tips.append("• 保持卧室凉爽（18-22°C）、安静、黑暗")
+            }
+            tips.append("• 固定作息时间，包括周末也尽量保持一致")
+            tips.append("• 避免下午 3 点后摄入咖啡因")
+            tips.append("• 白天适当运动有助于晚上入睡，但避免睡前剧烈运动")
+            return tips.joined(separator: "\n")
+
+        case "heartRate":
+            var tips: [String] = ["💡 心率管理建议：\n"]
+            tips.append("• 规律有氧运动（如快走、慢跑）可有效降低静息心率")
+            tips.append("• 练习深呼吸或冥想来缓解压力")
+            tips.append("• 减少咖啡因和酒精摄入")
+            tips.append("• 保证充足睡眠（7-9 小时）")
+            tips.append("• 如果静息心率持续偏高（>100），建议咨询医生")
+            return tips.joined(separator: "\n")
+
+        case "steps":
+            var tips: [String] = ["💡 增加步数的实用建议：\n"]
+            tips.append("• 午餐后散步 15 分钟（约 +2000 步）")
+            tips.append("• 通勤时提前一站下车走路")
+            tips.append("• 能走楼梯就不坐电梯")
+            tips.append("• 打电话时站起来走动")
+            tips.append("• 设置每小时起身提醒，避免久坐")
+            return tips.joined(separator: "\n")
+
+        case "exercise":
+            let avgMin = days.map(\.exerciseMinutes).reduce(0, +) / Double(days.count)
+            var tips: [String] = ["💡 提升运动量的建议：\n"]
+            if avgMin < 15 {
+                tips.append("• 从每天 10-15 分钟快走开始，循序渐进")
+                tips.append("• 不必一次性完成，分成 2-3 次短时间运动也有效")
+            } else {
+                tips.append("• 尝试增加运动强度或时长（每周增加不超过 10%）")
+                tips.append("• 混搭有氧 + 力量训练，效果更全面")
+            }
+            tips.append("• 找一个运动伙伴，互相督促更容易坚持")
+            tips.append("• 选择自己喜欢的运动类型，乐趣是最好的动力")
+            return tips.joined(separator: "\n")
+
+        case "weight":
+            var tips: [String] = ["💡 体重管理建议：\n"]
+            tips.append("• 每周称重 1-2 次，同一时间段（如晨起空腹）")
+            tips.append("• 关注趋势而非单日波动（1-2kg 的日常浮动是正常的）")
+            tips.append("• 控制饮食 + 适量运动是最可持续的方式")
+            tips.append("• 每顿饭吃到七八分饱")
+            tips.append("• 减重速度建议每周 0.5-1 kg，太快容易反弹")
+            return tips.joined(separator: "\n")
+
+        case "hrv":
+            var tips: [String] = ["💡 提升 HRV 的建议：\n"]
+            tips.append("• 保持规律作息和充足睡眠是关键")
+            tips.append("• 有规律的有氧运动可以提升 HRV")
+            tips.append("• 练习深呼吸（如 4-7-8 呼吸法）")
+            tips.append("• 减少酒精摄入")
+            tips.append("• 管理压力：冥想、瑜伽、户外散步都有帮助")
+            return tips.joined(separator: "\n")
+
+        default:
+            var tips: [String] = ["💡 综合健康建议：\n"]
+            tips.append("• 每天至少 8000 步，保持基础活动量")
+            tips.append("• 睡够 7-9 小时，固定作息时间")
+            tips.append("• 每周至少 150 分钟中等强度运动")
+            tips.append("• 注意饮水，每天 1.5-2 升")
+            tips.append("• 定期检查健康数据的变化趋势")
+            return tips.joined(separator: "\n")
+        }
+    }
+
+    // MARK: Reason ("为什么", "什么原因")
+
+    private func buildReason(metric: String, days: [HealthSummary], allDays: [HealthSummary], range: QueryTimeRange) -> String {
+        // Compare with baseline (days outside the query range) to find correlations
+        let interval = range.interval
+        let baseline = allDays.filter { !interval.contains($0.date) && $0.hasData }
+
+        switch metric {
+        case "sleep":
+            let avgSleep = days.filter { $0.sleepHours > 0 }.map(\.sleepHours)
+            let avg = avgSleep.isEmpty ? 0 : avgSleep.reduce(0, +) / Double(avgSleep.count)
+            var reasons: [String] = ["🔍 可能的原因：\n"]
+            if avg < 7 {
+                let avgExercise = days.map(\.exerciseMinutes).reduce(0, +) / Double(days.count)
+                if avgExercise < 15 {
+                    reasons.append("• 白天运动量偏少（\(Int(avgExercise))分钟），身体消耗不够可能影响入睡")
+                }
+                let avgSteps = days.map(\.steps).reduce(0, +) / Double(days.count)
+                if avgSteps < 5000 {
+                    reasons.append("• 日常活动量低（\(Int(avgSteps))步），久坐可能导致入睡困难")
+                }
+                reasons.append("• 可能的其他因素：压力、咖啡因、屏幕蓝光、卧室环境等")
+            } else {
+                reasons.append("• 你的睡眠时长在正常范围内")
+                if !baseline.isEmpty {
+                    let baselineSleep = baseline.filter { $0.sleepHours > 0 }.map(\.sleepHours)
+                    let baseAvg = baselineSleep.isEmpty ? 0 : baselineSleep.reduce(0, +) / Double(baselineSleep.count)
+                    if abs(avg - baseAvg) > 0.5 {
+                        reasons.append("• 相比之前（\(String(format: "%.1f", baseAvg))h），\(avg > baseAvg ? "增加" : "减少")了 \(String(format: "%.1f", abs(avg - baseAvg))) 小时")
+                    }
+                }
+            }
+            return reasons.joined(separator: "\n")
+
+        case "steps":
+            let avgSteps = days.map(\.steps).reduce(0, +) / Double(days.count)
+            var reasons: [String] = ["🔍 可能的原因：\n"]
+            if !baseline.isEmpty {
+                let baseAvg = baseline.map(\.steps).reduce(0, +) / Double(baseline.count)
+                if avgSteps < baseAvg * 0.7 {
+                    reasons.append("• 比之前平均（\(Int(baseAvg))步）少了 \(Int(baseAvg - avgSteps)) 步")
+                    reasons.append("• 可能原因：天气变化、日程较满、身体疲劳、居家时间增多")
+                } else if avgSteps > baseAvg * 1.3 {
+                    reasons.append("• 比之前平均（\(Int(baseAvg))步）多了 \(Int(avgSteps - baseAvg)) 步")
+                    reasons.append("• 可能是出行增多、运动积极、或工作性质变化")
+                } else {
+                    reasons.append("• 步数与你的日常水平相当（基线约 \(Int(baseAvg)) 步）")
+                }
+            } else {
+                reasons.append("• 暂无足够基线数据做对比，持续记录后分析会更准确")
+            }
+            return reasons.joined(separator: "\n")
+
+        case "exercise":
+            let avgMin = days.map(\.exerciseMinutes).reduce(0, +) / Double(days.count)
+            var reasons: [String] = ["🔍 可能的原因：\n"]
+            if avgMin < 20 {
+                let sleepDays = days.filter { $0.sleepHours > 0 }
+                let sleepAvg = sleepDays.isEmpty ? 0 : sleepDays.map(\.sleepHours).reduce(0, +) / Double(sleepDays.count)
+                if sleepAvg < 6.5 && sleepAvg > 0 {
+                    reasons.append("• 睡眠不足（\(String(format: "%.1f", sleepAvg))h），可能影响运动意愿和体力")
+                }
+                reasons.append("• 可能原因：日程繁忙、缺乏运动习惯、天气不佳、身体恢复期")
+            } else {
+                reasons.append("• 运动量在合理范围，继续保持 👍")
+            }
+            return reasons.joined(separator: "\n")
+
+        case "heartRate":
+            let hrs = days.compactMap { $0.avgHeartRate > 0 ? $0.avgHeartRate : nil }
+            guard !hrs.isEmpty else { return "暂无足够心率数据来分析原因。" }
+            let avg = hrs.reduce(0, +) / Double(hrs.count)
+            var reasons: [String] = ["🔍 影响心率的可能因素：\n"]
+            if avg > 80 {
+                let sleepAvg = days.filter { $0.sleepHours > 0 }.map(\.sleepHours)
+                let sleep = sleepAvg.isEmpty ? 0 : sleepAvg.reduce(0, +) / Double(sleepAvg.count)
+                if sleep < 7 && sleep > 0 {
+                    reasons.append("• 睡眠不足（\(String(format: "%.1f", sleep))h）会升高静息心率")
+                }
+                reasons.append("• 压力、焦虑、咖啡因、缺乏运动都可能导致心率偏高")
+            } else {
+                reasons.append("• 心率正常，规律运动和良好作息是主要的正面因素")
+            }
+            return reasons.joined(separator: "\n")
+
+        default:
+            return "🔍 影响健康数据的常见因素：睡眠质量、运动习惯、压力水平、饮食、天气等。\n\n如果想深入了解某个具体指标，可以直接问我，比如「为什么睡不好」「步数为什么少了」。"
+        }
+    }
+
+    // MARK: Confirmation ("对不对", "真的吗")
+
+    private func buildConfirmation(metric: String, days: [HealthSummary], range: QueryTimeRange) -> String {
+        switch metric {
+        case "sleep":
+            let avgSleep = days.filter { $0.sleepHours > 0 }.map(\.sleepHours)
+            guard !avgSleep.isEmpty else { return "是的，这是根据 Apple Health 记录的睡眠数据。" }
+            let avg = avgSleep.reduce(0, +) / Double(avgSleep.count)
+            return "是的，这是来自 Apple Health 的真实数据。\(range.label)平均睡眠 \(String(format: "%.1f", avg)) 小时，基于 \(avgSleep.count) 天的记录。"
+
+        case "steps":
+            let total = days.map(\.steps).reduce(0, +)
+            return "没错，\(range.label)共计 \(Int(total)) 步，数据来源于 Apple Health 的步数记录。"
+
+        case "exercise":
+            let total = days.map(\.exerciseMinutes).reduce(0, +)
+            return "确实如此，\(range.label)共运动 \(Int(total)) 分钟，数据来自 Apple Health。"
+
+        case "heartRate":
+            let hrs = days.compactMap { $0.avgHeartRate > 0 ? $0.avgHeartRate : nil }
+            if let avg = hrs.isEmpty ? nil : hrs.reduce(0, +) / Double(hrs.count) {
+                return "对的，平均心率 \(Int(avg)) bpm，数据来自 Apple Watch / Apple Health 的心率监测。"
+            }
+            return "是的，这是 Apple Health 记录的数据。"
+
+        default:
+            return "是的，所有数据都来自你 iPhone / Apple Watch 上的 Apple Health 记录，完全真实可靠。\niosclaw 不会编造或修改任何数据。"
         }
     }
 
@@ -1370,6 +1767,8 @@ struct HealthSkill: ClawSkill {
                 self.respondBloodOxygen(summaries: withData, range: range, completion: completion)
             case "vo2max":
                 self.respondVO2Max(summaries: withData, range: range, completion: completion)
+            case "alert":
+                self.respondHealthAlert(summaries: withData, allSummaries: allSummaries, range: range, context: context, completion: completion)
             default:
                 // Overview: pass all fetched summaries so we can compute previous-period comparison
                 self.respondOverview(summaries: withData, allSummaries: allSummaries, range: range, context: context, completion: completion)
@@ -5176,6 +5575,301 @@ struct HealthSkill: ClawSkill {
         lines.append("")
         lines.append("📖 VO2 Max 是预测长寿和心血管健康最重要的单一指标之一。")
         lines.append("   研究表明，VO2 Max 每提升 1 mL/(kg·min)，全因死亡风险下降约 9%。")
+
+        completion(lines.joined(separator: "\n"))
+    }
+
+    // MARK: - Health Alert (Anomaly Scanning)
+
+    /// Proactively scans all health metrics and flags concerning patterns.
+    /// Answers "有什么异常", "身体有什么问题", "需要注意什么".
+    /// Unlike the overview (which shows stats), this focuses exclusively on
+    /// what's WRONG or needs attention — a personal health early-warning system.
+    private func respondHealthAlert(summaries: [HealthSummary], allSummaries: [HealthSummary],
+                                    range: QueryTimeRange, context: SkillContext,
+                                    completion: @escaping (String) -> Void) {
+        // Use at least 7 days for meaningful anomaly detection
+        let minDays = 7
+        let cal = Calendar.current
+        let effectiveRange: QueryTimeRange = {
+            let span = cal.dateComponents([.day], from: range.interval.start, to: range.interval.end).day ?? 1
+            return span < minDays ? .thisWeek : range
+        }()
+        let interval = effectiveRange.interval
+
+        // If we have enough data from allSummaries, use it; otherwise re-fetch
+        let candidates = allSummaries.filter { interval.contains($0.date) && $0.hasData }
+        let baseline = allSummaries.filter { $0.hasData }
+
+        guard candidates.count >= 2 else {
+            var msg = "⚡ 健康数据不足，暂时无法进行异常扫描。\n"
+            msg += "\n需要至少几天的数据才能识别异常模式。"
+            if !context.healthService.isHealthDataAvailable {
+                msg += "\n此设备不支持 HealthKit，请在 iPhone 上使用。"
+            } else {
+                msg += "\n请确保已开启健康权限，佩戴 Apple Watch 可提供更全面的监测。"
+            }
+            msg += "\n\n💡 你也可以问我具体指标：「睡眠怎么样」「心率正常吗」"
+            completion(msg)
+            return
+        }
+
+        var alerts: [(emoji: String, severity: Int, title: String, detail: String)] = []
+        // severity: 3 = urgent, 2 = warning, 1 = mild concern
+
+        let dayCount = Double(candidates.count)
+
+        // --- 1. Sleep Alerts ---
+        let sleepDays = candidates.filter { $0.sleepHours > 0 }
+        if !sleepDays.isEmpty {
+            let avgSleep = sleepDays.reduce(0) { $0 + $1.sleepHours } / Double(sleepDays.count)
+            let severeInsomniaDays = sleepDays.filter { $0.sleepHours < 5 }.count
+            let insufficientDays = sleepDays.filter { $0.sleepHours < 6 }.count
+
+            if severeInsomniaDays >= 2 {
+                alerts.append(("🔴", 3, "严重睡眠不足",
+                    "有 \(severeInsomniaDays) 天睡眠不到 5 小时。长期严重睡眠不足会影响免疫力、认知和情绪，建议尽快调整作息。"))
+            } else if insufficientDays >= 3 {
+                alerts.append(("🟡", 2, "持续睡眠不足",
+                    "\(insufficientDays) 天睡眠不到 6 小时（平均 \(String(format: "%.1f", avgSleep))h）。成年人建议 7-9 小时，睡眠债会逐日累积。"))
+            } else if avgSleep < 6.5 && sleepDays.count >= 3 {
+                alerts.append(("🟡", 2, "睡眠时间偏短",
+                    "平均睡 \(String(format: "%.1f", avgSleep)) 小时，低于推荐的 7 小时。试着每天提前 30 分钟上床。"))
+            }
+
+            // Sleep regularity: high variance
+            if sleepDays.count >= 4 {
+                let stdDev = standardDeviation(of: sleepDays.map { $0.sleepHours })
+                if stdDev >= 1.5 {
+                    alerts.append(("🟡", 2, "睡眠时间不规律",
+                        "睡眠时长波动很大（±\(Int(stdDev * 60)) 分钟），这比单纯的短睡更伤害生物钟。固定起床时间是最有效的调节方式。"))
+                }
+            }
+
+            // Late bedtime pattern
+            let lateNights = sleepDays.compactMap { $0.sleepOnset }.filter { onset in
+                let h = cal.component(.hour, from: onset)
+                return h >= 1 && h < 6 // after 1am (but not before midnight which wraps)
+            }
+            if lateNights.count >= 3 {
+                alerts.append(("🟡", 2, "频繁晚睡",
+                    "\(lateNights.count) 天凌晨 1 点后才入睡。长期晚睡会降低深度睡眠比例，影响身体修复。"))
+            }
+
+            // Deep sleep deficit
+            let deepDays = sleepDays.filter { $0.hasSleepPhases }
+            if deepDays.count >= 3 {
+                let avgDeep = deepDays.reduce(0) { $0 + $1.sleepDeepHours } / Double(deepDays.count)
+                let avgTotal = deepDays.reduce(0) { $0 + $1.sleepHours } / Double(deepDays.count)
+                let deepRatio = avgTotal > 0 ? avgDeep / avgTotal : 0
+                if deepRatio < 0.1 && avgDeep < 0.7 {
+                    alerts.append(("🟡", 2, "深度睡眠偏少",
+                        "深睡平均仅 \(String(format: "%.1f", avgDeep))h（占比 \(Int(deepRatio * 100))%）。正常应占 15-20%。避免睡前饮酒和蓝光暴露有助于改善。"))
+                }
+            }
+        } else {
+            alerts.append(("⚪", 1, "无睡眠数据",
+                "未检测到睡眠记录。开启 Apple Watch 睡眠追踪或使用 iPhone 就寝模式可自动记录。"))
+        }
+
+        // --- 2. Heart Rate Alerts ---
+        let rhrDays = candidates.filter { $0.restingHeartRate > 0 }
+        if rhrDays.count >= 3 {
+            let avgRHR = rhrDays.reduce(0) { $0 + $1.restingHeartRate } / Double(rhrDays.count)
+            let latestRHR = rhrDays.sorted { $0.date > $1.date }.first?.restingHeartRate ?? 0
+
+            // Absolute threshold
+            if avgRHR > 85 {
+                alerts.append(("🔴", 3, "静息心率偏高",
+                    "平均静息心率 \(Int(avgRHR)) BPM，高于正常范围（60-80 BPM）。若排除了运动/咖啡因因素，建议就医检查。"))
+            } else if avgRHR > 78 {
+                alerts.append(("🟡", 2, "静息心率略高",
+                    "平均静息心率 \(Int(avgRHR)) BPM。规律有氧运动（如跑步、游泳）可以逐步降低静息心率。"))
+            }
+
+            // Sudden spike: latest vs personal baseline
+            let baselineRHR = baseline.filter { $0.restingHeartRate > 0 }
+            if !baselineRHR.isEmpty && latestRHR > 0 {
+                let baseAvg = baselineRHR.reduce(0) { $0 + $1.restingHeartRate } / Double(baselineRHR.count)
+                let spike = latestRHR - baseAvg
+                if spike >= 8 {
+                    alerts.append(("🟡", 2, "静息心率异常升高",
+                        "最近静息心率 \(Int(latestRHR)) BPM，比你的个人基线（\(Int(baseAvg))）高出 \(Int(spike)) BPM。可能与压力、睡眠不足、脱水或生病有关。"))
+                }
+            }
+        }
+
+        // --- 3. HRV Alerts ---
+        let hrvDays = candidates.filter { $0.hrv > 0 }
+        if hrvDays.count >= 3 {
+            let avgHRV = hrvDays.reduce(0) { $0 + $1.hrv } / Double(hrvDays.count)
+            let latestHRV = hrvDays.sorted { $0.date > $1.date }.first?.hrv ?? 0
+
+            // Very low HRV (absolute)
+            if avgHRV < 20 {
+                alerts.append(("🔴", 3, "HRV 很低",
+                    "HRV 平均 \(Int(avgHRV)) ms，提示自主神经调节能力下降。需要优先休息，避免高强度训练。"))
+            } else if avgHRV < 30 {
+                alerts.append(("🟡", 2, "HRV 偏低",
+                    "HRV 平均 \(Int(avgHRV)) ms，身体可能处于较大压力或恢复不足状态。充足睡眠和深呼吸练习有助于提升。"))
+            }
+
+            // Sudden HRV drop vs baseline
+            let baselineHRV = baseline.filter { $0.hrv > 0 }
+            if !baselineHRV.isEmpty && latestHRV > 0 {
+                let baseAvg = baselineHRV.reduce(0) { $0 + $1.hrv } / Double(baselineHRV.count)
+                let drop = baseAvg - latestHRV
+                let pctDrop = baseAvg > 0 ? drop / baseAvg * 100 : 0
+                if pctDrop >= 30 {
+                    alerts.append(("🟡", 2, "HRV 显著下降",
+                        "最近 HRV \(Int(latestHRV)) ms，比基线（\(Int(baseAvg))）下降了 \(Int(pctDrop))%。身体可能正在应对压力、疲劳或感染。"))
+                }
+            }
+        }
+
+        // --- 4. Blood Oxygen Alerts ---
+        let spo2Days = candidates.filter { $0.oxygenSaturation > 0 }
+        if spo2Days.count >= 2 {
+            let lowDays = spo2Days.filter { $0.oxygenSaturation < 94 }
+            if !lowDays.isEmpty {
+                let minSpO2 = spo2Days.min(by: { $0.oxygenSaturation < $1.oxygenSaturation })!.oxygenSaturation
+                if minSpO2 < 90 {
+                    alerts.append(("🔴", 3, "血氧过低",
+                        "检测到血氧低至 \(String(format: "%.0f", minSpO2))%（\(lowDays.count) 天低于 94%）。正常应 ≥95%，建议尽快就医。"))
+                } else {
+                    alerts.append(("🟡", 2, "血氧偏低",
+                        "\(lowDays.count) 天血氧低于 94%（最低 \(String(format: "%.0f", minSpO2))%）。若非高海拔环境，注意呼吸通畅，持续偏低建议就医。"))
+                }
+            }
+        }
+
+        // --- 5. Activity Decline ---
+        let stepDays = candidates.filter { $0.steps > 0 }
+        if stepDays.count >= 5 {
+            let avgSteps = stepDays.reduce(0) { $0 + $1.steps } / Double(stepDays.count)
+            let sedentaryDays = stepDays.filter { $0.steps < 3000 }.count
+
+            if avgSteps < 3000 {
+                alerts.append(("🟡", 2, "活动量严重不足",
+                    "日均仅 \(Int(avgSteps).formatted()) 步，远低于推荐的 8000 步。久坐会增加心血管和代谢疾病风险，从每天散步 15 分钟开始。"))
+            } else if sedentaryDays >= 3 && sedentaryDays > stepDays.count / 2 {
+                alerts.append(("🟡", 1, "多日活动偏少",
+                    "\(sedentaryDays) 天步数不足 3000。试试在午休或晚饭后加一次 10 分钟散步。"))
+            }
+
+            // Sudden activity drop: compare recent 3 days vs earlier
+            if stepDays.count >= 6 {
+                let sorted = stepDays.sorted { $0.date < $1.date }
+                let recent3 = sorted.suffix(3)
+                let earlier = sorted.dropLast(3)
+                let recentAvg = recent3.reduce(0) { $0 + $1.steps } / Double(recent3.count)
+                let earlierAvg = earlier.reduce(0) { $0 + $1.steps } / Double(earlier.count)
+                if earlierAvg > 0 {
+                    let dropPct = (earlierAvg - recentAvg) / earlierAvg * 100
+                    if dropPct >= 40 && recentAvg < 5000 {
+                        alerts.append(("🟡", 1, "活动量近期下降",
+                            "最近 3 天日均 \(Int(recentAvg).formatted()) 步，比之前下降 \(Int(dropPct))%。可能因天气、身体状况或工作变化导致。"))
+                    }
+                }
+            }
+        }
+
+        // --- 6. Exercise Gap ---
+        let exerciseDays = candidates.filter { $0.exerciseMinutes >= 10 }.count
+        let totalDays = candidates.count
+        if totalDays >= 5 && exerciseDays == 0 {
+            alerts.append(("🟡", 2, "连续多天无运动",
+                "\(totalDays) 天内无运动记录（≥10 分钟）。WHO 建议每周至少 150 分钟中等强度活动。"))
+        } else if totalDays >= 7 && exerciseDays <= 1 {
+            alerts.append(("🟡", 1, "运动频率偏低",
+                "过去 \(totalDays) 天仅 \(exerciseDays) 天有运动。每周 3-5 次运动对健康效果最佳。"))
+        }
+
+        // --- 7. Weight Anomaly ---
+        let weightDays = candidates.filter { $0.bodyMassKg > 0 }.sorted { $0.date < $1.date }
+        if weightDays.count >= 3 {
+            let first = weightDays.first!.bodyMassKg
+            let last = weightDays.last!.bodyMassKg
+            let change = last - first
+            let span = cal.dateComponents([.day], from: weightDays.first!.date, to: weightDays.last!.date).day ?? 1
+            let weeklyRate = span > 0 ? change / Double(span) * 7 : 0
+
+            if abs(weeklyRate) >= 1.0 {
+                let direction = weeklyRate > 0 ? "增加" : "减少"
+                alerts.append(("🟡", 2, "体重变化较快",
+                    "体重周变化率约 \(String(format: "%.1f", abs(weeklyRate))) kg/周（\(direction)趋势）。健康的体重变化建议控制在每周 0.5 kg 以内。"))
+            }
+        }
+
+        // --- Build Response ---
+        var lines: [String] = []
+
+        if alerts.isEmpty {
+            lines.append("✅ 健康数据扫描完成（\(effectiveRange.label)）\n")
+            lines.append("🎉 未发现明显异常，各项指标在正常范围内！\n")
+
+            // Show brief positive summary
+            if !sleepDays.isEmpty {
+                let avgSleep = sleepDays.reduce(0) { $0 + $1.sleepHours } / Double(sleepDays.count)
+                lines.append("😴 睡眠 \(String(format: "%.1f", avgSleep))h ✓")
+            }
+            if !rhrDays.isEmpty {
+                let avgRHR = rhrDays.reduce(0) { $0 + $1.restingHeartRate } / Double(rhrDays.count)
+                lines.append("🫀 静息心率 \(Int(avgRHR)) BPM ✓")
+            }
+            if !hrvDays.isEmpty {
+                let avgHRV = hrvDays.reduce(0) { $0 + $1.hrv } / Double(hrvDays.count)
+                lines.append("📳 HRV \(Int(avgHRV)) ms ✓")
+            }
+            if !stepDays.isEmpty {
+                let avgSteps = stepDays.reduce(0) { $0 + $1.steps } / Double(stepDays.count)
+                lines.append("👟 日均 \(Int(avgSteps).formatted()) 步 ✓")
+            }
+            lines.append("\n💡 继续保持！你也可以问「健康概览」查看详细的综合评分。")
+        } else {
+            // Sort by severity (highest first)
+            let sorted = alerts.sorted { $0.severity > $1.severity }
+            let urgentCount = sorted.filter { $0.severity == 3 }.count
+            let warningCount = sorted.filter { $0.severity == 2 }.count
+
+            lines.append("⚡ 健康异常扫描（\(effectiveRange.label)）\n")
+
+            if urgentCount > 0 {
+                lines.append("发现 \(sorted.count) 项需要关注（\(urgentCount) 项重要）：\n")
+            } else {
+                lines.append("发现 \(sorted.count) 项值得注意：\n")
+            }
+
+            for (idx, alert) in sorted.enumerated() {
+                lines.append("\(alert.emoji) **\(idx + 1). \(alert.title)**")
+                lines.append("   \(alert.detail)")
+                if idx < sorted.count - 1 { lines.append("") }
+            }
+
+            // Actionable summary
+            lines.append("")
+            if urgentCount > 0 {
+                lines.append("🏥 有 \(urgentCount) 项指标偏离正常范围较多，建议重点关注。")
+            }
+            if warningCount > 0 && urgentCount == 0 {
+                lines.append("📋 这些暂时不紧急，但持续关注有助于早期预防。")
+            }
+
+            // Data source hint
+            let metricsChecked: [String] = [
+                sleepDays.isEmpty ? nil : "睡眠",
+                rhrDays.isEmpty ? nil : "心率",
+                hrvDays.isEmpty ? nil : "HRV",
+                spo2Days.isEmpty ? nil : "血氧",
+                stepDays.isEmpty ? nil : "步数",
+                weightDays.isEmpty ? nil : "体重"
+            ].compactMap { $0 }
+            if !metricsChecked.isEmpty {
+                lines.append("\n🔍 已扫描：\(metricsChecked.joined(separator: "、"))（\(candidates.count) 天数据）")
+            }
+
+            lines.append("\n💡 点击具体指标了解更多：「心率怎么样」「睡眠分析」「HRV 趋势」")
+        }
 
         completion(lines.joined(separator: "\n"))
     }

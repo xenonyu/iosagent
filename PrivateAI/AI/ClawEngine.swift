@@ -110,7 +110,8 @@ final class ClawEngine {
             locationService: locationService,
             profile: profile,
             contextMemory: contextMemory,
-            originalQuery: query
+            originalQuery: query,
+            followUpMode: contextMemory?.lastFollowUpMode ?? .none
         )
         registry.execute(intent: intent, context: ctx, completion: completion)
     }

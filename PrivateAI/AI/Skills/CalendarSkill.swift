@@ -14,6 +14,18 @@ struct CalendarSkill: ClawSkill {
     }
 
     func execute(intent: QueryIntent, context: SkillContext, completion: @escaping (String) -> Void) {
+        // Follow-up mode: concise targeted answer instead of full schedule dump
+        if context.followUpMode != .none, context.followUpMode != .elaboration {
+            let range: QueryTimeRange
+            switch intent {
+            case .calendar(let r): range = r
+            case .calendarSearch(_, let r): range = r
+            default: range = .today
+            }
+            completion(buildCalendarFollowUp(mode: context.followUpMode, range: range, context: context))
+            return
+        }
+
         if case .calendarNext = intent {
             completion(buildNextEventResponse(context: context))
             return
@@ -70,6 +82,67 @@ struct CalendarSkill: ClawSkill {
             }
         } else {
             completion(buildResponse(range: range, context: context))
+        }
+    }
+
+    // MARK: - Follow-Up Response
+
+    /// Produces a concise targeted answer for follow-up questions about the calendar.
+    private func buildCalendarFollowUp(mode: FollowUpMode, range: QueryTimeRange, context: SkillContext) -> String {
+        guard context.calendarService.isAuthorized else {
+            return "📅 日历权限未开启，请前往设置开启后再试。"
+        }
+        let interval = range.interval
+        let events = context.calendarService.fetchEvents(from: interval.start, to: interval.end)
+        let timedEvents = events.filter { !$0.isAllDay }
+
+        switch mode {
+        case .evaluation:
+            if events.isEmpty {
+                return "✅ \(range.label)没有安排，时间完全自由。"
+            }
+            let totalMinutes = timedEvents.reduce(0) { $0 + Int($1.duration / 60) }
+            let hours = totalMinutes / 60
+            if timedEvents.count >= 6 || totalMinutes >= 360 {
+                return "⚠️ \(range.label)有 \(timedEvents.count) 个会议，共 \(hours) 小时 \(totalMinutes % 60) 分钟。\n安排比较密集，注意给自己留些休息时间。"
+            } else if timedEvents.count >= 3 {
+                return "📅 \(range.label)有 \(timedEvents.count) 个会议，共 \(hours) 小时 \(totalMinutes % 60) 分钟。\n安排适中，还有足够的空余时间。"
+            } else {
+                return "✅ \(range.label)只有 \(timedEvents.count) 个安排，整体比较轻松。"
+            }
+
+        case .advice:
+            if timedEvents.count >= 5 {
+                return """
+                💡 日程管理建议：
+
+                • 会议密集时，相邻会议间留 10-15 分钟缓冲
+                • 把需要专注的工作安排在没有会议的时段
+                • 尝试合并议题相近的会议，减少会议总数
+                • 午餐后 30 分钟避免安排重要会议（容易犯困）
+                """
+            } else {
+                return """
+                💡 今天日程相对轻松，建议：
+
+                • 利用空余时间处理重要但不紧急的任务
+                • 适当休息和运动，保持精力
+                • 提前准备明天的安排
+                """
+            }
+
+        case .reason:
+            if events.isEmpty {
+                return "🔍 \(range.label)没有日历事件，可能是日历未同步或确实没有安排。"
+            }
+            let allDayCount = events.filter { $0.isAllDay }.count
+            return "🔍 \(range.label)共 \(events.count) 个事件（\(timedEvents.count) 个定时会议，\(allDayCount) 个全天事件）。\n日程密度主要取决于会议邀请和你自己添加的安排。"
+
+        case .confirmation:
+            return "是的，数据来自你 iPhone 上的系统日历。如果你用了多个日历账户（iCloud/Google/Exchange），所有同步的事件都会被显示。"
+
+        default:
+            return "📅 \(range.label)共有 \(events.count) 个事件。想了解什么方面？"
         }
     }
 

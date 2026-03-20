@@ -1,6 +1,31 @@
 import Foundation
 import CoreData
 
+// MARK: - Follow-Up Mode
+
+/// Indicates how the user's follow-up relates to the previous response.
+/// When a skill re-triggers via ContextMemory elaboration detection,
+/// this tells the skill HOW to respond differently instead of repeating data.
+enum FollowUpMode {
+    /// Normal first-time query — show full data response.
+    case none
+    /// User is evaluating the previous data: "够了吗", "正常吗", "达标了吗"
+    /// → Skill should give a concise yes/no judgment with context.
+    case evaluation
+    /// User wants more detail: "详细说说", "还有呢", "具体点"
+    /// → Skill should expand on the previous response.
+    case elaboration
+    /// User is asking for advice: "怎么办", "怎么改善", "有什么建议"
+    /// → Skill should give actionable recommendations.
+    case advice
+    /// User is asking why: "为什么", "什么原因", "怎么回事"
+    /// → Skill should explain possible causes.
+    case reason
+    /// User is confirming: "对不对", "真的吗", "确定吗"
+    /// → Skill should briefly validate its previous answer.
+    case confirmation
+}
+
 // MARK: - Skill Context
 
 /// Unified data-access context passed to every ClawSkill on execution.
@@ -14,6 +39,9 @@ struct SkillContext {
     let profile: UserProfileData
     let contextMemory: ContextMemory?
     let originalQuery: String
+    /// When non-`.none`, the user is following up on a previous response.
+    /// Skills should check this to give targeted responses instead of repeating full data.
+    let followUpMode: FollowUpMode
 
     /// Lazy accessor for PhotoSearchService (searches CDPhotoIndex built by Vision).
     /// Only created when actually needed to avoid unnecessary overhead.

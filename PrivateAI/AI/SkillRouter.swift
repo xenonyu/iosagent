@@ -343,6 +343,30 @@ struct SkillRouter {
             return .streak
         }
 
+        // --- Recovery / Readiness (must check BEFORE exercise) ---
+        // "能运动吗", "适合运动吗", "可以锻炼吗" ask about body readiness, not exercise data.
+        // These contain "运动"/"锻炼" which the exercise check below would greedily capture,
+        // so we intercept them here and route to health.recovery for a proper HRV/RHR/sleep
+        // based readiness assessment.
+        //
+        // Guard against false positives: "可以做什么运动" (recommendation), "可以看运动数据吗"
+        // (data query) should NOT be intercepted. We exclude queries that contain data-seeking
+        // or recommendation words alongside the modal verb.
+        let readinessModalVerbs = ["能", "可以", "适合", "适不适合", "能不能", "该不该",
+                                   "要不要", "行不行", "可不可以", "应该", "should i",
+                                   "can i", "ready to", "fit to", "ok to"]
+        let readinessActivityWords = ["运动", "锻炼", "健身", "跑步", "训练", "跑",
+                                      "游泳", "骑车", "瑜伽", "练", "exercise", "workout",
+                                      "run", "train", "swim"]
+        let dataOrRecommendWords = ["多少", "几步", "几次", "什么运动", "做什么", "哪些",
+                                    "数据", "记录", "统计", "看看", "查看", "how much",
+                                    "how many", "what kind"]
+        if containsAny(lower, readinessModalVerbs) && containsAny(lower, readinessActivityWords)
+            && !containsAny(lower, dataOrRecommendWords) {
+            let healthRange = hasExplicitTimeReference(lower) ? range : .today
+            return .health(metric: "recovery", range: healthRange)
+        }
+
         // --- Exercise / Fitness ---
         if containsAny(lower, ["运动", "锻炼", "健身", "跑步", "步数", "走路", "步行",
                                 "运动量", "活动量", "消耗", "有氧", "骑车", "骑行",

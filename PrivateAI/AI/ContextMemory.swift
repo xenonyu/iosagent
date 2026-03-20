@@ -47,9 +47,11 @@ final class ContextMemory {
 
     /// Returns a resolved intent by inheriting context from previous turns.
     ///
-    /// Handles four follow-up scenarios:
+    /// Handles five follow-up scenarios:
     /// 1. "那昨天呢?" → unknown intent + follow-up → inherits previous skill, changes time range
     /// 2. "昨天" (bare time) → unknown intent + time-only → inherits previous skill, changes time range
+    /// 2b. "够了吗?" / "详细说说" → unknown intent + elaboration/evaluation → re-triggers previous intent unchanged
+    ///    (e.g. after "这周运动了多少", "够了吗" should re-show exercise data, not fall to unknown)
     /// 3. "睡眠呢?" → known intent + follow-up + no explicit time → inherits time range from previous turn
     ///    (e.g. after "今天走了多少步？", "睡眠呢" should mean today's sleep, not default lastWeek)
     /// 4. "心率" / "睡眠" / "步数" → short bare-keyword query with no explicit time
@@ -71,6 +73,21 @@ final class ContextMemory {
 
         // Also detect bare time references as follow-ups: "昨天", "上周", "这个月" alone
         let isTimeOnly = newIntent.isUnknown && isTimeReference(trimmed)
+
+        // Scenario 2b (checked BEFORE Scenario 1):
+        // Elaboration / evaluation follow-up → re-trigger previous intent unchanged.
+        // "够了吗", "达标了吗", "正常吗", "详细说说", "还有呢", "为什么呢" contain no skill keywords,
+        // so SkillRouter returns .unknown. These are conversational reactions to the previous
+        // response — the user wants the SAME data context, not a new topic.
+        //
+        // Must run before Scenario 1 because phrases like "还有呢", "为什么呢" contain "呢"
+        // which would match followUpPhrases and incorrectly apply a time range change.
+        // Elaboration should preserve the original intent + time range entirely.
+        if newIntent.isUnknown, let last = lastIntent {
+            if isElaborationFollowUp(trimmed) {
+                return last
+            }
+        }
 
         // Scenario 1 & 2: Unknown intent → inherit previous skill entirely
         if (isFollowUp || isTimeOnly), let last = lastIntent, newIntent.isUnknown {
@@ -175,6 +192,53 @@ final class ContextMemory {
 
         // Keep only last 5 topics
         if mentionedTopics.count > 5 { mentionedTopics.removeFirst() }
+    }
+
+    /// Detects elaboration / evaluation follow-ups — conversational reactions where the user
+    /// wants the SAME data context re-triggered, not a new topic.
+    ///
+    /// Three categories:
+    /// 1. **Evaluation**: "够了吗", "达标了吗", "正常吗", "算多吗", "健康吗" — user judges previous data
+    /// 2. **Elaboration**: "详细说说", "具体说说", "再说说", "展开说", "还有呢" — user wants more detail
+    /// 3. **Confirmation**: "对不对", "是不是", "真的吗", "确定吗" — user double-checks previous answer
+    private func isElaborationFollowUp(_ text: String) -> Bool {
+        let evaluationPhrases = [
+            // Goal evaluation
+            "够了吗", "够不够", "够了没", "达标了吗", "达标没", "达到了吗",
+            // Normalcy check
+            "正常吗", "正不正常", "算正常吗", "健康吗", "算健康吗",
+            // Quantity evaluation
+            "算多吗", "算少吗", "多不多", "少不少", "多吗", "少吗",
+            "高吗", "低吗", "高不高", "低不低",
+            // Quality evaluation
+            "好吗", "好不好", "怎么样", "算好吗", "还行吗",
+            "及格吗", "合格吗", "过关吗",
+            // Enough?
+            "enough", "is that good", "is that normal", "is it ok"
+        ]
+        let elaborationPhrases = [
+            // Request for more detail
+            "详细说说", "具体说说", "再说说", "展开说", "说详细点",
+            "具体点", "详细点", "再详细", "再具体",
+            // Continuation
+            "还有呢", "还有吗", "然后呢", "接下来呢", "继续",
+            "还有什么", "别的呢",
+            // Why / reason
+            "为什么呢", "为什么", "为啥", "为啥呢", "什么原因",
+            "怎么回事", "咋回事",
+            // Advice
+            "怎么办", "咋办", "怎么改善", "怎么提高", "怎么提升",
+            "有什么建议", "有建议吗", "该怎么做",
+            // English
+            "tell me more", "more detail", "why", "any advice", "what should i do"
+        ]
+        let confirmationPhrases = [
+            "对不对", "对吗", "是不是", "是吗", "真的吗", "确定吗",
+            "没错吧", "对吧", "right", "really", "are you sure"
+        ]
+
+        let allPhrases = evaluationPhrases + elaborationPhrases + confirmationPhrases
+        return allPhrases.contains(where: { text.contains($0) })
     }
 
     /// Checks whether the query text contains an explicit time reference (e.g. "今天", "上周", "this month").

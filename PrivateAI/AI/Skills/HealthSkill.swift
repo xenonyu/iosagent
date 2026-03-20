@@ -1562,6 +1562,112 @@ struct HealthSkill: ClawSkill {
                             }
                         }
                     }
+
+                    // --- Sleep Schedule Drift Detection ---
+                    // Detect whether bedtime is progressively getting later or earlier
+                    // over the measured period. Uses linear regression on onset/wake times
+                    // sorted chronologically to find the daily shift rate.
+                    if timingDays.count >= 3 {
+                        let sorted = timingDays.sorted { $0.date < $1.date }
+
+                        // Build chronological onset minutes (normalized for midnight crossing)
+                        let chronoOnsets: [(dayIndex: Double, mins: Double)] = sorted.enumerated().compactMap { (i, day) in
+                            guard let onset = day.sleepOnset else { return nil }
+                            let h = Double(cal.component(.hour, from: onset))
+                            let m = Double(cal.component(.minute, from: onset))
+                            let raw = h * 60 + m
+                            return (Double(i), raw < 18 * 60 ? raw + 24 * 60 : raw)
+                        }
+                        let chronoWakes: [(dayIndex: Double, mins: Double)] = sorted.enumerated().compactMap { (i, day) in
+                            guard let wake = day.wakeTime else { return nil }
+                            let h = Double(cal.component(.hour, from: wake))
+                            let m = Double(cal.component(.minute, from: wake))
+                            return (Double(i), h * 60 + m)
+                        }
+
+                        // Simple linear regression: slope = Σ((x-x̄)(y-ȳ)) / Σ((x-x̄)²)
+                        func linearSlope(_ points: [(dayIndex: Double, mins: Double)]) -> Double? {
+                            guard points.count >= 3 else { return nil }
+                            let n = Double(points.count)
+                            let xMean = points.reduce(0) { $0 + $1.dayIndex } / n
+                            let yMean = points.reduce(0) { $0 + $1.mins } / n
+                            let numerator = points.reduce(0) { $0 + ($1.dayIndex - xMean) * ($1.mins - yMean) }
+                            let denominator = points.reduce(0) { $0 + ($1.dayIndex - xMean) * ($1.dayIndex - xMean) }
+                            guard denominator > 0 else { return nil }
+                            return numerator / denominator // minutes per day
+                        }
+
+                        let onsetSlope = linearSlope(chronoOnsets)
+                        let wakeSlope = linearSlope(chronoWakes)
+
+                        // Only report meaningful drift (>= 8 min/day shift over 3+ days)
+                        let driftThreshold = 8.0
+                        var hasDrift = false
+
+                        if let slope = onsetSlope, abs(slope) >= driftThreshold {
+                            hasDrift = true
+                            lines.append("")
+                            lines.append("📉 作息漂移趋势")
+                            let totalShift = Int(abs(slope) * Double(chronoOnsets.count - 1))
+                            if slope > 0 {
+                                lines.append("   🌙 入睡时间在逐渐推迟（约每天晚 \(Int(slope)) 分钟）")
+                                lines.append("   这 \(chronoOnsets.count) 天累计推迟了约 \(totalShift) 分钟")
+                                if slope >= 20 {
+                                    lines.append("   ⚠️ 漂移速度较快，如不干预一周后将再晚睡 \(Int(slope * 7 / 60)) 小时")
+                                    lines.append("   建议：设定固定的「准备上床」闹钟，每晚提前 15 分钟开始放松")
+                                } else {
+                                    lines.append("   💡 轻度推迟，注意保持固定入睡时间，避免渐渐变成夜猫子")
+                                }
+                            } else {
+                                lines.append("   🌙 入睡时间在逐渐提前（约每天早 \(Int(abs(slope))) 分钟）")
+                                lines.append("   ✅ 这 \(chronoOnsets.count) 天累计提前了约 \(totalShift) 分钟，作息在改善！")
+                            }
+                        }
+
+                        if let slope = wakeSlope, abs(slope) >= driftThreshold {
+                            if !hasDrift {
+                                lines.append("")
+                                lines.append("📉 作息漂移趋势")
+                            }
+                            hasDrift = true
+                            if slope > 0 {
+                                lines.append("   ☀️ 起床时间在逐渐推迟（约每天晚 \(Int(slope)) 分钟）")
+                            } else {
+                                lines.append("   ☀️ 起床时间在逐渐提前（约每天早 \(Int(abs(slope))) 分钟）")
+                            }
+                        }
+
+                        // Cross-check: if onset drifts later but wake stays → sleep getting shorter
+                        if let os = onsetSlope, let ws = wakeSlope, hasDrift {
+                            let durationSlope = ws - os // positive = sleeping longer, negative = shorter
+                            if abs(durationSlope) >= 10 {
+                                if durationSlope < 0 {
+                                    lines.append("   ⚠️ 睡眠时长在缩短（每天减少约 \(Int(abs(durationSlope))) 分钟）")
+                                    lines.append("   睡得越来越晚但起床时间没变 → 累积睡眠债")
+                                } else {
+                                    lines.append("   📊 睡眠时长在增加（每天增加约 \(Int(durationSlope)) 分钟）")
+                                }
+                            }
+                        }
+
+                        // Day-by-day timing chart (visual timeline of onset → wake)
+                        if timingDays.count >= 3 {
+                            lines.append("")
+                            lines.append("🕰 逐日作息时间线")
+                            let dayFmt = DateFormatter()
+                            dayFmt.dateFormat = "E"
+                            dayFmt.locale = Locale(identifier: "zh_CN")
+
+                            for day in sorted {
+                                guard let onset = day.sleepOnset, let wake = day.wakeTime else { continue }
+                                let label = dayFmt.string(from: day.date)
+                                let onsetStr = timeFmt.string(from: onset)
+                                let wakeStr = timeFmt.string(from: wake)
+                                let durationH = String(format: "%.1f", day.sleepHours)
+                                lines.append("   \(label) 🌙\(onsetStr) → ☀️\(wakeStr)（\(durationH)h）")
+                            }
+                        }
+                    }
                 }
             }
         }

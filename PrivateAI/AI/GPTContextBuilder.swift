@@ -2252,6 +2252,9 @@ final class GPTContextBuilder {
         }
 
         // Group records by day for temporal clarity — GPT can answer "where did I go yesterday?"
+        // Accumulate dwell time per place across all days for the summary section.
+        // Enables GPT to answer "这周在公司待了多少小时？" with aggregate duration.
+        var totalDwellByPlace: [String: TimeInterval] = [:]
         var dayGroups: [Date: [CDLocationRecord]] = [:]
         for r in records {
             guard let ts = r.timestamp else { continue }
@@ -2273,15 +2276,20 @@ final class GPTContextBuilder {
             } else {
                 dayLabel = dateFmt.string(from: day)
             }
-            // Deduplicate by place name, keep chronological order and visit times
-            var seenPlaces: [String: (count: Int, times: [String], address: String?)] = [:]
+            // Deduplicate by place name, keep chronological order and visit times.
+            // Also track first arrival timestamps so we can estimate dwell time at
+            // each place — critical for answering "在公司待了多久？" or "哪里待得最久？"
+            var seenPlaces: [String: (count: Int, firstArrival: Date?, times: [String], address: String?)] = [:]
             var placeOrder: [String] = []
+            var chronologicalArrivals: [(name: String, time: Date)] = []
             for r in dayRecords.sorted(by: { ($0.timestamp ?? .distantPast) < ($1.timestamp ?? .distantPast) }) {
                 let name = locationDisplayName(for: r)
                 if seenPlaces[name] == nil {
                     placeOrder.append(name)
-                    // Store address alongside for extra context when place name is short
-                    seenPlaces[name] = (count: 0, times: [], address: r.address)
+                    seenPlaces[name] = (count: 0, firstArrival: r.timestamp, times: [], address: r.address)
+                    if let ts = r.timestamp {
+                        chronologicalArrivals.append((name: name, time: ts))
+                    }
                 }
                 let timeStr = r.timestamp.map { timeFmt.string(from: $0) } ?? ""
                 seenPlaces[name]!.count += 1
@@ -2289,6 +2297,24 @@ final class GPTContextBuilder {
                     seenPlaces[name]!.times.append(timeStr)
                 }
             }
+
+            // Estimate dwell time at each place: duration from this place's first
+            // arrival to the next (different) place's first arrival. The last place
+            // has no departure time — we leave it unknown rather than guessing.
+            var dwellTimes: [String: TimeInterval] = [:]
+            for (idx, arrival) in chronologicalArrivals.enumerated() {
+                if idx + 1 < chronologicalArrivals.count {
+                    let duration = chronologicalArrivals[idx + 1].time.timeIntervalSince(arrival.time)
+                    if duration > 0 && duration < 24 * 3600 {
+                        dwellTimes[arrival.name] = duration
+                    }
+                }
+            }
+            // Accumulate into cross-day totals for the summary section
+            for (name, dwell) in dwellTimes {
+                totalDwellByPlace[name, default: 0] += dwell
+            }
+
             var dayLine = "\(dayLabel)："
             let placeParts = placeOrder.prefix(6).map { name -> String in
                 let info = seenPlaces[name]!
@@ -2300,7 +2326,25 @@ final class GPTContextBuilder {
                    !name.contains(city) {
                     part += "@\(city)"
                 }
-                if !info.times.isEmpty { part += "（\(info.times.joined(separator: "、"))）" }
+                // Show arrival time + estimated dwell duration when available.
+                // "星巴克（10:00,约1.5h）" is far more useful than just "星巴克（10:00）"
+                // for queries like "在星巴克待了多久？" or "哪里待得最久？"
+                if let dwell = dwellTimes[name] {
+                    let arrival = info.times.first ?? ""
+                    let dwellMins = Int(dwell / 60)
+                    if dwellMins >= 60 {
+                        let hrs = dwellMins / 60
+                        let mins = dwellMins % 60
+                        let dwellStr = mins > 0 ? "\(hrs)h\(mins)m" : "\(hrs)h"
+                        part += arrival.isEmpty ? "（约\(dwellStr)）" : "（\(arrival),约\(dwellStr)）"
+                    } else if dwellMins >= 5 {
+                        part += arrival.isEmpty ? "（约\(dwellMins)分钟）" : "（\(arrival),约\(dwellMins)分钟）"
+                    } else if !info.times.isEmpty {
+                        part += "（\(info.times.joined(separator: "、"))）"
+                    }
+                } else if !info.times.isEmpty {
+                    part += "（\(info.times.joined(separator: "、"))）"
+                }
                 if info.count > 1 { part += "×\(info.count)" }
                 return part
             }
@@ -2308,7 +2352,9 @@ final class GPTContextBuilder {
             lines.append(dayLine)
         }
 
-        // Summary: frequently visited places across the week
+        // Summary: frequently visited places across the period, with total dwell time.
+        // Dwell time answers "这周在公司待了多少小时？" — a common and valuable query
+        // that was previously impossible to answer without duration data.
         var totalCounts: [String: Int] = [:]
         for r in records {
             let name = locationDisplayName(for: r)
@@ -2316,7 +2362,20 @@ final class GPTContextBuilder {
         }
         let topPlaces = totalCounts.sorted { $0.value > $1.value }.prefix(5)
         if topPlaces.count > 1 {
-            let summaryParts = topPlaces.map { "\($0.key)(\($0.value)次)" }
+            let summaryParts = topPlaces.map { place -> String in
+                var desc = "\(place.key)(\(place.value)次"
+                if let dwell = totalDwellByPlace[place.key], dwell >= 300 {
+                    let hrs = Int(dwell / 3600)
+                    let mins = Int(dwell.truncatingRemainder(dividingBy: 3600) / 60)
+                    if hrs > 0 {
+                        desc += ",共约\(hrs)h\(mins > 0 ? "\(mins)m" : "")"
+                    } else {
+                        desc += ",共约\(mins)分钟"
+                    }
+                }
+                desc += ")"
+                return desc
+            }
             lines.append("常去地点：\(summaryParts.joined(separator: "、"))")
         }
 

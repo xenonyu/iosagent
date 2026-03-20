@@ -1095,7 +1095,7 @@ struct HealthSkill: ClawSkill {
             case "sleep":
                 self.respondSleep(summaries: withData, range: range, context: context, completion: completion)
             case "heartRate":
-                self.respondHeartRate(summaries: withData, range: range, completion: completion)
+                self.respondHeartRate(summaries: withData, allSummaries: allSummaries, range: range, completion: completion)
             case "steps":
                 self.respondSteps(summaries: withData, allSummaries: allSummaries, range: range, completion: completion)
             case "flights":
@@ -2014,7 +2014,7 @@ struct HealthSkill: ClawSkill {
         return (variance.squareRoot()) / mean
     }
 
-    private func respondHeartRate(summaries: [HealthSummary], range: QueryTimeRange, completion: @escaping (String) -> Void) {
+    private func respondHeartRate(summaries: [HealthSummary], allSummaries: [HealthSummary] = [], range: QueryTimeRange, completion: @escaping (String) -> Void) {
         let hrDays = summaries.filter { $0.heartRate > 0 }
         guard !hrDays.isEmpty else {
             completion("❤️ \(range.label)暂无心率数据。\n需要 Apple Watch 来追踪心率。")
@@ -2138,6 +2138,104 @@ struct HealthSkill: ClawSkill {
                             lines.append("💡 运动日心率反而低 \(Int(-diff)) BPM，长期运动正在降低你的基础心率。")
                         }
                     }
+                }
+            }
+        }
+
+        // --- Sleep ↔ Next-Day Resting HR / HRV Correlation ---
+        // This is one of the most scientifically validated health patterns:
+        // poor sleep → higher resting HR and lower HRV the following day.
+        // We pair each day's resting HR/HRV with the PREVIOUS night's sleep.
+        if !allSummaries.isEmpty {
+            let cal = Calendar.current
+            let allSorted = allSummaries.sorted { $0.date < $1.date }
+
+            // Build pairs: (previous night's sleep hours, this day's resting HR / HRV)
+            var sleepHRPairs: [(sleep: Double, rhr: Double)] = []
+            var sleepHRVPairs: [(sleep: Double, hrv: Double)] = []
+            for (i, day) in allSorted.enumerated() where i > 0 {
+                let prevDay = allSorted[i - 1]
+                guard prevDay.sleepHours > 0 else { continue }
+                if day.restingHeartRate > 0 {
+                    sleepHRPairs.append((sleep: prevDay.sleepHours, rhr: day.restingHeartRate))
+                }
+                if day.hrv > 0 {
+                    sleepHRVPairs.append((sleep: prevDay.sleepHours, hrv: day.hrv))
+                }
+            }
+
+            // Need at least 4 pairs and sufficient sleep variance to draw meaningful conclusions
+            let sleepValues = sleepHRPairs.map(\.sleep)
+            let hasSleepVariance = sleepValues.count >= 4 && (sleepValues.max() ?? 0) - (sleepValues.min() ?? 0) >= 1.0
+
+            if hasSleepVariance {
+                let medianSleep = sleepValues.sorted()[sleepValues.count / 2]
+                let goodSleep = sleepHRPairs.filter { $0.sleep >= medianSleep }
+                let poorSleep = sleepHRPairs.filter { $0.sleep < medianSleep }
+
+                if !goodSleep.isEmpty && !poorSleep.isEmpty {
+                    let rhrAfterGood = goodSleep.reduce(0.0) { $0 + $1.rhr } / Double(goodSleep.count)
+                    let rhrAfterPoor = poorSleep.reduce(0.0) { $0 + $1.rhr } / Double(poorSleep.count)
+                    let rhrDiff = rhrAfterPoor - rhrAfterGood
+
+                    var sleepInsights: [String] = []
+                    if rhrDiff >= 2 {
+                        sleepInsights.append("🫀 睡眠不足的次日静息心率高 \(Int(rhrDiff)) BPM（\(Int(rhrAfterPoor)) vs \(Int(rhrAfterGood))）")
+                    } else if rhrDiff <= -2 {
+                        sleepInsights.append("🫀 你的静息心率和睡眠时长没有明显负相关，身体适应力不错")
+                    }
+
+                    // HRV correlation
+                    let goodSleepHRV = sleepHRVPairs.filter { $0.sleep >= medianSleep }
+                    let poorSleepHRV = sleepHRVPairs.filter { $0.sleep < medianSleep }
+                    if goodSleepHRV.count >= 2 && poorSleepHRV.count >= 2 {
+                        let hrvAfterGood = goodSleepHRV.reduce(0.0) { $0 + $1.hrv } / Double(goodSleepHRV.count)
+                        let hrvAfterPoor = poorSleepHRV.reduce(0.0) { $0 + $1.hrv } / Double(poorSleepHRV.count)
+                        let hrvDiff = hrvAfterGood - hrvAfterPoor
+                        if hrvDiff >= 3 {
+                            sleepInsights.append("📳 充足睡眠后 HRV 高 \(Int(hrvDiff)) ms（\(Int(hrvAfterGood)) vs \(Int(hrvAfterPoor))），恢复更充分")
+                        }
+                    }
+
+                    if !sleepInsights.isEmpty {
+                        lines.append("")
+                        lines.append("😴↔️❤️ 睡眠对心率的影响")
+                        lines.append(contentsOf: sleepInsights)
+                        if rhrDiff >= 3 {
+                            lines.append("💡 对你来说，保证睡眠质量是降低静息心率最直接的方式")
+                        }
+                    }
+                }
+            }
+
+            // Day-by-day detailed log: connect previous night sleep → today's resting HR + HRV
+            // This gives users a visual "aha" moment — they can see the pattern day by day.
+            let rangeSorted = summaries.filter { $0.restingHeartRate > 0 || $0.hrv > 0 }
+                .sorted { $0.date < $1.date }
+            if rangeSorted.count >= 3 {
+                let dayFmt = DateFormatter()
+                dayFmt.dateFormat = "E"
+                dayFmt.locale = Locale(identifier: "zh_CN")
+
+                lines.append("")
+                lines.append("📋 逐日心血管日志")
+                for day in rangeSorted {
+                    var cols: [String] = [dayFmt.string(from: day.date)]
+                    if day.restingHeartRate > 0 {
+                        cols.append("🫀\(Int(day.restingHeartRate))")
+                    }
+                    if day.hrv > 0 {
+                        cols.append("HRV \(Int(day.hrv))")
+                    }
+                    // Find previous night's sleep from allSummaries
+                    let prevDay = allSorted.first {
+                        cal.isDate($0.date, inSameDayAs: cal.date(byAdding: .day, value: -1, to: day.date) ?? day.date)
+                    }
+                    if let sleep = prevDay, sleep.sleepHours > 0 {
+                        let sleepEmoji = sleep.sleepHours >= 7 ? "✅" : (sleep.sleepHours >= 6 ? "💡" : "⚠️")
+                        cols.append("前晚 \(String(format: "%.1f", sleep.sleepHours))h \(sleepEmoji)")
+                    }
+                    lines.append("   \(cols.joined(separator: " · "))")
                 }
             }
         }

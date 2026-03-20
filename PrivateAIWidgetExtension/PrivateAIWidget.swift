@@ -217,14 +217,3 @@ struct PrivateAIWidgetBundle: WidgetBundle {
 
 // MARK: - Previews
 
-#Preview(as: .systemSmall) {
-    PrivateAIWidget()
-} timeline: {
-    PrivateAIEntry(date: .now, steps: 7432, sleepHours: 7.2, moodEmoji: "😊", moodLabel: "不错")
-}
-
-#Preview(as: .systemMedium) {
-    PrivateAIWidget()
-} timeline: {
-    PrivateAIEntry(date: .now, steps: 7432, sleepHours: 7.2, moodEmoji: "😊", moodLabel: "不错")
-}

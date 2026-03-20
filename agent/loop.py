@@ -38,10 +38,10 @@ iosclaw 的价值在于：它是唯一能回答"我自己"问题的助手。
 这不是一个工具箱。这是一面镜子，映射用户真实的生活数据。
 
 ## 项目架构
-iosclaw 是一个完全本地运行的 iOS 16+ AI 私人助手，采用 ClawSkill 插件架构：
+iosclaw 是一个 iOS 16+ AI 私人助手，采用 ClawSkill 插件架构：
 - Bundle ID: com.iosclaw.assistant | App Group: group.com.iosclaw.assistant
 - 技术栈: SwiftUI + CoreData + MVVM + HealthKit + CoreLocation + Speech
-- 无网络权限，100% 本地运行
+- **本地优先，网络兜底**：已知 intent 由本地 Skill 处理，unknown intent 通过 RawGPTService 调用远程 GPT 后端
 - Skills 路径: PrivateAI/AI/Skills/
 - Services 路径: PrivateAI/Services/
 - Views 路径: PrivateAI/Views/
@@ -106,20 +106,17 @@ git add -A && git commit -m "fix/improve/feat: 英文简洁描述"
 
 ## 当前已知问题（优先修复）
 
-### 🔴 严重：simulator 中所有功能失效
+### 🔴 严重：simulator 中功能异常
 根本原因分析：
-1. **HealthKit 在 simulator 中无真实数据** → HealthSkill/SummarySkill 返回空结果
-2. **网络调用问题** → ChatViewModel 对 unknown 意图调用 RawGPTService（网络请求）
-   - 产品定位是 100% 本地，不应有网络调用
-   - simulator 中网络可能失败导致所有查询卡在 thinking 状态
+1. **HealthKit 在 simulator 中无真实数据** → HealthSkill/SummarySkill 返回空结果，需要给出合理提示
+2. **SkillRouter 路由不准** → 常见查询可能被路由到错误的 intent 或 .unknown
 3. **过度复杂的 SummarySkill** — 3500+ 行，很多分支假设有大量数据
 4. **非 iOS 原生功能 Skill 堆积** — ClawEngine 注册了 30+ Skills，大量是无关功能
-   （PomodoroSkill, ExpenseSkill, BMISkill, PasswordGeneratorSkill 等）
 
 ### 具体修复建议
-- **首要**：确认 UnknownSkill 的回复是否合理（路由失败时的 fallback）
-- **其次**：检查 SkillRouter 是否能正确识别基础查询如"今天步数"、"最近日程"
-- **再次**：验证 CalendarSkill/HealthSkill 在无数据时是否给出合理提示
+- **首要**：检查 SkillRouter 是否能正确识别基础查询如"今天步数"、"最近日程"、"帮我找照片"
+- **其次**：验证 CalendarSkill/HealthSkill 在无数据时是否给出合理提示（而不是空白或崩溃）
+- **再次**：确认 UnknownSkill 的回复是否合理（路由失败时的本地 fallback）
 - **最后**：考虑移除或禁用非 iOS 原生数据相关的冗余 Skills
 
 ## 改进优先级（按重要性排序）
@@ -147,6 +144,8 @@ git add -A && git commit -m "fix/improve/feat: 英文简洁描述"
 - 提交信息必须是英文，简洁描述实际改动
 - **每次改动后必须 BUILD SUCCEEDED 才能提交**
 - 不新增与 iOS 原生数据无关的独立功能 Skill
+- **绝对不要删除或修改 RawGPTService.swift** — 它是 unknown intent 的网络兜底服务，架构正确
+- **绝对不要修改 ChatViewModel 中调用 RawGPTService 的逻辑** — 本地 Skill 优先、网络兜底是正确的设计
 """
 
 ITERATION_PROMPT = """分析 iosclaw iOS 项目（路径: /Users/yaxinli/xym/iosagent）。
@@ -154,14 +153,15 @@ ITERATION_PROMPT = """分析 iosclaw iOS 项目（路径: /Users/yaxinli/xym/ios
 先运行 git log --oneline -15 查看最近改动，再深入阅读相关代码。
 
 **本次重点**：
-iosclaw 是一款 100% 本地的 iOS 私人助手，核心价值是帮用户查询自己的 iOS 数据
-（健康/照片/位置/日历）。当前所有功能在 simulator 中可能都不正常工作。
+iosclaw 是一款 iOS 私人助手（本地 Skill 优先，RawGPTService 网络兜底），
+核心价值是帮用户查询自己的 iOS 数据（健康/照片/位置/日历）。
 
 找到一个影响核心功能正确性的问题，完整修复它，然后：
 1. 运行 xcodebuild 验证编译通过（BUILD SUCCEEDED）
 2. 安装到 simulator 并确认能启动
 3. 提交
 
+**注意**：不要删除或修改 RawGPTService.swift 和 ChatViewModel 中的网络兜底逻辑。
 优先修复 bug，而不是添加新功能。"""
 
 

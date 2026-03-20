@@ -50,7 +50,10 @@ final class CalendarService: ObservableObject {
                 calendar: $0.calendar?.title ?? "",
                 location: $0.location ?? "",
                 notes: $0.notes ?? "",
-                isRecurring: $0.hasRecurrenceRules
+                isRecurring: $0.hasRecurrenceRules,
+                attendeeCount: $0.attendees?.count ?? 0,
+                isOrganizer: $0.organizer?.isCurrentUser ?? false,
+                hasAttendees: $0.attendees != nil && !($0.attendees?.isEmpty ?? true)
             )
         }
         .sorted { $0.startDate < $1.startDate }
@@ -77,6 +80,12 @@ struct CalendarEventItem: Identifiable {
     let location: String
     let notes: String
     let isRecurring: Bool
+    /// Number of attendees (from EKEvent.attendees). 0 if no attendee data.
+    let attendeeCount: Int
+    /// Whether the current user is the organizer of this event.
+    let isOrganizer: Bool
+    /// Whether the event has any attendee data (distinguishes "0 attendees" from "no data").
+    let hasAttendees: Bool
 
     var duration: TimeInterval { endDate.timeIntervalSince(startDate) }
 
@@ -85,5 +94,17 @@ struct CalendarEventItem: Identifiable {
         let fmt = DateFormatter()
         fmt.dateFormat = "HH:mm"
         return "\(fmt.string(from: startDate))–\(fmt.string(from: endDate))"
+    }
+
+    /// A human-readable label describing the meeting scale based on attendee count.
+    /// Returns nil for events without attendee data (personal events, holidays, etc.).
+    var attendeeLabel: String? {
+        guard hasAttendees else { return nil }
+        // attendeeCount includes the user themselves in EKEvent
+        let total = attendeeCount
+        if total <= 2 { return "1:1" }
+        if total <= 5 { return "👥 \(total)人小会" }
+        if total <= 15 { return "👥 \(total)人会议" }
+        return "👥 \(total)人大会"
     }
 }

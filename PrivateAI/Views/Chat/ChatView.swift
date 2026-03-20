@@ -35,12 +35,11 @@ struct ChatView: View {
                                 .id("suggestions")
                             }
 
-                            // Contextual follow-up suggestions after AI response
+                            // Suggested follow-up questions after AI response
                             if viewModel.messages.count > 1,
                                !viewModel.isThinking,
-                               let last = viewModel.messages.last, !last.isUser,
-                               !viewModel.followUpSuggestions.isEmpty {
-                                FollowUpChipsView(suggestions: viewModel.followUpSuggestions) { q in
+                               let last = viewModel.messages.last, !last.isUser {
+                                FollowUpChipsView(suggestions: viewModel.suggestedQuestions) { q in
                                     viewModel.inputText = q
                                     viewModel.sendMessage()
                                 }

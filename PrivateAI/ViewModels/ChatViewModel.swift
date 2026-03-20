@@ -12,15 +12,15 @@ final class ChatViewModel: ObservableObject {
     @Published var isListening: Bool = false
     @Published var photoSearchResults: [String] = []  // PHAsset IDs
     @Published var showPhotoResults: Bool = false
-    @Published private(set) var lastIntent: QueryIntent?
 
     // MARK: - Dependencies
 
     private let context: NSManagedObjectContext
     private let speechService: SpeechService
     private let appState: AppState
-    private let contextMemory = ContextMemory()
-    private let engine: ClawEngine
+    private let contextBuilder: GPTContextBuilder
+    private var conversationHistory: [ChatMessage] = []
+    private let maxHistory = 12
     private var cancellables = Set<AnyCancellable>()
 
     // MARK: - Init
@@ -31,14 +31,13 @@ final class ChatViewModel: ObservableObject {
         self.speechService = appState.speechService
 
         let profile = CDUserProfile.fetchOrCreate(in: context).toProfileData()
-        self.engine = ClawEngine(
+        self.contextBuilder = GPTContextBuilder(
             context: context,
             healthService: appState.healthService,
             calendarService: appState.calendarService,
             photoService: appState.photoService,
             locationService: appState.locationService,
-            profile: profile,
-            contextMemory: contextMemory
+            profile: profile
         )
 
         loadMessages()
@@ -81,8 +80,6 @@ final class ChatViewModel: ObservableObject {
         • 「最近去了哪些地方？」— 足迹回顾
         • 「帮我找海边拍的照片」— 照片搜索
         • 「这周过得怎么样？」— 生活总结
-
-        所有数据都在本地处理，不会上传到任何地方。
         """
     }
 
@@ -95,80 +92,61 @@ final class ChatViewModel: ObservableObject {
         let userMsg = ChatMessage(content: text, isUser: true)
         append(message: userMsg)
         persist(message: userMsg)
-        contextMemory.add(message: userMsg)
+        addToHistory(userMsg)
 
         inputText = ""
         isThinking = true
 
-        // Refresh profile in case user updated it since last message
+        // Photo search detection — populate grid in parallel with GPT response
+        if isPhotoSearchQuery(text) {
+            populatePhotoGrid(query: text)
+        }
+
+        // ALL queries go to GPT via RawGPTService
         let profile = CDUserProfile.fetchOrCreate(in: context).toProfileData()
-        engine.updateProfile(profile)
+        contextBuilder.updateProfile(profile)
 
-        // Resolve intent with multi-turn context (inherits previous intent for follow-ups)
-        let intent = contextMemory.resolveIntent(from: text)
-        lastIntent = intent
-        contextMemory.setLastIntent(intent)
-
-        // Photo search needs special handling: route through the engine for the rich
-        // text response (PhotoSkill), AND populate photoSearchResults so the UI can
-        // display actual photo thumbnails in PhotoSearchResultView.
-        if case .photoSearch(let query) = intent {
-            engine.respond(to: text, preResolvedIntent: intent) { [weak self] response in
-                guard let self else { return }
-                let aiMsg = ChatMessage(content: response, isUser: false)
-                self.append(message: aiMsg)
-                self.persist(message: aiMsg)
-                self.contextMemory.add(message: aiMsg)
-
-                // Also run the search to populate the photo grid UI
-                self.populatePhotoGrid(query: query)
-                self.isThinking = false
-            }
-            return
-        }
-
-        // For known intents, handle locally via ClawEngine skills
-        if !intent.isUnknown {
-            engine.respond(to: text, preResolvedIntent: intent) { [weak self] response in
-                guard let self else { return }
-                let aiMsg = ChatMessage(content: response, isUser: false)
-                self.append(message: aiMsg)
-                self.persist(message: aiMsg)
-                self.contextMemory.add(message: aiMsg)
-                self.isThinking = false
-            }
-            return
-        }
-
-        // For unknown intents, try GPT API with full context, fall back to local UnknownSkill
-        let recentHistory = contextMemory.recentMessages
-        engine.buildGPTPrompt(userQuery: text, conversationHistory: recentHistory) { [weak self] prompt in
+        contextBuilder.buildPrompt(userQuery: text, conversationHistory: conversationHistory) { [weak self] prompt in
             guard let self else { return }
             Task {
                 do {
-                    let gptReply = try await RawGPTService.shared.ask(prompt)
+                    let reply = try await RawGPTService.shared.ask(prompt)
                     await MainActor.run {
-                        let aiMsg = ChatMessage(content: gptReply, isUser: false)
+                        let aiMsg = ChatMessage(content: reply, isUser: false)
                         self.append(message: aiMsg)
                         self.persist(message: aiMsg)
-                        self.contextMemory.add(message: aiMsg)
+                        self.addToHistory(aiMsg)
                         self.isThinking = false
                     }
                 } catch {
-                    // GPT unavailable — fall back to local UnknownSkill for a graceful response
                     await MainActor.run {
-                        self.engine.respond(to: text, preResolvedIntent: .unknown) { [weak self] localResponse in
-                            guard let self else { return }
-                            let aiMsg = ChatMessage(content: localResponse, isUser: false)
-                            self.append(message: aiMsg)
-                            self.persist(message: aiMsg)
-                            self.contextMemory.add(message: aiMsg)
-                            self.isThinking = false
-                        }
+                        let errorMsg = ChatMessage(
+                            content: "⚠️ 网络连接失败，请检查网络后重试。",
+                            isUser: false
+                        )
+                        self.append(message: errorMsg)
+                        self.persist(message: errorMsg)
+                        self.isThinking = false
                     }
                 }
             }
         }
+    }
+
+    // MARK: - Photo Search Detection
+
+    /// Simple keyword check to detect photo search queries.
+    /// False positives are harmless (grid shows alongside GPT text).
+    private func isPhotoSearchQuery(_ text: String) -> Bool {
+        let lower = text.lowercased()
+        let keywords = [
+            "找照片", "搜照片", "找图片", "搜图片", "找找照片", "照片搜索",
+            "帮我找", "给我找", "搜一下", "找一下",
+            "find photo", "search photo", "show me photo",
+            "的照片", "的图片", "的相片",
+            "photo of", "picture of"
+        ]
+        return keywords.contains(where: { lower.contains($0) })
     }
 
     // MARK: - Voice Input
@@ -176,7 +154,6 @@ final class ChatViewModel: ObservableObject {
     func toggleVoiceInput() {
         if speechService.isListening {
             speechService.stopListening()
-            // Transfer transcript to input
             if !speechService.transcript.isEmpty {
                 inputText = speechService.transcript
             }
@@ -202,13 +179,12 @@ final class ChatViewModel: ObservableObject {
 
     // MARK: - Suggested Questions
 
-    /// 推荐问题列表，根据时间动态调整
     var suggestedQuestions: [String] {
         let hour = Calendar.current.component(.hour, from: Date())
         var base = [
             "帮我总结这周的生活",
             "我最近心情怎么样？",
-            "给我推荐送老婆的礼物"
+            "帮我找海边拍的照片"
         ]
         if hour < 12 {
             base.insert("今天有什么日历行程？", at: 0)
@@ -219,65 +195,8 @@ final class ChatViewModel: ObservableObject {
         return Array(base.prefix(4))
     }
 
-    // MARK: - Contextual Follow-up Suggestions
-
-    /// Dynamic suggestions based on the last matched intent, helping users
-    /// discover related features after each AI response.
-    var followUpSuggestions: [String] {
-        guard let intent = lastIntent else { return [] }
-        switch intent {
-        case .exercise, .health:
-            return ["今天走了多少步？", "这周运动了多少？", "帮我记录一次跑步"]
-        case .location, .locationPlace:
-            return ["这周去了哪些地方？", "去过星巴克几次？", "帮我总结今天的行程"]
-        case .mood:
-            return ["帮我记录今天心情", "这周心情怎么样？", "给我一句鼓励"]
-        case .calendar:
-            return ["明天有什么安排？", "这周日程总结"]
-        case .summary, .weeklyInsight:
-            return ["这周心情怎么样？", "今天运动数据", "给我一句名言"]
-        case .todo:
-            return ["查看待办清单", "添加一条新待办", "帮我总结今天"]
-        case .habit:
-            return ["查看习惯打卡", "今天喝了多少水？", "查看番茄钟记录"]
-        case .waterTrack:
-            return ["今天喝了多少水？", "设个喝水提醒", "查看健康数据"]
-        case .expense:
-            return ["今天花了多少？", "这周消费统计", "记一笔支出"]
-        case .pomodoro:
-            return ["开始一个番茄钟", "今天专注了多久？", "查看番茄钟统计"]
-        case .note:
-            return ["查看所有笔记", "记一条新笔记", "搜索笔记"]
-        case .reminder:
-            return ["查看提醒列表", "设个新提醒"]
-        case .countdown:
-            return ["查看倒计时", "添加新倒计时"]
-        case .math, .unitConversion:
-            return ["帮我算个数", "单位换算", "生成一个密码"]
-        case .dailyQuote:
-            return ["再来一句名言", "今天的运势", "帮我总结今天"]
-        case .greeting:
-            return ["今天有什么安排？", "查看健康数据", "给我一句鼓励"]
-        case .breathing:
-            return ["再做一次呼吸练习", "查看睡眠建议", "今天心情如何？"]
-        case .personalStats:
-            return ["帮我总结这周", "查看健康数据", "查看待办清单"]
-        case .lunarCalendar:
-            return ["今年属什么生肖？", "下一个节气是什么？", "农历万年历"]
-        case .search:
-            return ["帮我搜索记录", "查看时间线", "帮我总结今天"]
-        case .textTool:
-            return ["再用一次文本工具", "帮我算个数", "记一条笔记"]
-        default:
-            return ["帮我总结今天", "今天走了多少步？", "给我推荐点什么"]
-        }
-    }
-
     // MARK: - Photo Search Grid
 
-    /// Runs photo search and populates the visual photo grid in the UI.
-    /// Called after the engine returns the text response, so the user sees
-    /// both a rich text description AND actual photo thumbnails.
     private func populatePhotoGrid(query: String) {
         let searchService = PhotoSearchService(context: context)
         let parsed = searchService.parseQuery(query)
@@ -289,6 +208,15 @@ final class ChatViewModel: ObservableObject {
         DispatchQueue.main.async {
             self.photoSearchResults = assetIDs
             self.showPhotoResults = true
+        }
+    }
+
+    // MARK: - Conversation History
+
+    private func addToHistory(_ message: ChatMessage) {
+        conversationHistory.append(message)
+        if conversationHistory.count > maxHistory {
+            conversationHistory.removeFirst(conversationHistory.count - maxHistory)
         }
     }
 
@@ -309,7 +237,7 @@ final class ChatViewModel: ObservableObject {
         CDChatMessage.deleteAll(in: context)
         PersistenceController.shared.save()
         messages = []
-        lastIntent = nil
+        conversationHistory = []
         let welcome = ChatMessage(content: buildWelcomeMessage(), isUser: false)
         messages.append(welcome)
     }

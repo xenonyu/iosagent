@@ -53,7 +53,7 @@ targets:
   iOSClawWidgetExtension:
     type: app-extension
     platform: iOS
-    deploymentTarget: "16.0"
+    deploymentTarget: "17.0"
     sources:
       - path: PrivateAIWidgetExtension
         excludes:

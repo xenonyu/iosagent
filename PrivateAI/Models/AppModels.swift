@@ -334,6 +334,15 @@ enum QueryTimeRange: Equatable {
     case nextWeekend
     /// Last weekend (Saturday + Sunday of last week)
     case lastWeekend
+    /// This year (Jan 1 of current year to now)
+    case thisYear
+    /// Last year (Jan 1 to Dec 31 of previous year)
+    case lastYear
+    /// Year before last (Jan 1 to Dec 31 of two years ago)
+    case yearBeforeLast
+    /// A season within a specific year.
+    /// quarter: 1=spring(Mar-May), 2=summer(Jun-Aug), 3=autumn(Sep-Nov), 4=winter(Dec-Feb+1)
+    case season(year: Int, quarter: Int)
 
     var interval: DateInterval {
         let cal = Calendar.current
@@ -406,6 +415,50 @@ enum QueryTimeRange: Equatable {
             let sat = Self.weekendSaturday(for: now, offset: -1)
             let mon = cal.date(byAdding: .day, value: 2, to: sat)!
             return DateInterval(start: sat, end: mon)
+        case .thisYear:
+            let yearComps = cal.dateComponents([.year], from: now)
+            let yearStart = cal.date(from: yearComps)!
+            return DateInterval(start: yearStart, end: now)
+        case .lastYear:
+            var startComps = cal.dateComponents([.year], from: now)
+            startComps.year = (startComps.year ?? 2025) - 1
+            let yearStart = cal.date(from: startComps)!
+            let yearEnd = cal.date(from: cal.dateComponents([.year], from: now))!
+            return DateInterval(start: yearStart, end: yearEnd)
+        case .yearBeforeLast:
+            var startComps = cal.dateComponents([.year], from: now)
+            startComps.year = (startComps.year ?? 2025) - 2
+            let yearStart = cal.date(from: startComps)!
+            var endComps = cal.dateComponents([.year], from: now)
+            endComps.year = (endComps.year ?? 2025) - 1
+            let yearEnd = cal.date(from: endComps)!
+            return DateInterval(start: yearStart, end: yearEnd)
+        case .season(let year, let quarter):
+            // Spring: Mar 1 – May 31, Summer: Jun 1 – Aug 31
+            // Autumn: Sep 1 – Nov 30, Winter: Dec 1 – Feb 28/29 (of next year)
+            var startComps = DateComponents()
+            var endComps = DateComponents()
+            switch quarter {
+            case 1: // Spring
+                startComps = DateComponents(year: year, month: 3, day: 1)
+                endComps = DateComponents(year: year, month: 6, day: 1)
+            case 2: // Summer
+                startComps = DateComponents(year: year, month: 6, day: 1)
+                endComps = DateComponents(year: year, month: 9, day: 1)
+            case 3: // Autumn
+                startComps = DateComponents(year: year, month: 9, day: 1)
+                endComps = DateComponents(year: year, month: 12, day: 1)
+            case 4: // Winter (crosses year boundary)
+                startComps = DateComponents(year: year, month: 12, day: 1)
+                endComps = DateComponents(year: year + 1, month: 3, day: 1)
+            default:
+                return DateInterval(start: todayStart, end: now)
+            }
+            let start = cal.date(from: startComps) ?? todayStart
+            let end = cal.date(from: endComps) ?? now
+            // If season hasn't fully arrived yet, cap to now
+            let effectiveEnd = min(end, now)
+            return DateInterval(start: start, end: max(start, effectiveEnd))
         }
     }
 
@@ -442,6 +495,8 @@ enum QueryTimeRange: Equatable {
             return interval.end > Date()
         case .specificDate(let date):
             return date > Calendar.current.startOfDay(for: Date())
+        case .season(_, _):
+            return interval.start > Date()
         case .recentDays: return false
         default: return false
         }
@@ -474,6 +529,53 @@ enum QueryTimeRange: Equatable {
             return "下个周末"
         case .lastWeekend:
             return "上个周末"
+        case .thisYear:
+            let year = Calendar.current.component(.year, from: Date())
+            return "今年（\(year)年）"
+        case .lastYear:
+            let year = Calendar.current.component(.year, from: Date()) - 1
+            return "去年（\(year)年）"
+        case .yearBeforeLast:
+            let year = Calendar.current.component(.year, from: Date()) - 2
+            return "前年（\(year)年）"
+        case .season(let year, let quarter):
+            let seasonNames = ["", "春天", "夏天", "秋天", "冬天"]
+            let seasonName = (quarter >= 1 && quarter <= 4) ? seasonNames[quarter] : "季节"
+            let currentYear = Calendar.current.component(.year, from: Date())
+            if year == currentYear {
+                return "今年\(seasonName)"
+            } else if year == currentYear - 1 {
+                return "去年\(seasonName)"
+            } else if year == currentYear - 2 {
+                return "前年\(seasonName)"
+            } else {
+                return "\(year)年\(seasonName)"
+            }
         }
+    }
+}
+
+// MARK: - Date Helpers
+
+extension Date {
+    /// Returns a human-friendly short string: "今天 14:30", "昨天 09:00", or "3月5日"
+    var shortDisplay: String {
+        let fmt = DateFormatter()
+        let cal = Calendar.current
+        if cal.isDateInToday(self) {
+            fmt.dateFormat = "今天 HH:mm"
+        } else if cal.isDateInYesterday(self) {
+            fmt.dateFormat = "昨天 HH:mm"
+        } else {
+            fmt.dateFormat = "M月d日"
+        }
+        return fmt.string(from: self)
+    }
+}
+
+extension DateInterval {
+    /// Returns true if `date` falls within [start, end] (inclusive on both ends).
+    func contains(_ date: Date) -> Bool {
+        date >= start && date <= end
     }
 }

@@ -139,6 +139,17 @@ final class GPTContextBuilder {
         let availSummary = availableData.isEmpty ? "无" : availableData.joined(separator: "、")
         let unavailSummary = unavailableData.isEmpty ? "" : "\n不可用：\(unavailableData.joined(separator: "、"))"
 
+        // Determine tone based on user's AI style preference
+        let toneInstruction: String
+        switch self.profile.aiStyle {
+        case .friendly:
+            toneInstruction = "用自然、友好、温暖的语气回答，像一个关心用户的老朋友。适当使用鼓励和关怀的语句。"
+        case .professional:
+            toneInstruction = "用简洁、专业、严谨的语气回答。重点突出数据和结论，减少寒暄。"
+        case .casual:
+            toneInstruction = "用轻松、随意的语气回答，可以适当幽默。像朋友间闲聊一样自然。"
+        }
+
         parts.append("""
         [SYSTEM]
         你是 iosclaw，运行在用户 iPhone 上的私人 AI 助理。你可以读取用户的健康、位置、日历、照片、生活记录等本地数据。
@@ -150,13 +161,14 @@ final class GPTContextBuilder {
         - 你不能发送消息、设置闹钟、打电话等操作类任务。
 
         回复要求：
-        - 用自然、友好、简洁的中文回答。如果用户用英文提问，用英文回答。
+        - \(toneInstruction)
+        - 如果用户用英文提问，用英文回答。
         - 引用具体数据时，必须使用下方提供的真实数据，不要编造任何数字。
         - 如果某项数据为 0 或为空，坦诚说明「暂无该数据」或「尚未授权」，不要猜测。
         - 回答健康、运动相关问题时，优先引用准确数值，再给出简短解读或鼓励。
         - 涉及多天数据时，可引用「近7天趋势」进行对比分析，指出趋势变化。
         - 不要重复罗列所有数据，只回答用户问到的内容。
-        - 回答要有温度感，像一个了解用户的私人助手，不是冰冷的数据报表。
+        - 如果用户提到家人（如"我妈"、"我爸"等），参考下方[用户信息]中的家庭成员数据来回答。
         """)
 
         // USER PROFILE
@@ -168,8 +180,26 @@ final class GPTContextBuilder {
         }
         if !profile.occupation.isEmpty { profileParts.append("职业：\(profile.occupation)") }
         if !profile.interests.isEmpty { profileParts.append("兴趣：\(profile.interests.joined(separator: "、"))") }
+        if !profile.notes.isEmpty { profileParts.append("备注：\(profile.notes)") }
+
+        // Family members — enables GPT to answer "when is my mom's birthday?" etc.
+        if !profile.familyMembers.isEmpty {
+            let dateFmt2 = DateFormatter(); dateFmt2.dateFormat = "M月d日"
+            let familyLines = profile.familyMembers.map { member -> String in
+                var desc = "\(member.relation)：\(member.name)"
+                if let bd = member.birthday {
+                    desc += "（生日：\(dateFmt2.string(from: bd))）"
+                }
+                if !member.notes.isEmpty {
+                    desc += "（\(member.notes)）"
+                }
+                return desc
+            }
+            profileParts.append("家庭成员：\(familyLines.joined(separator: "；"))")
+        }
+
         if !profileParts.isEmpty {
-            parts.append("[用户信息]\n\(profileParts.joined(separator: "，"))")
+            parts.append("[用户信息]\n\(profileParts.joined(separator: "\n"))")
         }
 
         // TODAY'S HEALTH

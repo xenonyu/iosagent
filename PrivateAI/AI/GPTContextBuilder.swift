@@ -1301,6 +1301,158 @@ final class GPTContextBuilder {
             }
         }
 
+        // --- Absolute date references ---
+        // Users commonly ask "3月15日走了多少步" or "15号有什么安排" with explicit dates.
+        // GPT can parse these dates, but critically it doesn't know whether the date
+        // falls within our 14-day data window. Without a hint, GPT may silently fabricate
+        // data for dates outside the range, or miss that "18号" in late March means "3月18日".
+        // Pre-resolving to exact dates with data-range checks prevents these errors.
+
+        let dataRangeStart = cal.date(byAdding: .day, value: -13, to: cal.startOfDay(for: now))!
+        let futureRangeEnd = cal.date(byAdding: .day, value: 7, to: cal.startOfDay(for: now))!
+
+        // Helper: check a resolved date against our data windows and produce a hint
+        let resolveAbsoluteDate: (Date, String) -> String? = { [cal] targetDate, originalText in
+            let targetStart = cal.startOfDay(for: targetDate)
+            let todayStart = cal.startOfDay(for: now)
+
+            // Determine relative label (today, yesterday, etc.)
+            let relativeLabel: String
+            if cal.isDateInToday(targetDate) {
+                relativeLabel = "今天"
+            } else if cal.isDateInYesterday(targetDate) {
+                relativeLabel = "昨天"
+            } else if let twoDaysAgo = cal.date(byAdding: .day, value: -2, to: todayStart),
+                      cal.isDate(targetDate, inSameDayAs: twoDaysAgo) {
+                relativeLabel = "前天"
+            } else if let tomorrow = cal.date(byAdding: .day, value: 1, to: todayStart),
+                      cal.isDate(targetDate, inSameDayAs: tomorrow) {
+                relativeLabel = "明天"
+            } else {
+                relativeLabel = weekdayFmt.string(from: targetDate)
+            }
+
+            let dateStr = dateFmt.string(from: targetDate)
+
+            if targetStart >= dataRangeStart && targetStart <= todayStart {
+                // Within health/location/photo data range
+                let daysAgo = cal.dateComponents([.day], from: targetStart, to: todayStart).day ?? 0
+                return "「\(originalText)」= \(dateStr)（\(relativeLabel)，\(daysAgo)天前）→ 在数据范围内，查看趋势表/日历/位置中对应日期"
+            } else if targetStart > todayStart && targetStart <= futureRangeEnd {
+                // Within future calendar range
+                let daysAhead = cal.dateComponents([.day], from: todayStart, to: targetStart).day ?? 0
+                return "「\(originalText)」= \(dateStr)（\(relativeLabel)，\(daysAhead)天后）→ 查看日历日程中对应日期"
+            } else if targetStart > futureRangeEnd {
+                // Beyond future calendar range
+                return "「\(originalText)」= \(dateStr)（\(relativeLabel)）⚠️ 超出日历数据范围（未来仅覆盖7天），无此日期日程数据"
+            } else {
+                // Before data range start
+                let daysAgo = cal.dateComponents([.day], from: targetStart, to: todayStart).day ?? 0
+                return "「\(originalText)」= \(dateStr)（\(daysAgo)天前）⚠️ 超出14天数据范围，无此日期的健康/日历/位置数据，请坦诚告知用户"
+            }
+        }
+
+        // Pattern 1: "X月Y日" / "X月Y号" — e.g. "3月15日", "3月15号"
+        // Use regex to extract month and day numbers.
+        var absoluteDateHandled = false
+        if let range = lower.range(of: #"(\d{1,2})月(\d{1,2})[日号]?"#, options: .regularExpression) {
+            let matched = String(lower[range])
+            let digits = matched.components(separatedBy: CharacterSet.decimalDigits.inverted).filter { !$0.isEmpty }
+            if digits.count >= 2, let month = Int(digits[0]), let day = Int(digits[1]),
+               month >= 1 && month <= 12 && day >= 1 && day <= 31 {
+                // Resolve to the nearest occurrence of this date (this year or last year)
+                let currentYear = cal.component(.year, from: now)
+                var comps = DateComponents()
+                comps.year = currentYear
+                comps.month = month
+                comps.day = day
+                if let targetDate = cal.date(from: comps) {
+                    // If this date is far in the future (>6 months ahead), the user likely means last year
+                    let targetToUse: Date
+                    if targetDate.timeIntervalSince(now) > 180 * 24 * 3600 {
+                        comps.year = currentYear - 1
+                        targetToUse = cal.date(from: comps) ?? targetDate
+                    } else {
+                        targetToUse = targetDate
+                    }
+                    if let hint = resolveAbsoluteDate(targetToUse, matched) {
+                        hints.append(hint)
+                        absoluteDateHandled = true
+                    }
+                }
+            }
+        }
+
+        // Pattern 2: "N号" — e.g. "15号去了哪里", "18号有什么会"
+        // Only match bare "N号" without "月" prefix (which is handled above).
+        // Resolve to the current month by default; if the day hasn't come yet this month,
+        // it's upcoming; if it already passed, it was earlier this month (or last month
+        // if outside data range).
+        if !absoluteDateHandled {
+            if let range = lower.range(of: #"(?<!\d月)(\d{1,2})号"#, options: .regularExpression) {
+                let matched = String(lower[range])
+                let numStr = matched.replacingOccurrences(of: "号", with: "")
+                if let day = Int(numStr), day >= 1 && day <= 31 {
+                    let currentMonth = cal.component(.month, from: now)
+                    let currentYear = cal.component(.year, from: now)
+
+                    var comps = DateComponents()
+                    comps.year = currentYear
+                    comps.month = currentMonth
+                    comps.day = day
+
+                    if let targetDate = cal.date(from: comps) {
+                        let targetStart = cal.startOfDay(for: targetDate)
+                        let todayStart = cal.startOfDay(for: now)
+
+                        // If the day this month is far in the future (>15 days), user likely
+                        // means last month's N号. E.g., on March 5, "28号" → Feb 28.
+                        let targetToUse: Date
+                        if targetStart > todayStart && cal.dateComponents([.day], from: todayStart, to: targetStart).day ?? 0 > 15 {
+                            comps.month = currentMonth - 1
+                            if comps.month == 0 { comps.month = 12; comps.year = currentYear - 1 }
+                            targetToUse = cal.date(from: comps) ?? targetDate
+                        } else {
+                            targetToUse = targetDate
+                        }
+
+                        if let hint = resolveAbsoluteDate(targetToUse, matched) {
+                            hints.append(hint)
+                        }
+                    }
+                }
+            }
+        }
+
+        // Pattern 3: "M/D" or "M.D" date format — e.g. "3/15", "3.18"
+        // Common in casual Chinese digital communication.
+        if !absoluteDateHandled {
+            if let range = lower.range(of: #"(\d{1,2})[/.](\d{1,2})"#, options: .regularExpression) {
+                let matched = String(lower[range])
+                let parts = matched.split(whereSeparator: { $0 == "/" || $0 == "." })
+                if parts.count == 2, let month = Int(parts[0]), let day = Int(parts[1]),
+                   month >= 1 && month <= 12 && day >= 1 && day <= 31 {
+                    let currentYear = cal.component(.year, from: now)
+                    var comps = DateComponents()
+                    comps.year = currentYear
+                    comps.month = month
+                    comps.day = day
+                    if let targetDate = cal.date(from: comps) {
+                        let targetToUse: Date
+                        if targetDate.timeIntervalSince(now) > 180 * 24 * 3600 {
+                            comps.year = currentYear - 1
+                            targetToUse = cal.date(from: comps) ?? targetDate
+                        } else {
+                            targetToUse = targetDate
+                        }
+                        if let hint = resolveAbsoluteDate(targetToUse, matched) {
+                            hints.append(hint)
+                        }
+                    }
+                }
+            }
+        }
+
         guard !hints.isEmpty else { return "" }
 
         return "[时间聚焦]\n\(hints.joined(separator: "\n"))"

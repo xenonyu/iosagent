@@ -4349,30 +4349,67 @@ final class GPTContextBuilder {
 
         // 4. Exercise gap after streak — user was exercising regularly then stopped
         //    Breaking a habit is a key moment where encouragement matters most.
+        //
+        //    Two-phase scan (newest→oldest):
+        //    Phase 1: Count consecutive rest days at the end (the "gap").
+        //    Phase 2: Count consecutive exercise days before the gap (the "streak").
+        //    Stop as soon as we exit each phase — avoids off-by-one errors from the
+        //    previous implementation which accidentally counted a pre-streak rest day
+        //    as part of the gap, inflating gapDays by 1 and causing false positives.
         let allChrono = chrono // includes today
         var exerciseStreak = 0
         var gapDays = 0
         var streakBroken = false
         for s in allChrono.reversed() {
             let hasExercise = s.exerciseMinutes > 0 || !s.workouts.isEmpty
-            if gapDays == 0 && !hasExercise && !cal.isDateInToday(s.date) {
-                gapDays += 1
-            } else if gapDays > 0 && !hasExercise {
-                gapDays += 1
-            } else if gapDays > 0 && hasExercise {
-                // Counting the streak before the gap
-                exerciseStreak += 1
-                streakBroken = true
-            } else if gapDays == 0 && hasExercise {
-                break // still exercising, no gap
-            }
-            if streakBroken && !hasExercise {
-                break
+            if !streakBroken {
+                // Phase 1: counting the gap (most recent consecutive rest days)
+                if cal.isDateInToday(s.date) && !hasExercise {
+                    // Skip today's partial data — 0 exercise at 9am doesn't mean rest day
+                    continue
+                }
+                if !hasExercise {
+                    gapDays += 1
+                } else if gapDays > 0 {
+                    // First exercise day found — transition to counting the streak
+                    streakBroken = true
+                    exerciseStreak = 1
+                } else {
+                    break // still exercising (no gap at all)
+                }
+            } else {
+                // Phase 2: counting the exercise streak before the gap
+                if hasExercise {
+                    exerciseStreak += 1
+                } else {
+                    break // reached the end of the streak
+                }
             }
         }
         // Only flag if a meaningful streak (3+ days) was broken by 2+ rest days
         if streakBroken && exerciseStreak >= 3 && gapDays >= 2 {
             alerts.append("💪 之前连续运动\(exerciseStreak)天，已休息\(gapDays)天。适当休息是好的，但别忘了保持节奏")
+        }
+
+        // 4b. Extended inactivity — 5+ consecutive days without exercise, regardless
+        //     of whether there was a prior streak. The gap detection above only fires
+        //     when breaking a 3+ day streak, so a user who simply hasn't exercised
+        //     in a week gets no nudge. This catches that case.
+        //     Only fire when gap detection above didn't already produce an alert.
+        if !streakBroken || exerciseStreak < 3 {
+            // Count consecutive rest days from the most recent completed day backward
+            var consecutiveRest = 0
+            for s in completed.reversed() {
+                let hasExercise = s.exerciseMinutes > 0 || !s.workouts.isEmpty
+                if !hasExercise {
+                    consecutiveRest += 1
+                } else {
+                    break
+                }
+            }
+            if consecutiveRest >= 5 {
+                alerts.append("🛋️ 已连续\(consecutiveRest)天没有运动记录，适量活动有益身心")
+            }
         }
 
         // 5. Step count significant drop — weekly average dropped >40%

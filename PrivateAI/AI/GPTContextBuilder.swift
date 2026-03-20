@@ -817,9 +817,88 @@ final class GPTContextBuilder {
             avgParts.append("今天数据尚在积累中，未计入统计")
         }
         if !avgParts.isEmpty {
-            lines.append("周统计（基于已完成的\(completedDayCount)天）：\(avgParts.joined(separator: "，"))")
+            lines.append("近7天统计（基于已完成的\(completedDayCount)天）：\(avgParts.joined(separator: "，"))")
         }
+
+        // Per-week breakdowns so GPT can directly answer "这周运动了几次？" vs "上周走了多少步？"
+        // without manually scanning and filtering rows from the trend table.
+        // Uses Monday-based weeks consistent with weekBoundaryText in the SYSTEM prompt.
+        let perWeekStats = buildPerWeekStats(summaries: Array(week), cal: cal)
+        if !perWeekStats.isEmpty {
+            lines.append(perWeekStats)
+        }
+
         return lines.joined(separator: "\n")
+    }
+
+    /// Builds separate "本周" and "上周" sub-totals from the 7-day trend data.
+    /// This prevents GPT from misusing the combined 7-day aggregate for week-specific queries.
+    private func buildPerWeekStats(summaries: [HealthSummary], cal: Calendar) -> String {
+        let now = Date()
+        let todayWeekday = cal.component(.weekday, from: now) // 1=Sun..7=Sat
+        let daysSinceMonday = (todayWeekday + 5) % 7 // Mon=0, Tue=1, ..., Sun=6
+        let thisMonday = cal.date(byAdding: .day, value: -daysSinceMonday, to: cal.startOfDay(for: now))!
+        let lastMonday = cal.date(byAdding: .day, value: -7, to: thisMonday)!
+
+        // Split summaries into this week (Mon..today, excluding today) and last week
+        let thisWeekDays = summaries.filter { s in
+            let dayStart = cal.startOfDay(for: s.date)
+            return dayStart >= thisMonday && !cal.isDateInToday(s.date)
+        }
+        let lastWeekDays = summaries.filter { s in
+            let dayStart = cal.startOfDay(for: s.date)
+            return dayStart >= lastMonday && dayStart < thisMonday
+        }
+
+        var parts: [String] = []
+
+        // This week stats (completed days only — today excluded)
+        if !thisWeekDays.isEmpty {
+            let label = "本周（周一至昨天，\(thisWeekDays.count)天）"
+            parts.append("\(label)：\(weekSubTotal(thisWeekDays))")
+        }
+
+        // Last week stats
+        if !lastWeekDays.isEmpty {
+            let label = "上周（\(lastWeekDays.count)天）"
+            parts.append("\(label)：\(weekSubTotal(lastWeekDays))")
+        }
+
+        guard !parts.isEmpty else { return "" }
+        return parts.joined(separator: "\n")
+    }
+
+    /// Generates a compact one-line summary for a set of days.
+    private func weekSubTotal(_ days: [HealthSummary]) -> String {
+        var items: [String] = []
+
+        let stepsTotal = days.map(\.steps).reduce(0, +)
+        let stepsDays = days.filter { $0.steps > 0 }.count
+        if stepsTotal > 0 {
+            let avg = Int(stepsTotal / Double(days.count))
+            items.append("日均\(avg)步（\(stepsDays)/\(days.count)天有步数）")
+        }
+
+        let exDays = days.filter { $0.exerciseMinutes > 0 }
+        if !exDays.isEmpty {
+            let totalMin = Int(exDays.map(\.exerciseMinutes).reduce(0, +))
+            items.append("\(exDays.count)天运动共\(totalMin)分钟")
+        } else {
+            items.append("无运动记录")
+        }
+
+        let sleepDays = days.filter { $0.sleepHours > 0 }
+        if !sleepDays.isEmpty {
+            let avg = sleepDays.map(\.sleepHours).reduce(0, +) / Double(sleepDays.count)
+            items.append("均睡\(String(format: "%.1f", avg))h")
+        }
+
+        let calTotal = Int(days.filter { $0.activeCalories > 0 }.map(\.activeCalories).reduce(0, +))
+        if calTotal > 0 {
+            items.append("消耗\(calTotal)kcal")
+        }
+
+        return items.joined(separator: "，")
     }
 
     private func calendarSection(todayEvents: [CalendarEventItem], upcoming: [CalendarEventItem], past: [CalendarEventItem] = []) -> String {

@@ -370,7 +370,7 @@ final class GPTContextBuilder {
         }
 
         // TODAY'S HEALTH
-        parts.append(healthSection(todayHealth, weeklyHealth: weeklyHealth, hourOfDay: hourOfDay))
+        parts.append(healthSection(todayHealth, weeklyHealth: weeklyHealth, hourOfDay: hourOfDay, healthTimedOut: healthTimedOut))
 
         // When today's data is empty (e.g. early morning), surface yesterday's key
         // metrics so GPT can still answer "how did I do yesterday?" or "how was my sleep?"
@@ -595,7 +595,8 @@ final class GPTContextBuilder {
 
     private func healthSection(_ h: HealthSummary,
                                weeklyHealth: [HealthSummary] = [],
-                               hourOfDay: Int = Calendar.current.component(.hour, from: Date())) -> String {
+                               hourOfDay: Int = Calendar.current.component(.hour, from: Date()),
+                               healthTimedOut: Bool = false) -> String {
         // Add time-of-day context so GPT knows this is partial-day data.
         // Without this, GPT sees "步数：5000" at 10am and might say "偏少",
         // when actually 5000 steps by 10am is excellent progress.
@@ -705,7 +706,11 @@ final class GPTContextBuilder {
 
         if lines.count == 1 {
             // No data at all and no zero-value lines were added
-            if healthAuthorized && hourOfDay < 8 {
+            if healthTimedOut {
+                // HealthKit daemon didn't respond in time — don't mislead GPT about auth status.
+                // This must match the "读取超时" message in the SYSTEM data availability section.
+                lines.append("（HealthKit 读取超时，健康数据暂时无法获取，请稍后再试）")
+            } else if healthAuthorized && hourOfDay < 8 {
                 lines.append("（现在是清晨，今日数据还在积累中，HealthKit 已授权正常）")
             } else if healthAuthorized {
                 lines.append("（今日暂无健康数据，但近日有记录——可能数据尚未同步，HealthKit 已授权正常）")

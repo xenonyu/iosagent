@@ -267,19 +267,26 @@ final class ChatViewModel: ObservableObject {
     // MARK: - Error Handling
 
     private func friendlyErrorMessage(_ error: Error) -> String {
-        let urlError = error as? URLError
-        switch urlError?.code {
-        case .timedOut:
-            return "⚠️ 请求超时了，可能是网络较慢。请稍后再试。"
-        case .notConnectedToInternet, .networkConnectionLost:
-            return "⚠️ 当前无网络连接，请检查 Wi-Fi 或蜂窝数据后重试。"
-        case .cannotParseResponse:
-            return "⚠️ 服务器返回了意外的格式，请稍后再试。"
-        case .badServerResponse:
-            return "⚠️ 服务器暂时不可用，请稍后再试。"
-        default:
-            return "⚠️ 连接失败，请检查网络后重试。"
+        if let urlError = error as? URLError {
+            switch urlError.code {
+            case .timedOut:
+                return "⚠️ 请求超时了，可能是网络较慢。请稍后再试。"
+            case .notConnectedToInternet, .networkConnectionLost:
+                return "⚠️ 当前无网络连接，请检查 Wi-Fi 或蜂窝数据后重试。"
+            case .cannotParseResponse:
+                return "⚠️ 服务器返回了意外的格式，请稍后再试。"
+            case .badServerResponse:
+                return "⚠️ 服务器暂时不可用，请稍后再试。"
+            case .cannotFindHost, .cannotConnectToHost, .dnsLookupFailed:
+                return "⚠️ 无法连接到服务器，请检查网络后重试。"
+            case .secureConnectionFailed, .serverCertificateUntrusted:
+                return "⚠️ 安全连接失败，请检查网络环境后重试。"
+            default:
+                return "⚠️ 网络请求失败，请检查网络后重试。"
+            }
         }
+        // Non-network errors (encoding, unexpected runtime errors, etc.)
+        return "⚠️ 处理请求时出现异常，请重试。如持续出现请尝试重启 App。"
     }
 
     // MARK: - Helpers

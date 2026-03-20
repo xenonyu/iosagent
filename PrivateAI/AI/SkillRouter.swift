@@ -594,6 +594,34 @@ struct SkillRouter {
             return .summary(range: range)
         }
 
+        // --- Self-reflective status queries (MUST check before general Summary) ---
+        // "我怎么样", "我好不好", "我还好吗" are THE most natural self-inquiry in Chinese.
+        // These have no time context, no topic qualifier — just "how am I?".
+        // Without this block they fall to .unknown, which is a critical gap for a personal AI.
+        // Default: evening → today (day recap), otherwise → lastWeek (recent overview).
+        let selfReflectivePatterns = [
+            // Direct self-status: 我 + question word
+            "我怎么样", "我怎样", "我咋样", "我如何",
+            // Self-evaluation: am I OK?
+            "我好不好", "我好吗", "我还好吗", "我还行吗",
+            // Self-performance: how am I doing?
+            "我做得怎", "我表现怎", "我表现如何", "我表现咋样",
+            // Introspective: my day / my life
+            "我的一天", "我的一周",
+        ]
+        if containsAny(lower, selfReflectivePatterns) {
+            let selfRange: QueryTimeRange
+            if hasExplicitTimeReference(lower) {
+                selfRange = range
+            } else {
+                // Evening users asking "我怎么样" want today's recap;
+                // other times want a broader recent overview.
+                let hour = Calendar.current.component(.hour, from: Date())
+                selfRange = (hour >= 18 && hour < 24) ? .today : .lastWeek
+            }
+            return .summary(range: selfRange)
+        }
+
         // --- Summary ---
         // Covers explicit summary words ("总结") AND natural status inquiries.
         // Important: include "怎么样", "怎样", and colloquial "咋样" variants —
@@ -637,6 +665,10 @@ struct SkillRouter {
                                 "心率", "心跳", "血压", "卡路里", "热量", "千卡", "大卡", "健康", "血氧", "脉搏",
                                 "身体", "体质", "体能", "精力", "活力", "身体状况", "恢复",
                                 "休息", "需要休息", "该休息", "不舒服", "难受", "身体不好", "亚健康",
+                                // Health alert / anomaly scanning
+                                "健康异常", "身体异常", "健康问题", "身体问题", "健康风险",
+                                "需要注意", "要注意什么", "需要关注", "健康警告", "健康隐患",
+                                "health alert", "health warning", "health concern",
                                 "能运动吗", "适合运动", "能不能练", "能锻炼", "适合锻炼",
                                 "精神", "体力", "recovery", "readiness", "need rest", "unwell",
                                 "HRV", "hrv", "心率变异", "静息心率",
@@ -1042,6 +1074,19 @@ struct SkillRouter {
             }
         }
 
+        // --- Bare date query fallback ---
+        // Catches queries that are essentially just a date with no skill keyword or question word:
+        // "3月15号", "周三", "上周五", "15号", "大后天", "下周一", "March 15"
+        // Users naturally type a bare date to see what happened (past) or what's planned (future).
+        // Must be last to avoid shadowing more specific intent matches above.
+        if isBareDateQuery(lower) && hasExplicitTimeReference(lower) {
+            if range.isFuture {
+                return .calendar(range: range)
+            } else {
+                return .summary(range: range)
+            }
+        }
+
         return .unknown
     }
 
@@ -1073,7 +1118,7 @@ struct SkillRouter {
             "这周", "本周", "上周", "上上周", "下周",
             "周末", "这个周末", "本周末", "上周末", "下周末",
             "这个月", "本月", "上个月", "下个月", "下月",
-            "今年", "最近", "近期",
+            "今年", "去年", "前年", "最近", "近期",
             // Relative day patterns: "5天前", "3天内", "过去五天"
             "天前", "天内", "天里", "过去",
             // Relative week patterns: "两周前", "三周内", "两个星期"
@@ -1086,7 +1131,8 @@ struct SkillRouter {
             "this month", "last month",
             "recently", "lately",
             "days ago", "weeks ago", "months ago",
-            "week ago", "month ago", "past"
+            "week ago", "month ago", "past",
+            "this year", "last year", "year before last", "years ago", "year ago"
         ]
         // Also check for specific weekday patterns (周一, 星期三, monday, etc.)
         let weekdayPatterns = ["周一", "周二", "周三", "周四", "周五", "周六", "周日", "周天",
@@ -1172,7 +1218,9 @@ struct SkillRouter {
         // Past ranges
         if containsAny(text, ["前天", "day before yesterday"]) { return .dayBeforeYesterday }
         if containsAny(text, ["昨天", "yesterday"]) { return .yesterday }
-        if containsAny(text, ["今年", "this year"]) { return .all }
+        if containsAny(text, ["前年", "year before last"]) { return .yearBeforeLast }
+        if containsAny(text, ["去年", "last year"]) { return .lastYear }
+        if containsAny(text, ["今年", "this year"]) { return .thisYear }
         if containsAny(text, ["上周", "上个星期", "last week", "past week"]) { return .lastWeek }
         if containsAny(text, ["这周", "本周", "this week"]) { return .thisWeek }
         if containsAny(text, ["上个月", "上月", "last month"]) { return .lastMonth }
@@ -1449,6 +1497,58 @@ struct SkillRouter {
                 let cal = Calendar.current
                 let targetDate = cal.date(byAdding: .month, value: -n, to: cal.startOfDay(for: Date()))!
                 return .specificDate(targetDate)
+            }
+        }
+
+        // --- Chinese pattern: "半年" (≈6 months / 180 days) ---
+        if containsAny(lower, ["最近半年", "近半年", "过去半年", "这半年"]) {
+            return .recentDays(180)
+        }
+        if containsAny(lower, ["半年前"]) {
+            let cal = Calendar.current
+            let targetDate = cal.date(byAdding: .month, value: -6, to: cal.startOfDay(for: Date()))!
+            return .specificDate(targetDate)
+        }
+        if containsAny(lower, ["半年内", "半年里"]) {
+            return .recentDays(180)
+        }
+
+        // --- Chinese pattern: N + "年前" (N years ago as range) ---
+        // "1年前" / "一年前" → lastYear; "2年前" / "两年前" → yearBeforeLast
+        // "3年前" and beyond → recentDays approximation
+        if let suffixRange = lower.range(of: "年前") {
+            let beforeSuffix = suffixRange.lowerBound
+            var searchIdx = lower.startIndex
+            while searchIdx < beforeSuffix {
+                if let (n, endIdx) = extractNumber(from: lower, at: searchIdx) {
+                    if endIdx == beforeSuffix && n > 0 {
+                        switch n {
+                        case 1: return .lastYear
+                        case 2: return .yearBeforeLast
+                        default:
+                            return .recentDays(n * 365)
+                        }
+                    }
+                }
+                searchIdx = lower.index(after: searchIdx)
+            }
+        }
+
+        // --- English pattern: "N years ago" / "a year ago" ---
+        if let agoRange = lower.range(of: " years ago") ?? lower.range(of: " year ago") {
+            let beforeAgo = String(lower[lower.startIndex..<agoRange.lowerBound])
+            let words = beforeAgo.split(separator: " ")
+            if let lastWord = words.last {
+                let n: Int?
+                if lastWord == "a" || lastWord == "one" { n = 1 }
+                else { n = Int(lastWord) }
+                if let n = n, n > 0 {
+                    switch n {
+                    case 1: return .lastYear
+                    case 2: return .yearBeforeLast
+                    default: return .recentDays(n * 365)
+                    }
+                }
             }
         }
 
@@ -1908,6 +2008,12 @@ struct SkillRouter {
         if containsAny(text, ["血氧", "氧饱和", "spo2", "oxygen", "blood oxygen", "氧含量"]) { return "bloodOxygen" }
         if containsAny(text, ["vo2", "vo2max", "摄氧量", "最大摄氧", "有氧耐力", "心肺适能",
                                "cardio fitness", "aerobic capacity"]) { return "vo2max" }
+        // Health alert: proactive anomaly scanning ("有什么异常", "需要注意什么", "有什么问题")
+        if containsAny(text, ["异常", "问题", "注意", "警告", "风险", "担心", "隐患",
+                               "警示", "提醒我", "需要关注", "要注意", "有没有问题",
+                               "什么不对", "哪里不对", "哪里不好", "什么不好",
+                               "alert", "warning", "concern", "risk", "issue",
+                               "anything wrong", "should i worry", "watch out"]) { return "alert" }
         return "general"
     }
 

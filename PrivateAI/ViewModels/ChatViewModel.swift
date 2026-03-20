@@ -172,31 +172,65 @@ final class ChatViewModel: ObservableObject {
 
     // MARK: - Photo Search Detection
 
-    /// Simple keyword check to detect photo search queries.
-    /// Uses specific photo keywords, and only triggers on generic action words
-    /// (帮我找, 给我找, etc.) when combined with photo-related context — avoids
-    /// false positives like "帮我找明天的会议" triggering a photo grid.
     /// Detects photo search queries — keyword list must stay in sync with
     /// GPTContextBuilder.searchPhotosIfNeeded() so the photo grid appears
     /// whenever GPT receives photo search results (and vice versa).
+    ///
+    /// Three trigger paths (matching GPTContextBuilder exactly):
+    /// 1. Specific photo keywords ("找照片", "的照片", "拍的" etc.)
+    /// 2. Generic action words + photo context ("帮我找照片", "看看图片" etc.)
+    /// 3. Descriptive photo queries ("海边照片", "猫的图片" — descriptor + photo word)
     private func isPhotoSearchQuery(_ text: String) -> Bool {
         let lower = text.lowercased()
+
+        // Path 1: Specific photo keywords — always trigger
         let specificKeywords = [
             "找照片", "搜照片", "找图片", "搜图片", "找找照片", "照片搜索",
             "find photo", "search photo", "show me photo",
             "的照片", "的图片", "的相片",
             "photo of", "picture of",
-            // "拍的/拍了/拍过" — natural Chinese phrasing for "photos I took",
-            // e.g. "海边拍的照片", "昨天拍了什么", "去年拍过的风景"
             "拍的", "拍了", "拍过"
         ]
         if specificKeywords.contains(where: { lower.contains($0) }) { return true }
 
-        // Generic action words only count when query also mentions photos
-        let genericKeywords = ["帮我找", "给我找", "搜一下", "找一下"]
+        // Path 2: Generic action words only count when query also mentions photos
+        let genericKeywords = [
+            "帮我找", "给我找", "搜一下", "找一下",
+            "看看", "给我看", "看一下", "有没有", "有多少", "有哪些",
+            "show me", "find me", "look for"
+        ]
         let photoContext = ["照片", "图片", "相片", "photo", "picture", "拍", "自拍", "截图", "视频"]
-        return genericKeywords.contains(where: { lower.contains($0) })
-            && photoContext.contains(where: { lower.contains($0) })
+        if genericKeywords.contains(where: { lower.contains($0) })
+            && photoContext.contains(where: { lower.contains($0) }) {
+            return true
+        }
+
+        // Path 3: Descriptive photo queries — "海边照片", "猫照片", "风景图片"
+        // When a photo word appears alongside descriptive content (2+ chars beyond
+        // the photo word and common particles), trigger search even without explicit
+        // action verbs. Avoids triggering on bare "照片" (stats question).
+        let photoWords = ["照片", "图片", "相片", "photo", "picture"]
+        for pw in photoWords {
+            if lower.contains(pw) {
+                let stripped = lower.replacingOccurrences(of: pw, with: "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .replacingOccurrences(of: "我的", with: "")
+                    .replacingOccurrences(of: "那些", with: "")
+                    .replacingOccurrences(of: "那张", with: "")
+                    .replacingOccurrences(of: "那个", with: "")
+                    .replacingOccurrences(of: "的", with: "")
+                    .replacingOccurrences(of: "吗", with: "")
+                    .replacingOccurrences(of: "呢", with: "")
+                    .replacingOccurrences(of: "？", with: "")
+                    .replacingOccurrences(of: "?", with: "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                if stripped.count >= 2 {
+                    return true
+                }
+            }
+        }
+
+        return false
     }
 
     // MARK: - Voice Input

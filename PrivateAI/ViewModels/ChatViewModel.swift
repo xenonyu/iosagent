@@ -56,6 +56,10 @@ final class ChatViewModel: ObservableObject {
             )
             messages.append(welcome)
         }
+
+        // Restore conversation history from persisted messages so GPT retains
+        // multi-turn context across app restarts.
+        conversationHistory = Array(messages.suffix(maxHistory))
     }
 
     private func buildWelcomeMessage() -> String {
@@ -120,8 +124,9 @@ final class ChatViewModel: ObservableObject {
                     }
                 } catch {
                     await MainActor.run {
+                        let errorText = self.friendlyErrorMessage(error)
                         let errorMsg = ChatMessage(
-                            content: "⚠️ 网络连接失败，请检查网络后重试。",
+                            content: errorText,
                             isUser: false
                         )
                         self.append(message: errorMsg)
@@ -217,6 +222,24 @@ final class ChatViewModel: ObservableObject {
         conversationHistory.append(message)
         if conversationHistory.count > maxHistory {
             conversationHistory.removeFirst(conversationHistory.count - maxHistory)
+        }
+    }
+
+    // MARK: - Error Handling
+
+    private func friendlyErrorMessage(_ error: Error) -> String {
+        let urlError = error as? URLError
+        switch urlError?.code {
+        case .timedOut:
+            return "⚠️ 请求超时了，可能是网络较慢。请稍后再试。"
+        case .notConnectedToInternet, .networkConnectionLost:
+            return "⚠️ 当前无网络连接，请检查 Wi-Fi 或蜂窝数据后重试。"
+        case .cannotParseResponse:
+            return "⚠️ 服务器返回了意外的格式，请稍后再试。"
+        case .badServerResponse:
+            return "⚠️ 服务器暂时不可用，请稍后再试。"
+        default:
+            return "⚠️ 连接失败，请检查网络后重试。"
         }
     }
 

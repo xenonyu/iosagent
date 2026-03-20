@@ -595,11 +595,16 @@ final class GPTContextBuilder {
 
         let healthWords = [
             "步数", "步", "走路", "走了", "跑步", "跑了", "运动", "锻炼", "健身",
-            "睡眠", "睡觉", "睡了", "睡得", "入睡", "起床", "失眠",
+            "睡眠", "睡觉", "睡了", "睡得", "入睡", "起床", "失眠", "早起", "熬夜", "晚睡",
             "心率", "心跳", "卡路里", "热量", "消耗", "能量",
-            "体重", "胖", "瘦", "血氧", "VO2",
+            "体重", "胖", "瘦", "血氧", "VO2", "减肥", "增重",
+            // Specific workout types — users often ask about specific activities
+            "游泳", "骑车", "骑行", "瑜伽", "散步", "爬山", "徒步", "举铁", "力量训练",
+            "拉伸", "冥想", "太极", "跳绳", "划船", "椭圆机", "高强度",
+            // Physical condition — often relates to health/sleep data
+            "累", "疲劳", "精力", "恢复", "酸痛", "状态",
             "exercise", "sleep", "step", "heart", "workout", "calorie", "weight",
-            "hrv", "vo2", "bpm"
+            "hrv", "vo2", "bpm", "swimming", "cycling", "yoga", "hiking", "running"
         ]
         if healthWords.contains(where: { lower.contains($0) }) {
             topics.insert(.health)
@@ -607,7 +612,10 @@ final class GPTContextBuilder {
 
         let calendarWords = [
             "日程", "日历", "会议", "安排", "行程", "活动", "计划", "开会",
-            "schedule", "calendar", "meeting", "event", "appointment"
+            // Appointment & work-related terms
+            "约", "预约", "面试", "上班", "下班", "提醒", "截止", "deadline",
+            "见面", "聚餐", "聚会", "约会",
+            "schedule", "calendar", "meeting", "event", "appointment", "interview"
         ]
         if calendarWords.contains(where: { lower.contains($0) }) {
             topics.insert(.calendar)
@@ -616,7 +624,9 @@ final class GPTContextBuilder {
         let locationWords = [
             "去了", "去过", "地方", "位置", "在哪", "哪里", "足迹", "出门",
             "城市", "回家", "公司", "地点",
-            "location", "where", "place", "travel"
+            // Movement & commute terms
+            "附近", "通勤", "出差", "旅行", "路线", "距离", "远", "逛",
+            "location", "where", "place", "travel", "commute", "nearby"
         ]
         if locationWords.contains(where: { lower.contains($0) }) {
             topics.insert(.location)
@@ -624,7 +634,8 @@ final class GPTContextBuilder {
 
         let photoWords = [
             "照片", "图片", "相片", "拍照", "拍了", "拍的", "拍过",
-            "photo", "picture", "pic", "视频", "video", "自拍", "截图"
+            "相册", "美照", "风景照", "合影", "合照",
+            "photo", "picture", "pic", "视频", "video", "自拍", "截图", "selfie"
         ]
         if photoWords.contains(where: { lower.contains($0) }) {
             topics.insert(.photos)

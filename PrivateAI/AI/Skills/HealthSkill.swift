@@ -5066,6 +5066,92 @@ struct HealthSkill: ClawSkill {
                 }
             }
 
+            // --- Recovery Body Check (cross-data insight) ---
+            // When exercise streak is ≥ 5 days, cross-reference HRV and resting HR
+            // to detect overtraining risk. This is a uniquely personal insight: only
+            // an AI with access to both exercise AND recovery data can say "your body
+            // needs rest" based on real physiological signals.
+            if exerciseStreak.current >= 5 {
+                let recentDays = sorted.prefix(exerciseStreak.current)
+                let hrvDays = recentDays.filter { $0.hrv > 0 }
+                let rhrDays = recentDays.filter { $0.restingHeartRate > 0 }
+                let sleepDays = recentDays.filter { $0.sleepHours > 0 }
+
+                var recoveryLines: [String] = []
+                var warningCount = 0
+
+                // HRV trend: compare first half vs second half of streak
+                if hrvDays.count >= 4 {
+                    let hrvSorted = hrvDays.sorted { $0.date < $1.date }
+                    let mid = hrvSorted.count / 2
+                    let earlierAvg = hrvSorted.prefix(mid).reduce(0.0) { $0 + $1.hrv } / Double(mid)
+                    let recentAvg = hrvSorted.suffix(from: mid).reduce(0.0) { $0 + $1.hrv } / Double(hrvSorted.count - mid)
+                    let hrvChange = recentAvg - earlierAvg
+
+                    if hrvChange < -5 {
+                        recoveryLines.append("   📉 HRV 下降 \(String(format: "%.0f", abs(hrvChange)))ms（\(String(format: "%.0f", earlierAvg))→\(String(format: "%.0f", recentAvg))）— 身体恢复能力在下降")
+                        warningCount += 1
+                    } else if hrvChange > 3 {
+                        recoveryLines.append("   📈 HRV 上升 \(String(format: "%.0f", hrvChange))ms — 身体适应良好，恢复能力在增强")
+                    }
+                }
+
+                // Resting HR trend: rising RHR during exercise streak = overtraining signal
+                if rhrDays.count >= 4 {
+                    let rhrSorted = rhrDays.sorted { $0.date < $1.date }
+                    let mid = rhrSorted.count / 2
+                    let earlierAvg = rhrSorted.prefix(mid).reduce(0.0) { $0 + $1.restingHeartRate } / Double(mid)
+                    let recentAvg = rhrSorted.suffix(from: mid).reduce(0.0) { $0 + $1.restingHeartRate } / Double(rhrSorted.count - mid)
+                    let rhrChange = recentAvg - earlierAvg
+
+                    if rhrChange > 3 {
+                        recoveryLines.append("   📈 静息心率升高 \(String(format: "%.0f", rhrChange))BPM（\(String(format: "%.0f", earlierAvg))→\(String(format: "%.0f", recentAvg))）— 可能训练负荷偏高")
+                        warningCount += 1
+                    } else if rhrChange < -2 {
+                        recoveryLines.append("   📉 静息心率下降 \(String(format: "%.0f", abs(rhrChange)))BPM — 心血管适应性在提升 ✅")
+                    }
+                }
+
+                // Sleep quality during streak: poor sleep + high exercise = recovery deficit
+                if sleepDays.count >= 3 {
+                    let avgSleep = sleepDays.reduce(0.0) { $0 + $1.sleepHours } / Double(sleepDays.count)
+                    let poorSleepDays = sleepDays.filter { $0.sleepHours < 6.5 }.count
+                    if poorSleepDays >= 2 {
+                        recoveryLines.append("   😴 连续运动期间有 \(poorSleepDays) 天睡不到 6.5h — 睡眠不足会削弱运动收益")
+                        warningCount += 1
+                    } else if avgSleep >= 7.5 {
+                        recoveryLines.append("   😴 平均睡眠 \(String(format: "%.1f", avgSleep))h — 运动期间睡眠充足，恢复有保障 ✅")
+                    }
+                }
+
+                if !recoveryLines.isEmpty {
+                    lines.append("")
+                    if warningCount >= 2 {
+                        lines.append("🩺 身体恢复信号 ⚠️")
+                        lines.append(contentsOf: recoveryLines)
+                        lines.append("")
+                        lines.append("   💡 连续 \(exerciseStreak.current) 天运动，多项恢复指标提示身体需要休息。")
+                        lines.append("   建议安排 1-2 天轻松活动（散步、拉伸）代替高强度训练。")
+                    } else if warningCount == 1 {
+                        lines.append("🩺 身体恢复信号")
+                        lines.append(contentsOf: recoveryLines)
+                        lines.append("")
+                        lines.append("   💡 有一项指标值得关注，留意身体感受，必要时安排一天恢复日。")
+                    } else {
+                        lines.append("🩺 身体恢复状态")
+                        lines.append(contentsOf: recoveryLines)
+                        lines.append("")
+                        lines.append("   ✅ 恢复指标良好，身体正在适应当前运动量，继续保持！")
+                    }
+                } else if exerciseStreak.current >= 7 {
+                    // No recovery data available but long streak — generic rest reminder
+                    lines.append("")
+                    lines.append("🩺 连续 \(exerciseStreak.current) 天运动，非常自律！")
+                    lines.append("   💡 即使状态好，每周安排 1-2 天休息也能让肌肉更好修复、避免过度训练。")
+                    lines.append("   佩戴 Apple Watch 可获取 HRV 和静息心率，帮你精准判断恢复状态。")
+                }
+            }
+
             // --- Motivation based on best streak ---
             let bestCurrent = max(stepsStreak.current, exerciseStreak.current, sleepStreak.current)
             if bestCurrent == 0 && tripleStreak.current == 0 {

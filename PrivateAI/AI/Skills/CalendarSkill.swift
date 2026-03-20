@@ -1038,6 +1038,15 @@ struct CalendarSkill: ClawSkill {
             }
         }
 
+        // --- Multi-day schedule health: conflicts, back-to-back chains, marathon days ---
+        if !isFreeTimeFocus {
+            let scheduleHealth = buildMultiDayScheduleHealth(grouped: grouped, sortedDays: sortedDays, dateFmt: dateFmt)
+            if !scheduleHealth.isEmpty {
+                lines.append("")
+                lines.append(contentsOf: scheduleHealth)
+            }
+        }
+
         // --- Recurring vs one-off event breakdown ---
         let recurringInsight = buildRecurringBreakdown(events: events, spanDays: spanDays)
         if !recurringInsight.isEmpty {
@@ -2244,6 +2253,132 @@ struct CalendarSkill: ClawSkill {
         }
 
         return warnings
+    }
+
+    // MARK: - Multi-Day Schedule Health
+
+    /// Aggregates schedule warnings across multiple days: conflicts, back-to-back chains,
+    /// and "marathon days" (days where meetings fill most of the working hours with no break ≥30min).
+    /// Surfaces the information that single-day views show per-day but multi-day views previously missed.
+    private func buildMultiDayScheduleHealth(
+        grouped: [Date: [CalendarEventItem]],
+        sortedDays: [Date],
+        dateFmt: DateFormatter
+    ) -> [String] {
+        var lines: [String] = []
+        let cal = Calendar.current
+
+        // Track totals across all days
+        var totalConflicts = 0
+        var totalBackToBack = 0
+        var conflictDays: [String] = []       // day labels with conflicts
+        var marathonDays: [String] = []       // days with no ≥30min break in working hours
+        var backToBackDays: [String] = []     // days with ≥2 back-to-back pairs
+
+        for day in sortedDays {
+            guard let dayEvents = grouped[day] else { continue }
+            let timed = dayEvents.filter { !$0.isAllDay }
+            guard timed.count >= 2 else { continue }
+
+            let sorted = timed.sorted { $0.startDate < $1.startDate }
+            let dayLabel = dateFmt.string(from: day)
+
+            // --- Conflicts on this day ---
+            var dayConflictCount = 0
+            for i in 0..<sorted.count {
+                for j in (i + 1)..<sorted.count {
+                    let a = sorted[i], b = sorted[j]
+                    if b.startDate < a.endDate {
+                        let overlapEnd = min(a.endDate, b.endDate)
+                        let overlapMin = Int(overlapEnd.timeIntervalSince(b.startDate) / 60)
+                        if overlapMin > 0 { dayConflictCount += 1 }
+                    }
+                }
+            }
+            if dayConflictCount > 0 {
+                totalConflicts += dayConflictCount
+                conflictDays.append(dayLabel)
+            }
+
+            // --- Back-to-back on this day ---
+            var dayBackToBack = 0
+            for i in 0..<(sorted.count - 1) {
+                let gapMin = Int(sorted[i + 1].startDate.timeIntervalSince(sorted[i].endDate) / 60)
+                if gapMin >= 0 && gapMin < 15 {
+                    dayBackToBack += 1
+                }
+            }
+            if dayBackToBack > 0 {
+                totalBackToBack += dayBackToBack
+                if dayBackToBack >= 2 {
+                    backToBackDays.append(dayLabel)
+                }
+            }
+
+            // --- Marathon day detection (no ≥30min break during 9:00-18:00) ---
+            let dayStart = cal.date(bySettingHour: 9, minute: 0, second: 0, of: day) ?? day
+            let dayEnd = cal.date(bySettingHour: 18, minute: 0, second: 0, of: day) ?? day
+            let workHourEvents = sorted.filter { $0.endDate > dayStart && $0.startDate < dayEnd }
+            if workHourEvents.count >= 3 {
+                // Merge overlapping intervals
+                var occupied: [(Date, Date)] = []
+                for event in workHourEvents {
+                    let s = max(event.startDate, dayStart)
+                    let e = min(event.endDate, dayEnd)
+                    guard s < e else { continue }
+                    if let last = occupied.last, s <= last.1 {
+                        occupied[occupied.count - 1].1 = max(last.1, e)
+                    } else {
+                        occupied.append((s, e))
+                    }
+                }
+
+                // Check for any ≥30min gap
+                var hasLongBreak = false
+                var cursor = dayStart
+                for (start, end) in occupied {
+                    let gapMin = start.timeIntervalSince(cursor) / 60
+                    if gapMin >= 30 { hasLongBreak = true; break }
+                    cursor = end
+                }
+                // Check gap after last meeting until end of work hours
+                if !hasLongBreak {
+                    let tailGapMin = dayEnd.timeIntervalSince(cursor) / 60
+                    if tailGapMin >= 30 { hasLongBreak = true }
+                }
+                if !hasLongBreak {
+                    marathonDays.append(dayLabel)
+                }
+            }
+        }
+
+        // Only show if there's something noteworthy
+        guard totalConflicts > 0 || !marathonDays.isEmpty || totalBackToBack >= 3 else { return [] }
+
+        lines.append("⚠️ 日程健康提醒：")
+
+        if totalConflicts > 0 {
+            let dayList = conflictDays.prefix(3).joined(separator: "、")
+            let suffix = conflictDays.count > 3 ? " 等" : ""
+            lines.append("  🔴 \(totalConflicts) 处时间冲突（\(dayList)\(suffix)）— 建议调整或选择优先级")
+        }
+
+        if !marathonDays.isEmpty {
+            let dayList = marathonDays.prefix(3).joined(separator: "、")
+            let suffix = marathonDays.count > 3 ? " 等" : ""
+            lines.append("  🟠 \(dayList)\(suffix) 工作时段几乎无休，注意安排短暂休息")
+        }
+
+        if totalBackToBack >= 3 {
+            if !backToBackDays.isEmpty {
+                let dayList = backToBackDays.prefix(3).joined(separator: "、")
+                lines.append("  🟡 \(totalBackToBack) 组连续日程（密集日：\(dayList)），留意精力分配")
+            } else {
+                lines.append("  🟡 \(totalBackToBack) 组连续日程，留意精力分配")
+            }
+        }
+
+        return lines
     }
 
     // MARK: - Notes Preview

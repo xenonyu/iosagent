@@ -117,7 +117,17 @@ final class GPTContextBuilder {
         // Build data availability summary so GPT knows what's available at a glance
         var availableData: [String] = []
         var unavailableData: [String] = []
-        if todayHealth.steps > 0 || todayHealth.exerciseMinutes > 0 || todayHealth.sleepHours > 0 || todayHealth.heartRate > 0 {
+
+        // Determine health data availability with time-of-day awareness.
+        // Early morning (before 8am) today's steps/exercise are naturally 0 —
+        // that's NOT an authorization issue. Check weekly data to distinguish.
+        let todayHasHealth = todayHealth.steps > 0 || todayHealth.exerciseMinutes > 0
+            || todayHealth.sleepHours > 0 || todayHealth.heartRate > 0
+        let weekHasHealth = weeklyHealth.contains { $0.steps > 0 || $0.exerciseMinutes > 0
+            || $0.sleepHours > 0 || $0.heartRate > 0 }
+        let hourOfDay = Calendar.current.component(.hour, from: now)
+
+        if todayHasHealth || weekHasHealth {
             availableData.append("健康数据")
         } else {
             unavailableData.append("健康数据（未授权或未同步）")
@@ -252,7 +262,18 @@ final class GPTContextBuilder {
         }
 
         // TODAY'S HEALTH
-        parts.append(healthSection(todayHealth))
+        parts.append(healthSection(todayHealth, weeklyHealth: weeklyHealth, hourOfDay: hourOfDay))
+
+        // When today's data is empty (e.g. early morning), surface yesterday's key
+        // metrics so GPT can still answer "how did I do yesterday?" or "how was my sleep?"
+        if !todayHasHealth && hourOfDay < 10 {
+            if let yesterday = weeklyHealth.first(where: {
+                Calendar.current.isDateInYesterday($0.date) &&
+                ($0.steps > 0 || $0.sleepHours > 0 || $0.exerciseMinutes > 0)
+            }) {
+                parts.append(yesterdayHighlight(yesterday))
+            }
+        }
 
         // 7-DAY HEALTH TREND
         if weeklyHealth.count >= 3 {
@@ -321,7 +342,9 @@ final class GPTContextBuilder {
 
     // MARK: - Section Builders
 
-    private func healthSection(_ h: HealthSummary) -> String {
+    private func healthSection(_ h: HealthSummary,
+                               weeklyHealth: [HealthSummary] = [],
+                               hourOfDay: Int = Calendar.current.component(.hour, from: Date())) -> String {
         var lines = ["[今日健康数据]"]
 
         if h.steps > 0 {
@@ -374,7 +397,36 @@ final class GPTContextBuilder {
             lines.append("今日运动：" + wLines.joined(separator: "；"))
         }
 
-        if lines.count == 1 { lines.append("（今日暂无健康数据，可能尚未授权 HealthKit 或数据未同步）") }
+        if lines.count == 1 {
+            // Distinguish "early morning, no data yet" from "HealthKit not authorized"
+            let weekHasAnyData = weeklyHealth.contains { $0.steps > 0 || $0.exerciseMinutes > 0
+                || $0.sleepHours > 0 || $0.heartRate > 0 }
+            if weekHasAnyData && hourOfDay < 8 {
+                lines.append("（现在是清晨，今日数据还在积累中，HealthKit 已授权正常）")
+            } else if weekHasAnyData {
+                lines.append("（今日暂无健康数据，但近日有记录——可能数据尚未同步，HealthKit 已授权正常）")
+            } else {
+                lines.append("（今日暂无健康数据，可能尚未授权 HealthKit 或设备未佩戴）")
+            }
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    /// Quick yesterday summary for early-morning context when today is empty.
+    private func yesterdayHighlight(_ y: HealthSummary) -> String {
+        var lines = ["[昨日健康概要]（今日数据尚在积累，以下为昨天参考）"]
+        if y.steps > 0 { lines.append("步数：\(Int(y.steps))步") }
+        if y.exerciseMinutes > 0 { lines.append("运动：\(Int(y.exerciseMinutes))分钟") }
+        if y.activeCalories > 0 { lines.append("活动消耗：\(Int(y.activeCalories))kcal") }
+        if y.sleepHours > 0 {
+            var line = "睡眠：\(String(format: "%.1f", y.sleepHours))小时"
+            if let onset = y.sleepOnset, let wake = y.wakeTime {
+                let fmt = DateFormatter(); fmt.dateFormat = "HH:mm"
+                line += "（\(fmt.string(from: onset))~\(fmt.string(from: wake))）"
+            }
+            lines.append(line)
+        }
+        if y.heartRate > 0 { lines.append("心率均值：\(Int(y.heartRate))bpm") }
         return lines.joined(separator: "\n")
     }
 

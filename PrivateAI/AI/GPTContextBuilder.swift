@@ -654,16 +654,21 @@ final class GPTContextBuilder {
             "补觉", "作息", "规律", "赖床",
             "心率", "心跳", "卡路里", "热量", "消耗", "能量",
             "体重", "胖", "瘦", "血氧", "VO2", "减肥", "增重",
+            // Direct health/body terms — "我的健康数据怎么样" or "身体状况如何"
+            // Without these, the relevance hint misses the most literal health queries
+            "健康", "身体",
             // Specific workout types — users often ask about specific activities
             "游泳", "骑车", "骑行", "瑜伽", "散步", "爬山", "徒步", "举铁", "力量训练",
             "拉伸", "冥想", "太极", "跳绳", "划船", "椭圆机", "高强度",
+            // Ball sports — common in Chinese daily life
+            "打球", "篮球", "足球", "网球", "乒乓", "羽毛球", "排球", "高尔夫",
             // Physical condition — often relates to health/sleep data
             "累", "疲劳", "精力", "恢复", "酸痛", "状态",
             // Activity Rings (Apple Watch) — users commonly ask "圆环合了吗？"
             "圆环", "活动圆环", "站立", "站了",
             "exercise", "sleep", "step", "heart", "workout", "calorie", "weight",
             "hrv", "vo2", "bpm", "swimming", "cycling", "yoga", "hiking", "running",
-            "stand", "ring", "activity ring"
+            "stand", "ring", "activity ring", "health", "body"
         ]
         if healthWords.contains(where: { lower.contains($0) }) {
             topics.insert(.health)
@@ -1215,13 +1220,23 @@ final class GPTContextBuilder {
             ("周四", "星期四", 5), ("周五", "星期五", 6), ("周六", "星期六", 7),
             ("周日", "星期日", 1)
         ]
-        // Also handle "星期天" as alias for 星期日
-        let extraAliases: [(String, Int)] = [("星期天", 1)]
+        // Also handle colloquial aliases:
+        //  - "星期天" / "周天" — very common colloquial Chinese for Sunday
+        //  - "礼拜一"~"礼拜天"/"礼拜日" — regional/dialect variant used widely
+        let extraAliases: [(String, Int)] = [
+            ("星期天", 1), ("周天", 1),
+            ("礼拜一", 2), ("礼拜二", 3), ("礼拜三", 4),
+            ("礼拜四", 5), ("礼拜五", 6), ("礼拜六", 7),
+            ("礼拜天", 1), ("礼拜日", 1)
+        ]
 
-        // Pre-check "上周X" and "下周X" prefixes to avoid ambiguous fallback
-        let hasLastWeekPrefix = ["上周", "上个星期", "上星期", "上个礼拜"]
+        // Pre-check "上周X" and "下周X" prefixes to avoid ambiguous fallback.
+        // MUST include "上礼拜" (without "个") — otherwise "上礼拜三" triggers
+        // the ambiguous "本周三(已过) / 上周三" fallback instead of definitively
+        // resolving to last Wednesday. Same applies to "下礼拜".
+        let hasLastWeekPrefix = ["上周", "上个星期", "上星期", "上个礼拜", "上礼拜"]
             .contains(where: { lower.contains($0) })
-        let hasNextWeekPrefix = ["下周", "下个星期", "下星期", "下个礼拜"]
+        let hasNextWeekPrefix = ["下周", "下个星期", "下星期", "下个礼拜", "下礼拜"]
             .contains(where: { lower.contains($0) })
 
         var resolvedWeekdays = Set<Int>() // avoid duplicates (周三 + 星期三)

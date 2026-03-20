@@ -749,24 +749,41 @@ final class GPTContextBuilder {
             lines.append("\(dateLabel)  | \(steps)  | \(ex)  | \(cal_)  | \(sl)  | \(hr)")
         }
         // Add weekly totals and averages with active-day counts so GPT can give
-        // honest answers. E.g. "7天中有3天运动，共90分钟" is more useful than "日均30分钟"
+        // honest answers. E.g. "6天中有3天运动，共90分钟" is more useful than "日均30分钟"
         // which hides that the user only exercised 3 out of 7 days.
-        let totalDays = min(summaries.count, 7)
+        //
+        // IMPORTANT: Exclude today from aggregate stats because today's data is
+        // still accumulating. Including partial-day data causes misleading summaries:
+        // e.g. at 9am with 0 exercise, "7天中2天运动" implies today is a rest day,
+        // but the user might exercise later. Using completed days only gives accurate
+        // historical stats; today's progress is shown separately in [今日健康数据].
         let week = summaries.prefix(7)
-        let validStepsDays = week.filter { $0.steps > 0 }
-        let validSleepDays = week.filter { $0.sleepHours > 0 }
-        let validExDays = week.filter { $0.exerciseMinutes > 0 }
+        let completedDays = week.filter { !cal.isDateInToday($0.date) }
+        let completedDayCount = completedDays.count
+        let todaySummary = week.first { cal.isDateInToday($0.date) }
+
+        // Use completed days for all aggregate calculations
+        let validStepsDays = completedDays.filter { $0.steps > 0 }
+        let validSleepDays = completedDays.filter { $0.sleepHours > 0 }
+        let validExDays = completedDays.filter { $0.exerciseMinutes > 0 }
         var avgParts: [String] = []
+
+        guard completedDayCount > 0 else {
+            // Only today's data exists (e.g. first day using the app)
+            lines.append("周统计：暂无完整天数据（今天数据尚在积累中）")
+            return lines.joined(separator: "\n")
+        }
+
         if !validStepsDays.isEmpty {
             let total = validStepsDays.map(\.steps).reduce(0, +)
-            let avg = total / Double(totalDays)
-            avgParts.append("\(totalDays)天日均步数\(Int(avg))")
+            let avg = total / Double(completedDayCount)
+            avgParts.append("过去\(completedDayCount)天日均步数\(Int(avg))")
         }
         if !validExDays.isEmpty {
             let totalMin = Int(validExDays.map(\.exerciseMinutes).reduce(0, +))
-            avgParts.append("\(totalDays)天中\(validExDays.count)天有运动，共\(totalMin)分钟")
+            avgParts.append("过去\(completedDayCount)天中\(validExDays.count)天有运动，共\(totalMin)分钟")
         }
-        let validCalDays = week.filter { $0.activeCalories > 0 }
+        let validCalDays = completedDays.filter { $0.activeCalories > 0 }
         if !validCalDays.isEmpty {
             let totalCal = Int(validCalDays.map(\.activeCalories).reduce(0, +))
             avgParts.append("周活动消耗\(totalCal)kcal")
@@ -774,14 +791,18 @@ final class GPTContextBuilder {
         if !validSleepDays.isEmpty {
             let total = validSleepDays.map(\.sleepHours).reduce(0, +)
             let avg = total / Double(validSleepDays.count)
-            if validSleepDays.count < totalDays {
-                avgParts.append("\(validSleepDays.count)/\(totalDays)天有睡眠数据，均\(String(format: "%.1f", avg))h")
+            if validSleepDays.count < completedDayCount {
+                avgParts.append("\(validSleepDays.count)/\(completedDayCount)天有睡眠数据，均\(String(format: "%.1f", avg))h")
             } else {
                 avgParts.append("日均睡眠\(String(format: "%.1f", avg))h")
             }
         }
+        // Note today's partial contribution if it has any data
+        if let today = todaySummary, today.hasData {
+            avgParts.append("今天数据尚在积累中，未计入统计")
+        }
         if !avgParts.isEmpty {
-            lines.append("周统计：\(avgParts.joined(separator: "，"))")
+            lines.append("周统计（基于已完成的\(completedDayCount)天）：\(avgParts.joined(separator: "，"))")
         }
         return lines.joined(separator: "\n")
     }

@@ -332,9 +332,23 @@ final class GPTContextBuilder {
             // Filter out error/system messages that were persisted to CoreData.
             // On app restart these get loaded into conversationHistory and would
             // confuse GPT if sent as previous "assistant" responses (e.g. "⚠️ 请求超时了").
-            let cleaned = recentHistory.filter { msg in
+            // Also remove orphaned user messages (user messages not followed by an
+            // assistant response) — these arise when error messages are stripped,
+            // leaving a dangling question that would confuse GPT.
+            let errorFiltered = recentHistory.filter { msg in
                 guard !msg.isUser else { return true }
                 return !msg.content.hasPrefix("⚠️")
+            }
+            var cleaned: [ChatMessage] = []
+            for (i, msg) in errorFiltered.enumerated() {
+                if msg.isUser {
+                    let nextIndex = i + 1
+                    if nextIndex < errorFiltered.count && !errorFiltered[nextIndex].isUser {
+                        cleaned.append(msg)
+                    }
+                } else {
+                    cleaned.append(msg)
+                }
             }
             let historyToShow = cleaned.suffix(6)
             if !historyToShow.isEmpty {

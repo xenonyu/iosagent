@@ -59,12 +59,31 @@ final class ChatViewModel: ObservableObject {
 
         // Restore conversation history from persisted messages so GPT retains
         // multi-turn context across app restarts.
-        // Filter out error messages (⚠️ prefix) — these were persisted for display
-        // but should not be sent to GPT as previous "assistant" responses.
-        conversationHistory = messages
+        // 1. Filter out error messages (⚠️ prefix) — these were persisted for display
+        //    but should not be sent to GPT as previous "assistant" responses.
+        // 2. Remove orphaned user messages — when a GPT call fails, the error gets
+        //    filtered out above, leaving the triggering user message without a paired
+        //    assistant reply. Two consecutive user messages confuse GPT into answering
+        //    the stale question alongside the new one. We strip these orphans so only
+        //    properly paired user→assistant exchanges remain in history.
+        let filtered = messages
             .filter { $0.isUser || !$0.content.hasPrefix("⚠️") }
-            .suffix(maxHistory)
-            .map { $0 }
+
+        var cleaned: [ChatMessage] = []
+        for (i, msg) in filtered.enumerated() {
+            if msg.isUser {
+                // Keep user message only if followed by an assistant message
+                let nextIndex = i + 1
+                if nextIndex < filtered.count && !filtered[nextIndex].isUser {
+                    cleaned.append(msg)
+                }
+                // else: orphaned user message (no assistant reply after it) — skip
+            } else {
+                cleaned.append(msg)
+            }
+        }
+
+        conversationHistory = cleaned.suffix(maxHistory).map { $0 }
     }
 
     private func buildWelcomeMessage() -> String {

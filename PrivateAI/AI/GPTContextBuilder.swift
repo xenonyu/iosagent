@@ -345,6 +345,7 @@ final class GPTContextBuilder {
         - ⚠️ 今日健康数据标注了「截至X点」。如果现在还在上午或下午，今天的步数/运动/卡路里等数据还会继续增长，不要过早下结论说「今天步数偏少」「运动不够」。应该说「截至目前…」或「到目前为止…」，必要时可鼓励用户继续保持。只有晚上10点之后的数据才接近当天最终值。
         - ⚠️ 卡路里说明：「活动kcal」是运动/活动消耗，「总消耗kcal」= 活动 + 基础代谢（身体维持生命所需能量）。用户问「今天消耗了多少卡路里」时，应回答总消耗值。基础代谢约占总消耗60-75%，这是正常的。
         - ⚠️ 活动圆环（Apple Watch 三圆环）说明：用户问「圆环合了吗」「三个圆环怎么样」时，结合活动卡路里（🔴Move）、运动分钟数（🟢Exercise）和站立时间（🔵Stand）来评估。如果某个圆环数据为0或缺失，说明可能未佩戴 Apple Watch。站立时间衡量的是「一天中有几个小时站起来活动了」。
+        - 睡眠分析中包含预计算的「工作日vs周末」对比数据。用户问「周末有没有补觉」「工作日和周末睡眠差多少」「我作息规律吗」时，直接引用该对比数据，不需要自己分类统计。工作日 = 周一至周五醒来的夜晚，周末 = 周六/周日醒来的夜晚。
         - 涉及多天数据时，可引用「近14天趋势」进行对比分析，指出趋势变化。
         - 周统计中会标注「X天中Y天有运动」，回答时要如实反映活跃天数，不要把少数几天的数据当作每天都达到了。例如7天中2天运动共60分钟，应该说「这周运动了2天，共60分钟」，而不是「日均运动30分钟」。
         - ⚠️ 跨周对比时，务必使用「日均」数据进行公平比较，因为本周天数可能不足7天。例如本周4天日均消耗2100kcal vs 上周7天日均2000kcal → 说明本周消耗更高，而不是比较总量（8400 vs 14000）得出本周更少的错误结论。
@@ -638,6 +639,7 @@ final class GPTContextBuilder {
         let healthWords = [
             "步数", "步", "走路", "走了", "跑步", "跑了", "运动", "锻炼", "健身",
             "睡眠", "睡觉", "睡了", "睡得", "入睡", "起床", "失眠", "早起", "熬夜", "晚睡",
+            "补觉", "作息", "规律", "赖床",
             "心率", "心跳", "卡路里", "热量", "消耗", "能量",
             "体重", "胖", "瘦", "血氧", "VO2", "减肥", "增重",
             // Specific workout types — users often ask about specific activities
@@ -3655,6 +3657,76 @@ final class GPTContextBuilder {
         }
 
         lines.append("周睡眠概要：\(summaryParts.joined(separator: "，"))")
+
+        // Weekday vs weekend sleep comparison — pre-computed so GPT can directly
+        // answer "周末和工作日睡眠差多少？" "周末有没有补觉？" "我平时几点睡？"
+        // without manually categorizing 14 rows into weekday/weekend buckets.
+        // Users commonly have very different sleep patterns on work days vs rest days,
+        // and this contrast is one of the most actionable health insights.
+        // Classify sleep into weekday vs weekend based on wake-up day.
+        // Sleep is attributed to the wake-up day, so:
+        //   - Weekday sleep: wake-up Mon(2)..Fri(6) — i.e. Sun night through Thu night
+        //   - Weekend sleep: wake-up Sat(7) or Sun(1) — i.e. Fri night and Sat night
+        // This matches the intuitive meaning: "周末睡眠" = the nights you sleep in on Sat/Sun.
+        let weekdaySleepCorrected = chronological.filter { s in
+            let wakeWd = cal.component(.weekday, from: s.date)
+            return wakeWd >= 2 && wakeWd <= 6
+        }
+        let weekendSleep = chronological.filter { s in
+            let wakeWd = cal.component(.weekday, from: s.date)
+            return wakeWd == 1 || wakeWd == 7 // Sun or Sat
+        }
+
+        // Only show comparison when we have enough data for both groups
+        if weekdaySleepCorrected.count >= 2 && weekendSleep.count >= 1 {
+            let wdAvgHrs = weekdaySleepCorrected.map(\.sleepHours).reduce(0, +) / Double(weekdaySleepCorrected.count)
+            let weAvgHrs = weekendSleep.map(\.sleepHours).reduce(0, +) / Double(weekendSleep.count)
+            let diff = weAvgHrs - wdAvgHrs
+
+            var wdweParts: [String] = []
+            wdweParts.append("工作日（\(weekdaySleepCorrected.count)晚）均\(String(format: "%.1f", wdAvgHrs))h")
+            wdweParts.append("周末（\(weekendSleep.count)晚）均\(String(format: "%.1f", weAvgHrs))h")
+
+            if abs(diff) >= 0.3 {
+                if diff > 0 {
+                    wdweParts.append("周末多睡\(String(format: "%.1f", diff))h")
+                } else {
+                    wdweParts.append("工作日反而多睡\(String(format: "%.1f", abs(diff)))h")
+                }
+            } else {
+                wdweParts.append("差异不大")
+            }
+
+            // Bedtime comparison: weekday vs weekend onset times
+            let wdOnsets = weekdaySleepCorrected.compactMap { $0.sleepOnset }
+            let weOnsets = weekendSleep.compactMap { $0.sleepOnset }
+            if wdOnsets.count >= 2 && !weOnsets.isEmpty {
+                let wdOnsetMean = wdOnsets.map(toNormalizedMinutes).reduce(0, +) / Double(wdOnsets.count)
+                let weOnsetMean = weOnsets.map(toNormalizedMinutes).reduce(0, +) / Double(weOnsets.count)
+                let onsetDiff = Int((weOnsetMean - wdOnsetMean).rounded())
+                if abs(onsetDiff) >= 15 {
+                    wdweParts.append("工作日均入睡\(normalizedToTimeStr(wdOnsetMean))，周末\(normalizedToTimeStr(weOnsetMean))")
+                    if onsetDiff > 0 {
+                        wdweParts.append("周末晚睡约\(onsetDiff)分钟")
+                    } else {
+                        wdweParts.append("周末早睡约\(abs(onsetDiff))分钟")
+                    }
+                }
+            }
+
+            // Deep sleep comparison — weekend rest sometimes improves deep sleep quality
+            let wdDeep = weekdaySleepCorrected.filter { $0.hasSleepPhases }
+            let weDeep = weekendSleep.filter { $0.hasSleepPhases }
+            if !wdDeep.isEmpty && !weDeep.isEmpty {
+                let wdDeepAvg = wdDeep.map(\.sleepDeepHours).reduce(0, +) / Double(wdDeep.count)
+                let weDeepAvg = weDeep.map(\.sleepDeepHours).reduce(0, +) / Double(weDeep.count)
+                if abs(weDeepAvg - wdDeepAvg) >= 0.2 {
+                    wdweParts.append("深睡：工作日\(String(format: "%.1f", wdDeepAvg))h vs 周末\(String(format: "%.1f", weDeepAvg))h")
+                }
+            }
+
+            lines.append("工作日vs周末：\(wdweParts.joined(separator: "，"))")
+        }
 
         return lines.joined(separator: "\n")
     }

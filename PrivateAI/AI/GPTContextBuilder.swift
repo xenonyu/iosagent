@@ -699,11 +699,23 @@ final class GPTContextBuilder {
         // the entire relevance hint mechanism for the majority of real queries.
         // Similarly, "怎么样" is too ambiguous — "睡得怎么样" is health-specific,
         // not general. Only truly topic-agnostic words belong here.
+        // "一天" and "一周" were previously here but REMOVED — they are temporal
+        // modifiers, not topic indicators. "一周运动了几次" should match health only;
+        // "一天走多少步合适" should match health only. Having them here caused the
+        // relevance hint to be disabled for the majority of queries with temporal
+        // qualifiers, defeating the entire focus mechanism.
+        // Instead, add truly topic-agnostic "what did I do" patterns that signal
+        // the user wants a cross-domain summary (not just one data type).
         let generalWords = [
             "总结", "回顾", "概括", "过得怎么样", "过得如何",
             "summary", "review", "overview",
             "你好", "谢谢", "嗨", "hello", "hi", "hey", "你是谁",
-            "什么都", "所有", "一天", "一周"
+            "什么都", "所有",
+            // "What did I do" patterns — truly general, asking about all activities
+            "干了什么", "做了什么", "干什么了", "做什么了",
+            "怎么过的", "发生了什么", "忙什么", "忙些什么",
+            "都有什么", "都干了", "都做了",
+            "what did i do", "what happened"
         ]
         if generalWords.contains(where: { lower.contains($0) }) {
             topics.insert(.general)

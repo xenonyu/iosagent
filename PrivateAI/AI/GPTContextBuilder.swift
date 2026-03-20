@@ -221,6 +221,7 @@ final class GPTContextBuilder {
         - 不要重复罗列所有数据，只回答用户问到的内容。
         - 如果用户提到家人（如"我妈"、"我爸"等），参考下方[用户信息]中的家庭成员数据来回答。
         - 日历日程中 [日历名] 标签表示事件来源（如 [Work]、[个人]、[家庭]），用户问「工作会议」时参考此标签区分。日程的「备注」字段包含议程或描述，用户问「那个会议聊什么」时可引用。
+        - 今天的日程带有时间状态标注（已结束/进行中），回答日程问题时优先告诉用户接下来的安排，而不是罗列全天。例如下午3点问「今天有什么安排」，重点说还有哪些未完成的，已结束的可简要带过。
 
         回复格式：
         - 简单问题（如「今天几步」「心率多少」）：直接回答数值+一句话点评，不超过2-3行。
@@ -532,13 +533,36 @@ final class GPTContextBuilder {
             }
         }
 
-        // Today's events
+        // Today's events — annotate with temporal status so GPT knows what's
+        // past, ongoing, and upcoming relative to "now"
+        let now = Date()
         if todayEvents.isEmpty {
             lines.append("今天：无日程")
         } else {
+            // Find the next upcoming event for a highlight line
+            let nextEvent = todayEvents.first { !$0.isAllDay && $0.startDate > now }
+            if let next = nextEvent {
+                let minutesUntil = Int(next.startDate.timeIntervalSince(now) / 60)
+                if minutesUntil <= 60 {
+                    lines.append("⏰ 下一个日程：\(next.title)（\(minutesUntil)分钟后）")
+                }
+            }
+
             lines.append("今天：")
             for e in todayEvents.prefix(10) {
-                var line = "  \(e.timeDisplay) \(e.title)"
+                // Determine temporal status for non-all-day events
+                let status: String
+                if e.isAllDay {
+                    status = ""
+                } else if e.endDate <= now {
+                    status = "（已结束）"
+                } else if e.startDate <= now && e.endDate > now {
+                    status = "（进行中）"
+                } else {
+                    status = ""
+                }
+
+                var line = "  \(e.timeDisplay) \(e.title)\(status)"
                 if !e.calendar.isEmpty { line += " [\(e.calendar)]" }
                 if !e.location.isEmpty { line += "（\(e.location)）" }
                 if let label = e.attendeeLabel { line += " \(label)" }
@@ -549,6 +573,14 @@ final class GPTContextBuilder {
                     line += " 备注：\(preview)"
                 }
                 lines.append(line)
+            }
+
+            // Summary: how many done vs remaining
+            let nonAllDay = todayEvents.filter { !$0.isAllDay }
+            let doneCount = nonAllDay.filter { $0.endDate <= now }.count
+            let remainCount = nonAllDay.filter { $0.startDate > now }.count
+            if nonAllDay.count >= 3 {
+                lines.append("  （已完成\(doneCount)项，还剩\(remainCount)项待进行）")
             }
         }
 

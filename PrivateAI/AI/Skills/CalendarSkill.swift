@@ -8,7 +8,7 @@ struct CalendarSkill: ClawSkill {
 
     func canHandle(intent: QueryIntent) -> Bool {
         switch intent {
-        case .calendar, .calendarNext: return true
+        case .calendar, .calendarNext, .calendarSearch: return true
         default: return false
         }
     }
@@ -16,6 +16,10 @@ struct CalendarSkill: ClawSkill {
     func execute(intent: QueryIntent, context: SkillContext, completion: @escaping (String) -> Void) {
         if case .calendarNext = intent {
             completion(buildNextEventResponse(context: context))
+            return
+        }
+        if case .calendarSearch(let keyword, let range) = intent {
+            completion(buildCalendarSearchResponse(keyword: keyword, range: range, context: context))
             return
         }
         guard case .calendar(let range) = intent else { return }
@@ -140,6 +144,7 @@ struct CalendarSkill: ClawSkill {
                 let timeFmt = DateFormatter()
                 timeFmt.dateFormat = "HH:mm"
                 msg += "📅 明天最早的安排：\(timeFmt.string(from: first.startDate)) 「\(first.title)」"
+                if let atLabel = first.attendeeLabel { msg += "  \(atLabel)" }
                 if !first.location.isEmpty { msg += "\n  📍 \(first.location)" }
                 if timedTomorrow.count > 1 {
                     msg += "\n  明天共有 \(timedTomorrow.count) 个定时事件。"
@@ -165,7 +170,9 @@ struct CalendarSkill: ClawSkill {
         // Ongoing events
         for event in ongoing {
             let remainMin = Int(event.endDate.timeIntervalSince(now) / 60)
-            var line = "🔴 正在进行：「\(event.title)」（\(event.timeDisplay)）"
+            let orgTag = organizerTag(event)
+            var line = "🔴 正在进行：「\(event.title)」（\(event.timeDisplay)）\(orgTag)"
+            if let atLabel = event.attendeeLabel { line += "  \(atLabel)" }
             if remainMin > 0 {
                 line += "\n  还剩 \(formatDuration(Double(remainMin)))"
             }
@@ -190,7 +197,9 @@ struct CalendarSkill: ClawSkill {
             }
 
             let prefix = (i == 0 && ongoing.isEmpty) ? "⏰ 下一个" : "  📋"
-            var line = "\(prefix)：\(countdown) — 「\(event.title)」（\(event.timeDisplay)）"
+            let orgTag = organizerTag(event)
+            var line = "\(prefix)：\(countdown) — 「\(event.title)」（\(event.timeDisplay)）\(orgTag)"
+            if let atLabel = event.attendeeLabel { line += "  \(atLabel)" }
             if !event.location.isEmpty { line += "\n    📍 \(event.location)" }
 
             // Duration hint for the next event
@@ -335,10 +344,221 @@ struct CalendarSkill: ClawSkill {
         let todFilter = parseTimeOfDayFilter(from: context.originalQuery)
 
         if spanDays <= 1 {
-            return buildSingleDayResponse(events: events, range: range, date: interval.start, timeOfDay: todFilter)
+            return buildSingleDayResponse(events: events, range: range, date: interval.start, timeOfDay: todFilter, context: context)
         } else {
             return buildMultiDayResponse(events: events, range: range, interval: interval, spanDays: spanDays, context: context)
         }
+    }
+
+    // MARK: - Calendar Search Response
+
+    /// Searches for events matching a keyword across a time range and builds a focused response.
+    /// Answers questions like "我什么时候有面试", "下次1:1是什么时候", "有没有设计评审".
+    private func buildCalendarSearchResponse(keyword: String, range: QueryTimeRange, context: SkillContext) -> String {
+        guard context.calendarService.isAuthorized else {
+            return """
+            📅 日历权限未开启，无法搜索日程。
+
+            请前往「设置 → iosclaw → 日历」开启权限。
+            """
+        }
+
+        let cal = Calendar.current
+        let now = Date()
+
+        // Build search interval: past 7 days + forward range (default 30 days)
+        let searchInterval = calendarInterval(for: range)
+        // Also look back 7 days to find recent past occurrences for context
+        let lookbackStart = cal.date(byAdding: .day, value: -7, to: cal.startOfDay(for: now))!
+        let effectiveStart = min(searchInterval.start, lookbackStart)
+        // For future-oriented searches, extend to at least 30 days ahead
+        let minFutureEnd = cal.date(byAdding: .day, value: 30, to: cal.startOfDay(for: now))!
+        let effectiveEnd = max(searchInterval.end, minFutureEnd)
+
+        let allEvents = context.calendarService.fetchEvents(from: effectiveStart, to: effectiveEnd)
+
+        // Match events by keyword (case-insensitive, partial match on title/location/notes/calendar)
+        let lowerKeyword = keyword.lowercased()
+        let matched = allEvents.filter { event in
+            event.title.lowercased().contains(lowerKeyword) ||
+            event.location.lowercased().contains(lowerKeyword) ||
+            event.notes.lowercased().contains(lowerKeyword) ||
+            event.calendar.lowercased().contains(lowerKeyword)
+        }
+
+        if matched.isEmpty {
+            return buildSearchEmptyResponse(keyword: keyword, range: range)
+        }
+
+        var lines: [String] = []
+        let dateFmt = DateFormatter()
+        dateFmt.dateFormat = "M月d日（E）"
+        dateFmt.locale = Locale(identifier: "zh_CN")
+        let timeFmt = DateFormatter()
+        timeFmt.dateFormat = "HH:mm"
+
+        // Split into past and future events
+        let pastEvents = matched.filter { $0.endDate < now }
+        let futureEvents = matched.filter { $0.startDate >= now || ($0.startDate < now && $0.endDate > now) }
+
+        // Header
+        lines.append("🔍 搜索「\(keyword)」相关日程：")
+        lines.append("找到 \(matched.count) 个匹配事件\(futureEvents.isEmpty ? "" : "，其中 \(futureEvents.count) 个即将到来")。\n")
+
+        // --- Upcoming events (most important) ---
+        if !futureEvents.isEmpty {
+            let sortedFuture = futureEvents.sorted { $0.startDate < $1.startDate }
+
+            // Highlight the next occurrence
+            if let next = sortedFuture.first {
+                let isOngoing = next.startDate <= now && next.endDate > now
+                if isOngoing {
+                    let remainMin = Int(next.endDate.timeIntervalSince(now) / 60)
+                    var line = "🔴 正在进行：「\(next.title)」（\(next.timeDisplay)）"
+                    if let atLabel = next.attendeeLabel { line += "  \(atLabel)" }
+                    if remainMin > 0 { line += "，还剩 \(formatDuration(Double(remainMin)))" }
+                    if !next.location.isEmpty { line += "\n  📍 \(next.location)" }
+                    lines.append(line)
+                } else {
+                    let daysUntil = cal.dateComponents([.day], from: cal.startOfDay(for: now), to: cal.startOfDay(for: next.startDate)).day ?? 0
+                    let countdown: String
+                    if daysUntil == 0 {
+                        let minUntil = next.startDate.timeIntervalSince(now) / 60
+                        countdown = minUntil < 60
+                            ? "\(Int(minUntil)) 分钟后"
+                            : "\(Int(minUntil / 60)) 小时 \(Int(minUntil.truncatingRemainder(dividingBy: 60))) 分钟后"
+                    } else if daysUntil == 1 {
+                        countdown = "明天"
+                    } else if daysUntil == 2 {
+                        countdown = "后天"
+                    } else {
+                        countdown = "\(daysUntil) 天后"
+                    }
+
+                    let orgTag = organizerTag(next)
+                    var line = "⏰ 最近一次：\(countdown) — \(dateFmt.string(from: next.startDate)) \(next.timeDisplay)"
+                    line += "\n  「\(next.title)」\(orgTag)"
+                    if let atLabel = next.attendeeLabel { line += "  \(atLabel)" }
+                    if !next.location.isEmpty { line += "  📍 \(next.location)" }
+                    if !next.calendar.isEmpty { line += "  [\(next.calendar)]" }
+                    let durationMin = next.duration / 60
+                    if durationMin >= 30 && !next.isAllDay {
+                        line += "\n  时长 \(formatDuration(durationMin))"
+                    }
+                    lines.append(line)
+                }
+            }
+
+            // Show additional upcoming occurrences (up to 4 more)
+            if sortedFuture.count > 1 {
+                lines.append("")
+                lines.append("📋 后续安排：")
+                for event in sortedFuture.dropFirst().prefix(4) {
+                    let dayLabel = cal.isDateInToday(event.startDate) ? "今天"
+                        : cal.isDateInTomorrow(event.startDate) ? "明天"
+                        : dateFmt.string(from: event.startDate)
+                    let timeStr = event.isAllDay ? "全天" : event.timeDisplay
+                    let recurTag = event.isRecurring ? " 🔄" : ""
+                    var line = "  • \(dayLabel) \(timeStr) 「\(event.title)」\(recurTag)"
+                    if !event.location.isEmpty { line += "  📍\(event.location)" }
+                    lines.append(line)
+                }
+                if sortedFuture.count > 5 {
+                    lines.append("  …还有 \(sortedFuture.count - 5) 个后续安排")
+                }
+            }
+        }
+
+        // --- Past events (secondary context) ---
+        if !pastEvents.isEmpty && futureEvents.count <= 3 {
+            let sortedPast = pastEvents.sorted { $0.startDate > $1.startDate } // Most recent first
+            lines.append("")
+            lines.append("📜 最近的记录：")
+            for event in sortedPast.prefix(3) {
+                let daysAgo = cal.dateComponents([.day], from: cal.startOfDay(for: event.startDate), to: cal.startOfDay(for: now)).day ?? 0
+                let agoLabel = daysAgo == 0 ? "今天" : daysAgo == 1 ? "昨天" : "\(daysAgo)天前"
+                let timeStr = event.isAllDay ? "全天" : event.timeDisplay
+                lines.append("  · \(agoLabel) \(dateFmt.string(from: event.startDate)) \(timeStr) 「\(event.title)」")
+            }
+        }
+
+        // --- Frequency insight ---
+        if matched.count >= 3 {
+            let insight = buildSearchFrequencyInsight(events: matched, keyword: keyword)
+            if !insight.isEmpty {
+                lines.append("")
+                lines.append(contentsOf: insight)
+            }
+        }
+
+        // --- Recurring detection ---
+        let recurringMatches = matched.filter { $0.isRecurring }
+        if !recurringMatches.isEmpty && futureEvents.count <= 1 {
+            lines.append("")
+            lines.append("🔄 这是一个周期性日程，会定期出现在你的日历中。")
+        }
+
+        return lines.joined(separator: "\n")
+    }
+
+    /// Builds a friendly empty response when no events match the search keyword.
+    private func buildSearchEmptyResponse(keyword: String, range: QueryTimeRange) -> String {
+        var msg = "🔍 没有找到与「\(keyword)」相关的日程。\n"
+        msg += "\n可能的原因：\n"
+        msg += "  • 日历中没有标题包含「\(keyword)」的事件\n"
+        msg += "  • 事件可能使用了不同的名称\n"
+        msg += "\n💡 试试换个关键词，比如：\n"
+        msg += "  • 会议组织者的名字\n"
+        msg += "  • 会议类型（如：1:1、review、standup）\n"
+        msg += "  • 日历名称"
+        return msg
+    }
+
+    /// Analyzes frequency and timing patterns for matched events.
+    private func buildSearchFrequencyInsight(events: [CalendarEventItem], keyword: String) -> [String] {
+        let cal = Calendar.current
+        var lines: [String] = []
+
+        // Group by weekday to find patterns
+        var weekdayCounts: [Int: Int] = [:]  // weekday (1=Sun..7=Sat) → count
+        for event in events {
+            let wd = cal.component(.weekday, from: event.startDate)
+            weekdayCounts[wd, default: 0] += 1
+        }
+
+        let weekdayNames = [1: "周日", 2: "周一", 3: "周二", 4: "周三", 5: "周四", 6: "周五", 7: "周六"]
+
+        // Find dominant weekday (if >50% on one day, it's a pattern)
+        let total = events.count
+        if let (dominantDay, count) = weekdayCounts.max(by: { $0.value < $1.value }),
+           Double(count) / Double(total) >= 0.5, count >= 2 {
+            let dayName = weekdayNames[dominantDay] ?? "未知"
+            lines.append("📊 时间规律：「\(keyword)」多在\(dayName)出现（\(count)/\(total) 次）")
+        }
+
+        // Average duration
+        let timedEvents = events.filter { !$0.isAllDay }
+        if timedEvents.count >= 2 {
+            let avgDuration = timedEvents.reduce(0.0) { $0 + $1.duration } / Double(timedEvents.count) / 60.0
+            if avgDuration >= 15 {
+                lines.append("⏱️ 平均时长：\(formatDuration(avgDuration))")
+            }
+        }
+
+        // Time-of-day preference
+        let hours = timedEvents.map { cal.component(.hour, from: $0.startDate) }
+        if !hours.isEmpty {
+            let avgHour = hours.reduce(0, +) / hours.count
+            let timeOfDay: String
+            if avgHour < 12 { timeOfDay = "上午" }
+            else if avgHour < 18 { timeOfDay = "下午" }
+            else { timeOfDay = "晚上" }
+            if timedEvents.count >= 3 {
+                lines.append("🕐 通常在\(timeOfDay)（平均 \(String(format: "%02d:00", avgHour)) 左右）")
+            }
+        }
+
+        return lines
     }
 
     /// Extends the time interval to the end of the period for calendar-specific queries.
@@ -431,7 +651,7 @@ struct CalendarSkill: ClawSkill {
 
     // MARK: - Single Day Response (Today / Tomorrow / Specific Day)
 
-    private func buildSingleDayResponse(events: [CalendarEventItem], range: QueryTimeRange, date: Date, timeOfDay: TimeOfDayFilter? = nil) -> String {
+    private func buildSingleDayResponse(events: [CalendarEventItem], range: QueryTimeRange, date: Date, timeOfDay: TimeOfDayFilter? = nil, context: SkillContext? = nil) -> String {
         var lines: [String] = []
         let now = Date()
         let cal = Calendar.current
@@ -483,11 +703,13 @@ struct CalendarSkill: ClawSkill {
                         ? "\(Int(minutesUntil)) 分钟后"
                         : "\(Int(minutesUntil / 60)) 小时\(Int(minutesUntil.truncatingRemainder(dividingBy: 60))) 分钟后"
                     var nextLine = "⏰ 接下来：\(timeStr)有「\(next.title)」（\(next.timeDisplay)）"
+                    if let atLabel = next.attendeeLabel { nextLine += "  \(atLabel)" }
                     if !next.location.isEmpty { nextLine += "  📍\(next.location)" }
                     lines.append(nextLine + "\n")
                 } else if minutesUntil <= 0 && next.startDate <= now && next.endDate > now {
                     let remainMin = Int(next.endDate.timeIntervalSince(now) / 60)
                     var ongoingLine = "🔴 正在进行：「\(next.title)」（\(next.timeDisplay)）"
+                    if let atLabel = next.attendeeLabel { ongoingLine += "  \(atLabel)" }
                     if remainMin > 0 { ongoingLine += "，还剩 \(formatDuration(Double(remainMin)))" }
                     if !next.location.isEmpty { ongoingLine += "  📍\(next.location)" }
                     lines.append(ongoingLine + "\n")
@@ -527,7 +749,9 @@ struct CalendarSkill: ClawSkill {
             lines.append("🕐 \(timeOfDay!.label)安排：")
             focusedTimedEvents.forEach { event in
                 let recurTag = event.isRecurring ? " 🔄" : ""
-                var line = "  • \(event.timeDisplay) \(event.title)\(recurTag)"
+                let atTag = event.attendeeLabel.map { "  \($0)" } ?? ""
+                let orgTag = organizerTag(event)
+                var line = "  • \(event.timeDisplay) \(event.title)\(recurTag)\(orgTag)\(atTag)"
                 if !event.location.isEmpty { line += "  📍\(event.location)" }
                 lines.append(line)
                 if let preview = notesPreview(event.notes) {
@@ -541,7 +765,9 @@ struct CalendarSkill: ClawSkill {
                 lines.append("📋 其他时段还有 \(otherTimedEvents.count) 个安排：")
                 otherTimedEvents.forEach { event in
                     let recurTag = event.isRecurring ? " 🔄" : ""
-                    var line = "  · \(event.timeDisplay) \(event.title)\(recurTag)"
+                    let atTag = event.attendeeLabel.map { "  \($0)" } ?? ""
+                    let orgTag = organizerTag(event)
+                    var line = "  · \(event.timeDisplay) \(event.title)\(recurTag)\(orgTag)\(atTag)"
                     if !event.location.isEmpty { line += "  📍\(event.location)" }
                     lines.append(line)
                 }
@@ -551,7 +777,9 @@ struct CalendarSkill: ClawSkill {
             lines.append("🕐 时间安排：")
             timedEvents.forEach { event in
                 let recurTag = event.isRecurring ? " 🔄" : ""
-                var line = "  • \(event.timeDisplay) \(event.title)\(recurTag)"
+                let atTag = event.attendeeLabel.map { "  \($0)" } ?? ""
+                let orgTag = organizerTag(event)
+                var line = "  • \(event.timeDisplay) \(event.title)\(recurTag)\(orgTag)\(atTag)"
                 if !event.location.isEmpty { line += "  📍\(event.location)" }
                 lines.append(line)
                 if let preview = notesPreview(event.notes) {
@@ -605,6 +833,31 @@ struct CalendarSkill: ClawSkill {
             lines.append(contentsOf: focusInsight)
         }
 
+        // --- Single-day organizer summary (compact) ---
+        let meetingsWithAttendees = timedEvents.filter { $0.hasAttendees }
+        if meetingsWithAttendees.count >= 2 {
+            let orgCount = meetingsWithAttendees.filter { $0.isOrganizer }.count
+            let attCount = meetingsWithAttendees.count - orgCount
+            if orgCount > 0 && attCount > 0 {
+                lines.append("")
+                lines.append("👑 今天 \(orgCount) 个会议由你发起，\(attCount) 个由他人邀请。")
+            }
+        }
+
+        // --- Day-over-day comparison (when user asks "今天比昨天忙吗" etc.) ---
+        if let ctx = context {
+            let compInsight = buildDayComparison(
+                currentEvents: timedEvents,
+                currentDate: date,
+                range: range,
+                context: ctx
+            )
+            if !compInsight.isEmpty {
+                lines.append("")
+                lines.append(contentsOf: compInsight)
+            }
+        }
+
         return lines.joined(separator: "\n")
     }
 
@@ -649,7 +902,30 @@ struct CalendarSkill: ClawSkill {
         if !weekendEvents.isEmpty {
             headerSuffix = "（其中周末 \(weekendEvents.count) 个）"
         }
-        lines.append("共 \(events.count) 个事件，跨 \(spanDays) 天\(totalMinutes >= 60 ? "，约 \(formatDuration(totalMinutes)) 有安排" : "")\(headerSuffix)。\n")
+        lines.append("共 \(events.count) 个事件，跨 \(spanDays) 天\(totalMinutes >= 60 ? "，约 \(formatDuration(totalMinutes)) 有安排" : "")\(headerSuffix)。")
+
+        // --- Meeting scale breakdown (only when events have attendee data) ---
+        let eventsWithAttendees = timedEvents.filter { $0.hasAttendees }
+        if eventsWithAttendees.count >= 2 {
+            let oneOnOnes = eventsWithAttendees.filter { $0.attendeeCount <= 2 }.count
+            let smallGroup = eventsWithAttendees.filter { $0.attendeeCount > 2 && $0.attendeeCount <= 5 }.count
+            let largeMeetings = eventsWithAttendees.filter { $0.attendeeCount > 5 }.count
+            var scaleParts: [String] = []
+            if oneOnOnes > 0 { scaleParts.append("1:1 × \(oneOnOnes)") }
+            if smallGroup > 0 { scaleParts.append("小会 × \(smallGroup)") }
+            if largeMeetings > 0 { scaleParts.append("大会 × \(largeMeetings)") }
+            if !scaleParts.isEmpty {
+                lines.append("👥 会议规模：\(scaleParts.joined(separator: "、"))")
+            }
+        }
+
+        // --- Organizer vs Attendee role analysis ---
+        let organizerInsight = buildOrganizerInsight(events: timedEvents, spanDays: spanDays)
+        if !organizerInsight.isEmpty {
+            lines.append(contentsOf: organizerInsight)
+        }
+
+        lines.append("")
 
         // --- Free-time-focused: show cross-day free slots prominently ---
         if isFreeTimeFocus {
@@ -662,12 +938,29 @@ struct CalendarSkill: ClawSkill {
             }
         }
 
-        // --- Busiest day insight ---
+        // --- Busiest day insight (by total meeting duration, not just count) ---
         if sortedDays.count > 1 && !isFreeTimeFocus {
-            let busiestDay = sortedDays.max { (grouped[$0]?.count ?? 0) < (grouped[$1]?.count ?? 0) }
-            if let busiest = busiestDay, let count = grouped[busiest]?.count, count > 1 {
-                lines.append("📊 最忙的一天：\(dateFmt.string(from: busiest))（\(count) 个事件）\n")
+            let dayDurations: [(day: Date, count: Int, totalMin: Double)] = sortedDays.compactMap { day in
+                guard let dayEvents = grouped[day] else { return nil }
+                let dayTimed = dayEvents.filter { !$0.isAllDay }
+                let totalMin = dayTimed.reduce(0.0) { $0 + $1.duration } / 60.0
+                return (day: day, count: dayTimed.count, totalMin: totalMin)
             }
+            if let busiest = dayDurations.max(by: { $0.totalMin < $1.totalMin }),
+               busiest.count > 1 {
+                var busiestLine = "📊 最忙的一天：\(dateFmt.string(from: busiest.day))（\(busiest.count) 个事件"
+                if busiest.totalMin >= 60 {
+                    busiestLine += "，共 \(formatDuration(busiest.totalMin))"
+                }
+                busiestLine += "）"
+                lines.append(busiestLine)
+            }
+
+            // --- Peak meeting hours analysis ---
+            let peakHoursInsight = buildPeakHoursInsight(timedEvents: timedEvents, spanDays: spanDays)
+            lines.append(contentsOf: peakHoursInsight)
+
+            if !lines.last!.isEmpty { lines.append("") }
         }
 
         // --- Day-by-day listing ---
@@ -680,7 +973,9 @@ struct CalendarSkill: ClawSkill {
             lines.append("📌 \(dateFmt.string(from: day)) \(dayBusy.emoji)\(weekendTag)")
             dayEvents.forEach { event in
                 let recurTag = event.isRecurring ? " 🔄" : ""
-                var line = "  • \(event.isAllDay ? "全天" : event.timeDisplay) \(event.title)\(recurTag)"
+                let atTag = event.attendeeLabel.map { "  \($0)" } ?? ""
+                let orgTag = organizerTag(event)
+                var line = "  • \(event.isAllDay ? "全天" : event.timeDisplay) \(event.title)\(recurTag)\(orgTag)\(atTag)"
                 if !event.location.isEmpty { line += "  📍\(event.location)" }
                 lines.append(line)
                 // In free-time-focused mode, skip notes to keep output concise
@@ -1026,6 +1321,99 @@ struct CalendarSkill: ClawSkill {
     private struct BusyLevel {
         let emoji: String
         let description: String
+    }
+
+    // MARK: - Peak Meeting Hours
+
+    /// Analyzes which time-of-day slots are most meeting-heavy across a multi-day period.
+    /// Returns lines like "⏰ 会议高峰：14:00-16:00（占 42% 的会议时间）"
+    private func buildPeakHoursInsight(timedEvents: [CalendarEventItem], spanDays: Int) -> [String] {
+        // Need enough data to identify patterns
+        guard timedEvents.count >= 3 else { return [] }
+
+        let cal = Calendar.current
+
+        // Accumulate meeting minutes per hour slot (0-23)
+        var hourMinutes: [Int: Double] = [:]
+        for event in timedEvents {
+            let startHour = cal.component(.hour, from: event.startDate)
+            let startMin = cal.component(.minute, from: event.startDate)
+            let endHour = cal.component(.hour, from: event.endDate)
+            let endMin = cal.component(.minute, from: event.endDate)
+
+            // Distribute event duration across hour slots it spans
+            if startHour == endHour {
+                // Event fits within a single hour
+                hourMinutes[startHour, default: 0] += Double(endMin - startMin)
+            } else {
+                // First partial hour
+                hourMinutes[startHour, default: 0] += Double(60 - startMin)
+                // Full middle hours
+                for h in (startHour + 1)..<min(endHour, 24) {
+                    hourMinutes[h, default: 0] += 60
+                }
+                // Last partial hour
+                if endHour < 24 && endMin > 0 {
+                    hourMinutes[endHour, default: 0] += Double(endMin)
+                }
+            }
+        }
+
+        let totalMinutes = hourMinutes.values.reduce(0, +)
+        guard totalMinutes >= 60 else { return [] }
+
+        // Find peak 2-hour window by sliding window
+        var bestWindow = (startHour: 0, minutes: 0.0)
+        for h in 6..<22 { // business hours 6:00-23:00
+            let windowMin = (hourMinutes[h] ?? 0) + (hourMinutes[h + 1] ?? 0)
+            if windowMin > bestWindow.minutes {
+                bestWindow = (startHour: h, minutes: windowMin)
+            }
+        }
+
+        guard bestWindow.minutes >= 30 else { return [] }
+
+        let peakPct = Int((bestWindow.minutes / totalMinutes) * 100)
+
+        // Only show if there's meaningful concentration (>25% of meeting time in 2-hour window)
+        guard peakPct >= 25 else { return [] }
+
+        let startStr = String(format: "%02d:00", bestWindow.startHour)
+        let endStr = String(format: "%02d:00", bestWindow.startHour + 2)
+
+        var lines: [String] = []
+        var peakLine = "⏰ 会议高峰：\(startStr)-\(endStr)"
+        if peakPct >= 50 {
+            peakLine += "（集中了 \(peakPct)% 的会议时间）"
+        } else {
+            peakLine += "（占 \(peakPct)% 的会议时间）"
+        }
+        lines.append(peakLine)
+
+        // Add scheduling suggestion if peak is very concentrated
+        if peakPct >= 60 && spanDays >= 5 {
+            lines.append("  💡 会议集中度较高，可考虑在其他时段安排专注工作时间")
+        }
+
+        // Morning vs afternoon distribution
+        let morningMin = (6..<12).reduce(0.0) { $0 + (hourMinutes[$1] ?? 0) }
+        let afternoonMin = (12..<18).reduce(0.0) { $0 + (hourMinutes[$1] ?? 0) }
+        let eveningMin = (18..<24).reduce(0.0) { $0 + (hourMinutes[$1] ?? 0) }
+
+        if morningMin + afternoonMin + eveningMin >= 120 {
+            let morningPct = Int((morningMin / totalMinutes) * 100)
+            let afternoonPct = Int((afternoonMin / totalMinutes) * 100)
+
+            if morningPct >= 65 {
+                lines.append("  🌅 你的会议偏上午型，下午相对自由")
+            } else if afternoonPct >= 65 {
+                lines.append("  🌆 你的会议偏下午型，上午适合深度工作")
+            } else if eveningMin > morningMin && eveningMin > afternoonMin {
+                lines.append("  🌙 晚间会议较多，注意工作生活平衡")
+            }
+        }
+
+        return lines
     }
 
     private func busyScore(timedCount: Int, totalMinutes: Double) -> BusyLevel {
@@ -1548,6 +1936,87 @@ struct CalendarSkill: ClawSkill {
         return lines
     }
 
+    // MARK: - Day-over-Day Comparison
+
+    /// Compares a single day's calendar load against the previous day.
+    /// Triggered when the user's query contains comparison keywords routed from SkillRouter
+    /// (e.g., "今天比昨天忙吗", "明天比今天安排多吗").
+    private func buildDayComparison(
+        currentEvents: [CalendarEventItem],
+        currentDate: Date,
+        range: QueryTimeRange,
+        context: SkillContext
+    ) -> [String] {
+        // Only trigger when the user's query has comparison intent
+        let query = context.originalQuery.lowercased()
+        let comparisonKeywords = ["比昨天", "比前天", "比今天", "比上周", "比之前", "比以前",
+                                  "跟昨天比", "和昨天比", "跟前天比", "和前天比", "跟今天比", "和今天比",
+                                  "对比", "比较", "更忙", "更闲", "更空",
+                                  "compared", "busier", "less busy"]
+        guard comparisonKeywords.contains(where: { query.contains($0) }) else { return [] }
+
+        // Determine the comparison day
+        let cal = Calendar.current
+        let prevDate: Date
+        let prevLabel: String
+        if query.contains("比前天") || query.contains("跟前天") || query.contains("和前天") {
+            prevDate = cal.date(byAdding: .day, value: -2, to: cal.startOfDay(for: currentDate))!
+            prevLabel = "前天"
+        } else if range == .tomorrow {
+            // "明天比今天忙吗" → compare tomorrow vs today
+            prevDate = cal.startOfDay(for: Date())
+            prevLabel = "今天"
+        } else {
+            // Default: compare with previous day
+            prevDate = cal.date(byAdding: .day, value: -1, to: cal.startOfDay(for: currentDate))!
+            prevLabel = range == .today ? "昨天" : "前一天"
+        }
+
+        let prevEnd = cal.date(byAdding: .day, value: 1, to: prevDate)!
+        let prevEvents = context.calendarService.fetchEvents(from: prevDate, to: prevEnd)
+            .filter { !$0.isAllDay }
+
+        let curCount = currentEvents.count
+        let prevCount = prevEvents.count
+        let curMinutes = currentEvents.reduce(0.0) { $0 + $1.duration } / 60.0
+        let prevMinutes = prevEvents.reduce(0.0) { $0 + $1.duration } / 60.0
+
+        // Skip if both days are empty
+        guard curCount > 0 || prevCount > 0 else { return [] }
+
+        var lines: [String] = ["📈 与\(prevLabel)对比："]
+
+        // Event count comparison
+        let countDiff = curCount - prevCount
+        if countDiff > 0 {
+            lines.append("  • 日程数：\(curCount) 个（比\(prevLabel)多 \(countDiff) 个）")
+        } else if countDiff < 0 {
+            lines.append("  • 日程数：\(curCount) 个（比\(prevLabel)少 \(-countDiff) 个）")
+        } else {
+            lines.append("  • 日程数：\(curCount) 个（与\(prevLabel)相同）")
+        }
+
+        // Meeting time comparison
+        let timeDiff = curMinutes - prevMinutes
+        if abs(timeDiff) >= 15 {
+            let direction = timeDiff > 0 ? "多" : "少"
+            lines.append("  • 安排时长：\(formatDuration(curMinutes))（比\(prevLabel)\(direction) \(formatDuration(abs(timeDiff)))）")
+        }
+
+        // Overall busyness verdict
+        if curCount == 0 && prevCount > 0 {
+            lines.append("  💚 \(range.label)完全空闲，比\(prevLabel)轻松多了！")
+        } else if curCount > 0 && prevCount == 0 {
+            lines.append("  📋 \(prevLabel)没有日程，\(range.label)则有 \(curCount) 个安排")
+        } else if curMinutes > prevMinutes * 1.5 && prevMinutes > 30 {
+            lines.append("  ⚡ \(range.label)比\(prevLabel)忙了不少，注意安排好节奏")
+        } else if curMinutes < prevMinutes * 0.5 && curMinutes > 0 {
+            lines.append("  💚 \(range.label)比\(prevLabel)从容，可以安排深度工作")
+        }
+
+        return lines
+    }
+
     // MARK: - Period-over-Period Comparison
 
     /// Compares current period's calendar load against the previous period of equal length.
@@ -1649,6 +2118,96 @@ struct CalendarSkill: ClawSkill {
 
     private func calendarTag(_ calendar: String) -> String {
         calendar.isEmpty ? "" : "  [\(calendar)]"
+    }
+
+    /// Returns a small organizer badge for events the user organized.
+    /// Only shown when the event has attendees (to distinguish from personal events).
+    private func organizerTag(_ event: CalendarEventItem) -> String {
+        event.isOrganizer && event.hasAttendees ? " 👑" : ""
+    }
+
+    // MARK: - Organizer Role Analysis
+
+    /// Analyzes the user's role across multi-day events: organizer vs attendee.
+    /// Surfaces how much meeting time the user controls, average duration differences,
+    /// and actionable insights about meeting ownership patterns.
+    private func buildOrganizerInsight(events: [CalendarEventItem], spanDays: Int) -> [String] {
+        // Only analyze events with attendee data (skip personal/all-day events)
+        let meetingEvents = events.filter { $0.hasAttendees && !$0.isAllDay }
+        guard meetingEvents.count >= 3 else { return [] }
+
+        let organized = meetingEvents.filter { $0.isOrganizer }
+        let attended = meetingEvents.filter { !$0.isOrganizer }
+
+        // Skip if all organized or all attended — no meaningful role contrast
+        guard !organized.isEmpty && !attended.isEmpty else {
+            // Still show a summary if all organized (user is a heavy meeting creator)
+            if organized.count >= 3 && attended.isEmpty {
+                let totalMin = organized.reduce(0.0) { $0 + $1.duration } / 60.0
+                return ["👑 全部 \(organized.count) 个会议都由你发起（共 \(formatDuration(totalMin))）— 你是主要的会议组织者"]
+            }
+            return []
+        }
+
+        var lines: [String] = []
+        lines.append("👑 会议角色分析：")
+
+        let organizedMin = organized.reduce(0.0) { $0 + $1.duration } / 60.0
+        let attendedMin = attended.reduce(0.0) { $0 + $1.duration } / 60.0
+        let totalMin = organizedMin + attendedMin
+
+        // Role distribution with visual bar
+        let orgPct = Int(organizedMin / totalMin * 100)
+        let orgBlocks = max(1, min(10, Int(Double(orgPct) / 10.0)))
+        let attBlocks = 10 - orgBlocks
+        let bar = String(repeating: "👑", count: orgBlocks) + String(repeating: "·", count: attBlocks)
+        lines.append("  [\(bar)] 发起 \(orgPct)%")
+        lines.append("  发起 \(organized.count) 个（\(formatDuration(organizedMin))）· 参加 \(attended.count) 个（\(formatDuration(attendedMin))）")
+
+        // Average duration comparison — do organized meetings tend to be longer?
+        let avgOrgMin = organizedMin / Double(organized.count)
+        let avgAttMin = attendedMin / Double(attended.count)
+        if abs(avgOrgMin - avgAttMin) >= 10 {
+            if avgOrgMin > avgAttMin {
+                lines.append("  ⏱ 你发起的会议平均 \(Int(avgOrgMin)) 分钟，比参加的（\(Int(avgAttMin)) 分钟）更长")
+            } else {
+                lines.append("  ⏱ 你参加的会议平均 \(Int(avgAttMin)) 分钟，比你发起的（\(Int(avgOrgMin)) 分钟）更长")
+            }
+        }
+
+        // Attendee scale comparison — do organized meetings tend to be larger or smaller?
+        let orgAvgAttendees = organized.reduce(0) { $0 + $1.attendeeCount } / organized.count
+        let attAvgAttendees = attended.filter { $0.attendeeCount > 0 }.isEmpty ? 0 :
+            attended.filter { $0.attendeeCount > 0 }.reduce(0) { $0 + $1.attendeeCount } / attended.filter { $0.attendeeCount > 0 }.count
+        if orgAvgAttendees > 0 && attAvgAttendees > 0 && abs(orgAvgAttendees - attAvgAttendees) >= 2 {
+            if orgAvgAttendees > attAvgAttendees {
+                lines.append("  👥 你发起的会议规模更大（平均 \(orgAvgAttendees) 人 vs \(attAvgAttendees) 人）")
+            } else {
+                lines.append("  👥 你参加的会议规模更大（平均 \(attAvgAttendees) 人 vs \(orgAvgAttendees) 人）")
+            }
+        }
+
+        // Actionable insight based on organizer ratio
+        if orgPct >= 60 {
+            lines.append("  💡 你主导了大部分会议 — 如果感到时间紧张，可以考虑缩短或委托部分会议")
+        } else if orgPct <= 25 {
+            lines.append("  💡 大部分会议由他人发起 — 评估哪些是必须参加的，适当拒绝低优先级邀请")
+        }
+
+        // Check if organized meetings cluster on specific days (meeting-heavy organizer days)
+        if organized.count >= 3 && spanDays >= 5 {
+            let cal = Calendar.current
+            let orgDays = Dictionary(grouping: organized) { cal.startOfDay(for: $0.startDate) }
+            if let busiestDay = orgDays.max(by: { $0.value.count < $1.value.count }),
+               busiestDay.value.count >= 3 {
+                let dateFmt = DateFormatter()
+                dateFmt.dateFormat = "E"
+                dateFmt.locale = Locale(identifier: "zh_CN")
+                lines.append("  📅 \(dateFmt.string(from: busiestDay.key))集中发起了 \(busiestDay.value.count) 个会议 — 可以分散到其他天减轻负担")
+            }
+        }
+
+        return lines
     }
 
     // MARK: - Back-to-Back & Location Change Detection

@@ -70,15 +70,21 @@ struct SummarySkill: ClawSkill {
                 if totalMinutes >= 60 { calLine += "，约 \(Self.formatDuration(totalMinutes)) 有安排" }
                 lines.append(calLine)
 
-                // Busiest day
+                // Busiest day (by total meeting duration, not just count)
                 if spanDays > 1 {
                     let dateFmt = DateFormatter()
                     dateFmt.dateFormat = "M月d日（E）"
                     dateFmt.locale = Locale(identifier: "zh_CN")
                     let grouped = Dictionary(grouping: timedEvents) { cal.startOfDay(for: $0.startDate) }
-                    if let busiestDay = grouped.max(by: { $0.value.count < $1.value.count }),
-                       busiestDay.value.count > 1 {
-                        lines.append("  📊 最忙：\(dateFmt.string(from: busiestDay.key))（\(busiestDay.value.count) 个会议）")
+                    let dayBusyness = grouped.map { (day: $0.key, count: $0.value.count, totalMin: $0.value.reduce(0.0) { $0 + $1.duration } / 60.0) }
+                    if let busiestDay = dayBusyness.max(by: { $0.totalMin < $1.totalMin }),
+                       busiestDay.count > 1 {
+                        var bLine = "  📊 最忙：\(dateFmt.string(from: busiestDay.day))（\(busiestDay.count) 个会议"
+                        if busiestDay.totalMin >= 60 {
+                            bLine += "，共 \(Self.formatDuration(busiestDay.totalMin))"
+                        }
+                        bLine += "）"
+                        lines.append(bLine)
                     }
                     // Free days
                     let daysWithEvents = grouped.count
@@ -2118,11 +2124,168 @@ struct SummarySkill: ClawSkill {
             }
         }
 
+        // --- Insight 10: Weekday vs Weekend lifestyle rhythm ---
+        // Compares activity, sleep, and recovery (HRV) between workdays and weekends.
+        // Almost every user has a distinct weekday/weekend split — surfacing it
+        // quantitatively is a core "mirror" insight they wouldn't notice on their own.
+        if withData.count >= 5 {
+            var wkdaySteps: [Double] = [], wkendSteps: [Double] = []
+            var wkdaySleep: [Double] = [], wkendSleep: [Double] = []
+            var wkdayHRV: [Double] = [], wkendHRV: [Double] = []
+            for h in withData where h.hasData {
+                let wd = cal.component(.weekday, from: h.date)
+                let isWeekend = (wd == 1 || wd == 7)
+                if isWeekend {
+                    if h.steps > 0 { wkendSteps.append(h.steps) }
+                    if h.sleepHours > 0 { wkendSleep.append(h.sleepHours) }
+                    if h.hrv > 0 { wkendHRV.append(h.hrv) }
+                } else {
+                    if h.steps > 0 { wkdaySteps.append(h.steps) }
+                    if h.sleepHours > 0 { wkdaySleep.append(h.sleepHours) }
+                    if h.hrv > 0 { wkdayHRV.append(h.hrv) }
+                }
+            }
+
+            if wkendSteps.count >= 1 && wkdaySteps.count >= 3 {
+                let wkendAvg = wkendSteps.reduce(0, +) / Double(wkendSteps.count)
+                let wkdayAvg = wkdaySteps.reduce(0, +) / Double(wkdaySteps.count)
+                let stepsPctDiff = wkdayAvg > 0 ? (wkendAvg - wkdayAvg) / wkdayAvg * 100 : 0
+
+                let hasSleep = wkendSleep.count >= 1 && wkdaySleep.count >= 2
+                let sleepDiff = hasSleep
+                    ? (wkendSleep.reduce(0, +) / Double(wkendSleep.count)) -
+                      (wkdaySleep.reduce(0, +) / Double(wkdaySleep.count))
+                    : 0.0
+
+                // HRV comparison: weekend recovery visible at the autonomic nervous system level
+                let hasHRV = wkendHRV.count >= 1 && wkdayHRV.count >= 2
+                let hrvDiff = hasHRV
+                    ? (wkendHRV.reduce(0, +) / Double(wkendHRV.count)) -
+                      (wkdayHRV.reduce(0, +) / Double(wkdayHRV.count))
+                    : 0.0
+
+                if stepsPctDiff <= -25 && hasSleep && sleepDiff >= 0.5 {
+                    var msg = "🛋↔️🔋 周末多睡 \(String(format: "%.1f", sleepDiff))h 但少走 \(Int(-stepsPctDiff))%"
+                    if hasHRV && hrvDiff >= 3 {
+                        msg += "，HRV 高 \(Int(hrvDiff)) ms —— 身体在周末充分恢复"
+                    } else {
+                        msg += " —— 身体在补觉恢复"
+                    }
+                    insights.append(msg)
+                } else if stepsPctDiff <= -25 && (!hasSleep || sleepDiff < 0.3) {
+                    insights.append("🛋↔️⚠️ 周末步数少 \(Int(-stepsPctDiff))%，但没多睡 —— 周末也动起来")
+                } else if stepsPctDiff >= 25 {
+                    insights.append("🏃↔️🎉 周末比工作日多走 \(Int(stepsPctDiff))% —— 你是周末运动达人")
+                } else if hasHRV && hrvDiff >= 5 {
+                    // Activity similar but HRV noticeably higher on weekends → nervous system recovery
+                    insights.append("📳↔️🛋 周末 HRV 高 \(Int(hrvDiff)) ms —— 即使活动量相近，工作压力可见地影响了恢复")
+                } else if hasSleep && sleepDiff >= 0.5 && abs(stepsPctDiff) < 25 {
+                    insights.append("😴↔️🛋 周末多睡 \(String(format: "%.1f", sleepDiff))h —— 工作日可能存在睡眠债务")
+                } else if hasSleep && sleepDiff <= -0.5 {
+                    insights.append("😴↔️⚡ 工作日比周末多睡 \(String(format: "%.1f", -sleepDiff))h —— 你的作息很自律！")
+                }
+            }
+        }
+
+        // --- Insight 8: Exercise → next-day HRV recovery ---
+        // The most direct measure of exercise's impact on recovery: does training
+        // improve or worsen autonomic nervous system balance the following day?
+        // This insight is uniquely personal — only possible with both workout and HRV data.
+        if withData.count >= 4 {
+            let sortedByDate = withData.sorted { $0.date < $1.date }
+            var exerciseDayNextHRV: [Double] = []
+            var restDayNextHRV: [Double] = []
+            var exerciseDayNextRHR: [Double] = []
+            var restDayNextRHR: [Double] = []
+
+            for i in 0..<(sortedByDate.count - 1) {
+                let today = sortedByDate[i]
+                let nextDay = sortedByDate[i + 1]
+                // Verify consecutive calendar days
+                guard let expectedNext = cal.date(byAdding: .day, value: 1, to: cal.startOfDay(for: today.date)),
+                      cal.isDate(nextDay.date, inSameDayAs: expectedNext)
+                else { continue }
+
+                let didExercise = today.exerciseMinutes >= 30
+                let wasRest = today.exerciseMinutes < 10
+
+                if nextDay.hrv > 0 {
+                    if didExercise { exerciseDayNextHRV.append(nextDay.hrv) }
+                    else if wasRest { restDayNextHRV.append(nextDay.hrv) }
+                }
+                if nextDay.restingHeartRate > 0 {
+                    if didExercise { exerciseDayNextRHR.append(nextDay.restingHeartRate) }
+                    else if wasRest { restDayNextRHR.append(nextDay.restingHeartRate) }
+                }
+            }
+
+            // HRV comparison (higher = better recovery)
+            if exerciseDayNextHRV.count >= 1 && restDayNextHRV.count >= 1 {
+                let exAvg = exerciseDayNextHRV.reduce(0, +) / Double(exerciseDayNextHRV.count)
+                let restAvg = restDayNextHRV.reduce(0, +) / Double(restDayNextHRV.count)
+                let diffMs = exAvg - restAvg
+                if diffMs >= 3 {
+                    insights.append("🏃↔️📳 运动后次日 HRV 高 \(Int(diffMs)) ms —— 身体从运动中获得了更好的恢复")
+                } else if diffMs <= -3 {
+                    insights.append("🏃↔️📳 运动后次日 HRV 低 \(Int(-diffMs)) ms —— 可能训练强度偏高，注意适当恢复")
+                }
+            }
+
+            // RHR comparison (lower = better recovery)
+            if exerciseDayNextRHR.count >= 1 && restDayNextRHR.count >= 1 {
+                let exAvg = exerciseDayNextRHR.reduce(0, +) / Double(exerciseDayNextRHR.count)
+                let restAvg = restDayNextRHR.reduce(0, +) / Double(restDayNextRHR.count)
+                let diffBPM = exAvg - restAvg
+                // Only surface RHR insight if HRV insight was NOT already added (avoid redundancy)
+                if exerciseDayNextHRV.count < 1 || restDayNextHRV.count < 1 {
+                    if diffBPM <= -2 {
+                        insights.append("🏃↔️❤️ 运动后次日静息心率低 \(Int(-diffBPM)) BPM —— 运动提升了心血管恢复效率")
+                    } else if diffBPM >= 3 {
+                        insights.append("🏃↔️❤️ 运动后次日静息心率高 \(Int(diffBPM)) BPM —— 身体可能需要更多恢复时间")
+                    }
+                }
+            }
+        }
+
+        // --- Insight 9: Late bedtime → next-day activity ---
+        // Sleeping late reliably predicts less activity the next day. Surface the
+        // personal cost of staying up late in concrete step-count numbers.
+        let withOnset = withData.filter { $0.sleepOnset != nil && $0.sleepHours > 0 }
+        if withOnset.count >= 3 {
+            var stepsByDay: [Date: Double] = [:]
+            for h in withData where h.steps > 0 {
+                stepsByDay[cal.startOfDay(for: h.date)] = h.steps
+            }
+            var lateNextSteps: [Double] = []
+            var earlyNextSteps: [Double] = []
+            for h in withOnset {
+                guard let onset = h.sleepOnset else { continue }
+                let onsetHour = cal.component(.hour, from: onset)
+                let isLate = onsetHour >= 0 && onsetHour < 4
+                let isEarly = onsetHour >= 20 && onsetHour <= 23
+                let nextDay = cal.date(byAdding: .day, value: 1, to: cal.startOfDay(for: h.date))!
+                if let nextSteps = stepsByDay[nextDay], nextSteps > 0 {
+                    if isLate { lateNextSteps.append(nextSteps) }
+                    else if isEarly { earlyNextSteps.append(nextSteps) }
+                }
+            }
+            if lateNextSteps.count >= 1 && earlyNextSteps.count >= 1 {
+                let lateAvg = lateNextSteps.reduce(0, +) / Double(lateNextSteps.count)
+                let earlyAvg = earlyNextSteps.reduce(0, +) / Double(earlyNextSteps.count)
+                if earlyAvg > 0 {
+                    let dropPct = (earlyAvg - lateAvg) / earlyAvg * 100
+                    if dropPct >= 15 {
+                        insights.append("🌙↔️👟 熬夜后次日步数少 \(Int(dropPct))% —— 早睡是最好的活力投资")
+                    }
+                }
+            }
+        }
+
         // Rank insights by putting the most interesting ones first.
         // Each insight has an implicit effect size encoded in its text;
         // longer insights with larger numbers tend to be more surprising.
-        // Show the top 3 insights to keep the summary concise.
-        return Array(insights.prefix(3))
+        // Show the top 5 insights to keep the summary concise while surfacing more patterns.
+        return Array(insights.prefix(5))
     }
 
     // MARK: - Next Week Suggestions
@@ -2326,7 +2489,39 @@ struct SummarySkill: ClawSkill {
             }
         }
 
-        // --- Insight 4: Most active weekday ---
+        // --- Insight 4: Exercise → next-day HRV recovery ---
+        // Does the user's exercise load improve or impair autonomic recovery the next day?
+        // Pairs each day's exercise with the following day's HRV/RHR to find the pattern.
+        if healthSummaries.count >= 4 {
+            let sortedForRecovery = healthSummaries.sorted { $0.date < $1.date }
+            var exNextHRV: [Double] = []
+            var restNextHRV: [Double] = []
+
+            for i in 0..<(sortedForRecovery.count - 1) {
+                let today = sortedForRecovery[i]
+                let nextDay = sortedForRecovery[i + 1]
+                guard let expectedNext = cal.date(byAdding: .day, value: 1, to: cal.startOfDay(for: today.date)),
+                      cal.isDate(nextDay.date, inSameDayAs: expectedNext),
+                      nextDay.hrv > 0
+                else { continue }
+
+                if today.exerciseMinutes >= 30 { exNextHRV.append(nextDay.hrv) }
+                else if today.exerciseMinutes < 10 { restNextHRV.append(nextDay.hrv) }
+            }
+
+            if exNextHRV.count >= 1 && restNextHRV.count >= 1 {
+                let exAvg = exNextHRV.reduce(0, +) / Double(exNextHRV.count)
+                let restAvg = restNextHRV.reduce(0, +) / Double(restNextHRV.count)
+                let diffMs = exAvg - restAvg
+                if diffMs >= 3 {
+                    insights.append("🏃↔️📳 运动后次日 HRV 高 \(Int(diffMs)) ms —— 运动正在改善你的恢复能力")
+                } else if diffMs <= -3 {
+                    insights.append("🏃↔️📳 运动后次日 HRV 低 \(Int(-diffMs)) ms —— 训练可能偏重，注意恢复节奏")
+                }
+            }
+        }
+
+        // --- Insight 5: Most active weekday ---
         if healthSummaries.count >= 5 {
             var weekdayScores: [Int: (steps: Double, count: Int)] = [:]
             for h in healthSummaries where h.steps > 0 {
@@ -2347,7 +2542,7 @@ struct SummarySkill: ClawSkill {
             }
         }
 
-        // --- Insight 5: Calendar load → sleep quality ---
+        // --- Insight 6: Calendar load → sleep quality ---
         // Heavy meeting days often cause worse sleep: stress and mental fatigue carry
         // over, leading to later bedtime or more fragmented sleep. This is a pattern
         // only a personal data assistant can surface.
@@ -2379,7 +2574,7 @@ struct SummarySkill: ClawSkill {
             }
         }
 
-        // --- Insight 6: Late bedtime → next-day activity ---
+        // --- Insight 7: Late bedtime → next-day activity ---
         // Sleeping late reliably predicts less activity the next day. By tracking
         // the user's own sleep onset → next-day steps pattern, we can show them
         // the personal cost of staying up late in concrete numbers.
@@ -2419,45 +2614,63 @@ struct SummarySkill: ClawSkill {
             }
         }
 
-        // --- Insight 7: Weekend recovery pattern ---
+        // --- Insight 8: Weekend recovery pattern ---
         // Do weekends actually restore you? Compare weekend vs weekday sleep,
-        // activity, and recovery to see if your rest days are truly restful.
+        // activity, and HRV recovery to see if your rest days are truly restful.
         if healthSummaries.count >= 5 {
-            var weekdayHealth: (steps: Double, sleep: Double, count: Int, sleepCount: Int) = (0, 0, 0, 0)
-            var weekendHealth: (steps: Double, sleep: Double, count: Int, sleepCount: Int) = (0, 0, 0, 0)
+            var wkdaySteps: [Double] = [], wkendSteps: [Double] = []
+            var wkdaySleep: [Double] = [], wkendSleep: [Double] = []
+            var wkdayHRV: [Double] = [], wkendHRV: [Double] = []
             for h in healthSummaries where h.hasData {
                 let wd = cal.component(.weekday, from: h.date)
                 let isWeekend = (wd == 1 || wd == 7)
                 if isWeekend {
-                    if h.steps > 0 { weekendHealth.steps += h.steps; weekendHealth.count += 1 }
-                    if h.sleepHours > 0 { weekendHealth.sleep += h.sleepHours; weekendHealth.sleepCount += 1 }
+                    if h.steps > 0 { wkendSteps.append(h.steps) }
+                    if h.sleepHours > 0 { wkendSleep.append(h.sleepHours) }
+                    if h.hrv > 0 { wkendHRV.append(h.hrv) }
                 } else {
-                    if h.steps > 0 { weekdayHealth.steps += h.steps; weekdayHealth.count += 1 }
-                    if h.sleepHours > 0 { weekdayHealth.sleep += h.sleepHours; weekdayHealth.sleepCount += 1 }
+                    if h.steps > 0 { wkdaySteps.append(h.steps) }
+                    if h.sleepHours > 0 { wkdaySleep.append(h.sleepHours) }
+                    if h.hrv > 0 { wkdayHRV.append(h.hrv) }
                 }
             }
             // Need data on both sides to compare
-            if weekendHealth.count >= 2 && weekdayHealth.count >= 3 {
-                let wkendAvgSteps = weekendHealth.steps / Double(weekendHealth.count)
-                let wkdayAvgSteps = weekdayHealth.steps / Double(weekdayHealth.count)
-                let stepsDiff = wkendAvgSteps - wkdayAvgSteps
-                let stepsPctDiff = wkdayAvgSteps > 0 ? stepsDiff / wkdayAvgSteps * 100 : 0
+            if wkendSteps.count >= 2 && wkdaySteps.count >= 3 {
+                let wkendAvgSteps = wkendSteps.reduce(0, +) / Double(wkendSteps.count)
+                let wkdayAvgSteps = wkdaySteps.reduce(0, +) / Double(wkdaySteps.count)
+                let stepsPctDiff = wkdayAvgSteps > 0 ? (wkendAvgSteps - wkdayAvgSteps) / wkdayAvgSteps * 100 : 0
 
-                // Also compare sleep if available
-                let hasSleepBoth = weekendHealth.sleepCount >= 1 && weekdayHealth.sleepCount >= 2
-                let wkendAvgSleep = hasSleepBoth ? weekendHealth.sleep / Double(weekendHealth.sleepCount) : 0
-                let wkdayAvgSleep = hasSleepBoth ? weekdayHealth.sleep / Double(weekdayHealth.sleepCount) : 0
-                let sleepDiff = wkendAvgSleep - wkdayAvgSleep
+                let hasSleep = wkendSleep.count >= 1 && wkdaySleep.count >= 2
+                let sleepDiff = hasSleep
+                    ? (wkendSleep.reduce(0, +) / Double(wkendSleep.count)) -
+                      (wkdaySleep.reduce(0, +) / Double(wkdaySleep.count))
+                    : 0.0
 
-                if stepsPctDiff <= -25 && hasSleepBoth && sleepDiff >= 0.5 {
-                    // Weekend: less active but more sleep — classic recovery pattern
-                    insights.append("🛋↔️🔋 周末多睡 \(String(format: "%.1f", sleepDiff))h 但少走 \(Int(-stepsPctDiff))% —— 身体在补觉恢复")
-                } else if stepsPctDiff <= -25 && (!hasSleepBoth || sleepDiff < 0.3) {
-                    // Weekend: less active without extra sleep — potential sedentary risk
-                    insights.append("🛋↔️⚠️ 周末步数比工作日少 \(Int(-stepsPctDiff))%，但没有多睡 —— 周末也动起来")
+                // HRV comparison: weekend recovery visible at the autonomic nervous system level
+                let hasHRV = wkendHRV.count >= 1 && wkdayHRV.count >= 2
+                let hrvDiff = hasHRV
+                    ? (wkendHRV.reduce(0, +) / Double(wkendHRV.count)) -
+                      (wkdayHRV.reduce(0, +) / Double(wkdayHRV.count))
+                    : 0.0
+
+                if stepsPctDiff <= -25 && hasSleep && sleepDiff >= 0.5 {
+                    var msg = "🛋↔️🔋 周末多睡 \(String(format: "%.1f", sleepDiff))h 但少走 \(Int(-stepsPctDiff))%"
+                    if hasHRV && hrvDiff >= 3 {
+                        msg += "，HRV 高 \(Int(hrvDiff)) ms —— 身体在周末充分恢复"
+                    } else {
+                        msg += " —— 身体在补觉恢复"
+                    }
+                    insights.append(msg)
+                } else if stepsPctDiff <= -25 && (!hasSleep || sleepDiff < 0.3) {
+                    insights.append("🛋↔️⚠️ 周末步数少 \(Int(-stepsPctDiff))%，但没多睡 —— 周末也动起来")
                 } else if stepsPctDiff >= 25 {
-                    // Weekend: more active — outdoor/exercise type
                     insights.append("🏃↔️🎉 周末比工作日多走 \(Int(stepsPctDiff))% —— 你是周末运动达人")
+                } else if hasHRV && hrvDiff >= 5 {
+                    insights.append("📳↔️🛋 周末 HRV 高 \(Int(hrvDiff)) ms —— 即使活动量相近，工作压力可见地影响了恢复")
+                } else if hasSleep && sleepDiff >= 0.5 && abs(stepsPctDiff) < 25 {
+                    insights.append("😴↔️🛋 周末多睡 \(String(format: "%.1f", sleepDiff))h —— 工作日可能存在睡眠债务")
+                } else if hasSleep && sleepDiff <= -0.5 {
+                    insights.append("😴↔️⚡ 工作日比周末多睡 \(String(format: "%.1f", -sleepDiff))h —— 你的作息很自律！")
                 }
             }
         }

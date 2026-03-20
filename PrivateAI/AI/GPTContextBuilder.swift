@@ -1927,21 +1927,41 @@ final class GPTContextBuilder {
                 lines.append(line)
             }
 
-            // Summary: how many done vs remaining, plus total meeting time
+            // Summary: how many done / ongoing / remaining, plus accurate remaining time.
+            // Previously omitted ongoing events from the count, so "已完成2项，还剩2项"
+            // hid a currently-running meeting. Also, "剩余约X分钟" included the FULL
+            // duration of ongoing events instead of just the remaining portion.
             let nonAllDay = todayEvents.filter { !$0.isAllDay }
             let doneCount = nonAllDay.filter { $0.endDate <= now }.count
-            let remainCount = nonAllDay.filter { $0.startDate > now }.count
+            let ongoingEvents = nonAllDay.filter { $0.startDate <= now && $0.endDate > now }
+            let ongoingCount = ongoingEvents.count
+            let upcomingEvents = nonAllDay.filter { $0.startDate > now }
+            let remainCount = upcomingEvents.count
             if nonAllDay.count >= 2 {
                 let todayTotalMins = nonAllDay.map { Int($0.duration / 60) }.reduce(0, +)
-                let doneMins = nonAllDay.filter { $0.endDate <= now }.map { Int($0.duration / 60) }.reduce(0, +)
-                let remainMins = todayTotalMins - doneMins
-                var summaryParts: [String] = ["已完成\(doneCount)项", "还剩\(remainCount)项"]
+                // Remaining time = remaining portion of ongoing events + full duration of upcoming.
+                // Old calculation used (total - done), which counted the FULL duration of
+                // ongoing events — e.g. a 60-min meeting that started 45 min ago would
+                // contribute 60 min to "remaining" instead of the actual 15 min left.
+                let ongoingRemainingMins = ongoingEvents
+                    .map { max(0, Int($0.endDate.timeIntervalSince(now) / 60)) }.reduce(0, +)
+                let upcomingMins = upcomingEvents
+                    .map { Int($0.duration / 60) }.reduce(0, +)
+                let remainMins = ongoingRemainingMins + upcomingMins
+                var summaryParts: [String] = ["已完成\(doneCount)项"]
+                if ongoingCount > 0 {
+                    // Surface ongoing events explicitly so GPT can say "你现在有一个会议正在进行"
+                    // instead of requiring manual scan of individual event "(进行中)" annotations.
+                    let ongoingTitles = ongoingEvents.prefix(2).map(\.title).joined(separator: "、")
+                    summaryParts.append("\(ongoingCount)项进行中（\(ongoingTitles)）")
+                }
+                summaryParts.append("还剩\(remainCount)项")
                 if todayTotalMins >= 60 {
                     let hrs = todayTotalMins / 60
                     let mins = todayTotalMins % 60
                     let timeStr = mins > 0 ? "\(hrs)小时\(mins)分钟" : "\(hrs)小时"
                     summaryParts.append("全天共\(timeStr)会议")
-                    if remainMins > 0 && doneMins > 0 {
+                    if remainMins > 0 && doneCount > 0 {
                         summaryParts.append("剩余约\(remainMins)分钟")
                     }
                 }

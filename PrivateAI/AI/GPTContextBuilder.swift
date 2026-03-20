@@ -564,7 +564,7 @@ final class GPTContextBuilder {
         // data sections without removing any data (safe fallback). This reduces
         // "over-referencing" where GPT cites irrelevant data in its response
         // (e.g. mentioning calendar events when user asked about step count).
-        let relevanceHint = buildRelevanceHint(query: userQuery)
+        let relevanceHint = buildRelevanceHint(query: userQuery, conversationHistory: conversationHistory)
         if !relevanceHint.isEmpty {
             parts.append(relevanceHint)
         }
@@ -590,7 +590,10 @@ final class GPTContextBuilder {
     /// Detects which data topics the user's query is about.
     /// Returns a set of relevant topics. If no specific topic matches or the
     /// query is a general/summary question, returns all topics (safe fallback).
-    private func detectQueryTopics(_ query: String) -> Set<QueryTopic> {
+    /// When `previousUserQuery` is provided and the current query looks like a
+    /// follow-up (short, uses context words like "那…呢"), inherits topics from
+    /// the previous query so the relevance hint stays focused.
+    private func detectQueryTopics(_ query: String, previousUserQuery: String? = nil) -> Set<QueryTopic> {
         let lower = query.lowercased()
         var topics: Set<QueryTopic> = []
 
@@ -670,8 +673,34 @@ final class GPTContextBuilder {
             topics.insert(.general)
         }
 
-        // If no specific topic detected or includes general, return all
+        // If no specific topic detected or includes general, return all —
+        // BUT first check if this looks like a follow-up query that should
+        // inherit topics from the previous exchange.
         if topics.isEmpty || topics.contains(.general) {
+            // Follow-up detection: short queries with context-dependent words
+            // like "那…呢", "详细说说", "也看看", "继续" strongly suggest the user
+            // is continuing the same topic from the previous exchange. Without
+            // topic inheritance, the relevance hint becomes empty and GPT loses
+            // its focus guidance for these very common interaction patterns.
+            if topics.isEmpty, let prevQuery = previousUserQuery, !prevQuery.isEmpty {
+                let followUpPatterns = [
+                    "呢", "那", "也", "再", "还", "详细", "具体", "多说", "展开",
+                    "继续", "接着", "然后", "对比", "比较", "怎么样", "如何",
+                    "更多", "补充", "分析", "解释", "为什么",
+                    "what about", "more", "detail", "compare", "continue", "why",
+                    "how about", "and", "also", "tell me more"
+                ]
+                let isLikelyFollowUp = lower.count <= 20
+                    || followUpPatterns.contains(where: { lower.contains($0) })
+
+                if isLikelyFollowUp {
+                    let inherited = detectQueryTopics(prevQuery) // no previousUserQuery → won't recurse
+                    // Only inherit if the previous query had specific topics (not general)
+                    if inherited != Set(QueryTopic.allCases) && !inherited.isEmpty {
+                        return inherited
+                    }
+                }
+            }
             return Set(QueryTopic.allCases)
         }
 
@@ -681,8 +710,16 @@ final class GPTContextBuilder {
     /// Builds a hint section that tells GPT which data sections are most relevant
     /// to the user's question. This helps GPT produce more focused answers by
     /// prioritizing the right data instead of over-referencing everything.
-    private func buildRelevanceHint(query: String) -> String {
-        let topics = detectQueryTopics(query)
+    /// Uses conversation history to detect follow-up queries and inherit topics.
+    private func buildRelevanceHint(query: String, conversationHistory: [ChatMessage] = []) -> String {
+        // Extract the previous user query for follow-up topic inheritance.
+        // The most recent user message in history (excluding the current query)
+        // is the one the user might be following up on.
+        let previousUserQuery = conversationHistory
+            .filter { $0.isUser && $0.content != query }
+            .last?.content
+
+        let topics = detectQueryTopics(query, previousUserQuery: previousUserQuery)
 
         // If all topics are relevant (general query), no need for a hint
         if topics == Set(QueryTopic.allCases) { return "" }

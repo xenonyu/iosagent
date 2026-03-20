@@ -51,12 +51,58 @@ final class CalendarService: ObservableObject {
                 location: $0.location ?? "",
                 notes: $0.notes ?? "",
                 isRecurring: $0.hasRecurrenceRules,
+                recurrenceDescription: Self.describeRecurrence($0),
                 attendeeCount: $0.attendees?.count ?? 0,
                 isOrganizer: $0.organizer?.isCurrentUser ?? false,
                 hasAttendees: $0.attendees != nil && !($0.attendees?.isEmpty ?? true)
             )
         }
         .sorted { $0.startDate < $1.startDate }
+    }
+
+    /// Extracts a human-readable recurrence description from an EKEvent's recurrence rules.
+    /// Examples: "每周", "每天", "每两周 周一、周三", "每月 第1个周一", "每年"
+    private static func describeRecurrence(_ event: EKEvent) -> String {
+        guard let rules = event.recurrenceRules, let rule = rules.first else { return "" }
+
+        let interval = rule.interval
+        let weekdayNames = ["", "周日", "周一", "周二", "周三", "周四", "周五", "周六"]
+
+        switch rule.frequency {
+        case .daily:
+            return interval == 1 ? "每天" : "每\(interval)天"
+        case .weekly:
+            let prefix = interval == 1 ? "每周" : "每\(interval)周"
+            if let days = rule.daysOfTheWeek, !days.isEmpty {
+                let dayNames = days.compactMap { d -> String? in
+                    let idx = d.dayOfTheWeek.rawValue
+                    guard idx >= 1 && idx <= 7 else { return nil }
+                    return weekdayNames[idx]
+                }
+                if !dayNames.isEmpty {
+                    return "\(prefix) \(dayNames.joined(separator: "、"))"
+                }
+            }
+            return prefix
+        case .monthly:
+            let prefix = interval == 1 ? "每月" : "每\(interval)月"
+            if let days = rule.daysOfTheWeek, let first = days.first {
+                let idx = first.dayOfTheWeek.rawValue
+                let dayName = (idx >= 1 && idx <= 7) ? weekdayNames[idx] : ""
+                let weekNum = first.weekNumber
+                if weekNum != 0 && !dayName.isEmpty {
+                    return "\(prefix) 第\(weekNum)个\(dayName)"
+                }
+            }
+            if let monthDays = rule.daysOfTheMonth, let first = monthDays.first {
+                return "\(prefix) \(first)日"
+            }
+            return prefix
+        case .yearly:
+            return interval == 1 ? "每年" : "每\(interval)年"
+        @unknown default:
+            return "重复"
+        }
     }
 
     /// Returns today's upcoming events.
@@ -80,6 +126,9 @@ struct CalendarEventItem: Identifiable {
     let location: String
     let notes: String
     let isRecurring: Bool
+    /// Human-readable recurrence description (e.g. "每周", "每天", "每两周 周一、周三").
+    /// Empty string for non-recurring events.
+    let recurrenceDescription: String
     /// Number of attendees (from EKEvent.attendees). 0 if no attendee data.
     let attendeeCount: Int
     /// Whether the current user is the organizer of this event.

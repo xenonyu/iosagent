@@ -354,6 +354,7 @@ final class GPTContextBuilder {
         - 日历日程中 [日历名] 标签表示事件来源（如 [Work]、[个人]、[家庭]），用户问「工作会议」时参考此标签区分。日程的「备注」字段包含议程或描述，用户问「那个会议聊什么」时可引用。日历数据已标注星期几和相对日期（昨天/前天/明天/后天），用户问「周三有什么安排」时直接匹配对应日期即可。
         - 今天的日程带有时间状态标注（已结束/进行中），回答日程问题时优先告诉用户接下来的安排，而不是罗列全天。例如下午3点问「今天有什么安排」，重点说还有哪些未完成的，已结束的可简要带过。
         - 日历数据中包含预计算的「空闲时段」（今天剩余空闲 / 明天空闲时段）。用户问「有空吗」「什么时候能约」「忙不忙」时，直接引用这些空闲时段回答，不需要自己计算事件间隔。空闲时段仅覆盖8:00–22:00的活跃时间。
+        - 日程中带有 🔄 标记的是重复日程（如每周例会、每天站会），「固定日程」汇总列出了所有重复事件及其频率。用户问「这个会每周都有吗」「有哪些固定会议」「下周还有这个会吗」时，直接引用重复频率回答。注意：重复日程的未来实例已包含在未来日程中，无需额外推测。
         - 对话历史中的内容是之前的对话，注意用户可能会用「那…呢」「昨天的呢」「详细说说」等方式追问。如果用户的问题很短且含指代词（如「那个」「它」「上面说的」），结合对话历史推断用户指的是什么。
 
         回复格式：
@@ -659,6 +660,8 @@ final class GPTContextBuilder {
             // Appointment & work-related terms
             "约", "预约", "面试", "上班", "下班", "提醒", "截止", "deadline",
             "见面", "聚餐", "聚会", "约会",
+            // Recurring event queries — "这个会每周都有吗？" "有哪些固定会议？"
+            "重复", "固定", "例会", "周会", "站会", "recurring",
             // Free time / availability queries — map to calendar for free slot analysis
             "有空", "空闲", "有时间", "忙不忙", "忙吗", "free", "available", "busy",
             "schedule", "calendar", "meeting", "event", "appointment", "interview"
@@ -1858,6 +1861,24 @@ final class GPTContextBuilder {
             lines.append("日历来源：\(calendarNames.sorted().joined(separator: "、"))")
         }
 
+        // Recurring event summary — helps GPT answer "有哪些固定会议" and
+        // "这个会议是每周都有的吗". Group by title to deduplicate instances of
+        // the same recurring event across different days.
+        let recurringEvents = allEvents.filter { !$0.recurrenceDescription.isEmpty }
+        if !recurringEvents.isEmpty {
+            var recurringByTitle: [String: String] = [:]  // title → recurrenceDescription
+            for e in recurringEvents {
+                if recurringByTitle[e.title] == nil {
+                    recurringByTitle[e.title] = e.recurrenceDescription
+                }
+            }
+            let recurringList = recurringByTitle
+                .sorted { $0.key < $1.key }
+                .prefix(8)
+                .map { "🔄 \($0.key)（\($0.value)）" }
+            lines.append("固定日程：\(recurringList.joined(separator: "、"))")
+        }
+
         // Past events grouped by day — enables "what did I do yesterday?" queries
         if !past.isEmpty {
             // Group by day
@@ -1929,6 +1950,7 @@ final class GPTContextBuilder {
                         let timeStr = e.isAllDay ? "全天" : "\(timeFmt.string(from: e.startDate))–\(timeFmt.string(from: e.endDate))"
                         var desc = "\(timeStr) \(e.title)"
                         if !e.calendar.isEmpty { desc += " [\(e.calendar)]" }
+                        if !e.recurrenceDescription.isEmpty { desc += " 🔄\(e.recurrenceDescription)" }
                         if !e.location.isEmpty { desc += "（\(e.location)）" }
                         if let label = e.attendeeLabel { desc += " \(label)" }
                         let trimmedNotes = e.notes.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1951,6 +1973,7 @@ final class GPTContextBuilder {
                         let timePrefix = e.isAllDay ? "全天" : "\(timeFmt.string(from: e.startDate))–\(timeFmt.string(from: e.endDate))"
                         var entry = "\(timePrefix) \(e.title)"
                         if !e.calendar.isEmpty { entry += "[\(e.calendar)]" }
+                        if !e.recurrenceDescription.isEmpty { entry += "🔄" }
                         return entry
                     }
                     // Calculate total meeting time for the day so GPT can answer
@@ -1998,6 +2021,7 @@ final class GPTContextBuilder {
 
                 var line = "  \(e.timeDisplay) \(e.title)\(status)"
                 if !e.calendar.isEmpty { line += " [\(e.calendar)]" }
+                if !e.recurrenceDescription.isEmpty { line += " 🔄\(e.recurrenceDescription)" }
                 if !e.location.isEmpty { line += "（\(e.location)）" }
                 if let label = e.attendeeLabel { line += " \(label)" }
                 // Include truncated notes for meeting context (agenda, description)
@@ -2138,6 +2162,7 @@ final class GPTContextBuilder {
                         let timeStr = e.isAllDay ? "全天" : "\(timeFmt.string(from: e.startDate))–\(timeFmt.string(from: e.endDate))"
                         var desc = "\(timeStr) \(e.title)"
                         if !e.calendar.isEmpty { desc += " [\(e.calendar)]" }
+                        if !e.recurrenceDescription.isEmpty { desc += " 🔄\(e.recurrenceDescription)" }
                         if !e.location.isEmpty { desc += "（\(e.location)）" }
                         if let label = e.attendeeLabel { desc += " \(label)" }
                         let trimmedNotes = e.notes.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2189,6 +2214,7 @@ final class GPTContextBuilder {
                         let timePrefix = e.isAllDay ? "全天" : "\(timeFmt.string(from: e.startDate))–\(timeFmt.string(from: e.endDate))"
                         var entry = "\(timePrefix) \(e.title)"
                         if !e.calendar.isEmpty { entry += "[\(e.calendar)]" }
+                        if !e.recurrenceDescription.isEmpty { entry += "🔄" }
                         return entry
                     }
                     let dayMeetingMins = dayEvents.filter { !$0.isAllDay }

@@ -272,10 +272,14 @@ final class GPTContextBuilder {
         let futureEvents = upcoming.filter { !cal.isDateInToday($0.startDate) }.prefix(10)
         if !futureEvents.isEmpty {
             lines.append("近期：")
-            let df = DateFormatter(); df.dateFormat = "M月d日 HH:mm"
+            let df = DateFormatter(); df.dateFormat = "M月d日"
+            let timeFmt = DateFormatter(); timeFmt.dateFormat = "HH:mm"
             for e in futureEvents {
-                var line = "  \(df.string(from: e.startDate)) \(e.title)"
+                let dateStr = df.string(from: e.startDate)
+                let timeStr = e.isAllDay ? "全天" : "\(timeFmt.string(from: e.startDate))–\(timeFmt.string(from: e.endDate))"
+                var line = "  \(dateStr) \(timeStr) \(e.title)"
                 if !e.location.isEmpty { line += "（\(e.location)）" }
+                if let label = e.attendeeLabel { line += " \(label)" }
                 lines.append(line)
             }
         }

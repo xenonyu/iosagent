@@ -814,6 +814,7 @@ final class GPTContextBuilder {
         weekdayFmt.dateFormat = "EEEE"
 
         var hints: [String] = []
+        let hourOfDay = cal.component(.hour, from: now)
 
         // --- Single-day references ---
 
@@ -822,6 +823,38 @@ final class GPTContextBuilder {
         let threeDaysAgo = cal.date(byAdding: .day, value: -3, to: cal.startOfDay(for: now))!
         let tomorrowDate = cal.date(byAdding: .day, value: 1, to: cal.startOfDay(for: now))!
         let dayAfterTomorrow = cal.date(byAdding: .day, value: 2, to: cal.startOfDay(for: now))!
+
+        // "今天" / "today" — seems obvious, but critical at late-night hours (0-4am)
+        // when "today" in the user's mind almost always means "the day that just ended"
+        // (calendar yesterday). Without an explicit hint, GPT sees "[今日健康数据]" showing
+        // zeros and answers "0步" instead of citing yesterday's real data. Also, during
+        // normal hours the hint reinforces that today's data is partial.
+        let todayWords = ["今天", "今日", "today"]
+        // Avoid triggering on "今天晚上" (handled separately below as "tonight")
+        let hasTodayWord = todayWords.contains(where: { lower.contains($0) })
+        let hasTonightOverride = ["今天晚上", "今晚", "tonight"].contains(where: { lower.contains($0) })
+        if hasTodayWord && !hasTonightOverride {
+            if hourOfDay < 5 {
+                hints.append("「今天」→ ⚠️ 现在是凌晨\(hourOfDay)点，用户说「今天」几乎一定指刚过去的那一天（日历上的「昨天」\(dateFmt.string(from: yesterdayDate))）。请回答「昨天」行的数据，不要引用日历「今天」的0值数据。")
+            } else if hourOfDay < 12 {
+                hints.append("「今天」= \(dateFmt.string(from: now))（\(weekdayFmt.string(from: now))）→ 趋势表中标记为「今天」的行。注意：今天数据截至上午\(hourOfDay)点，还在持续积累中。")
+            } else {
+                hints.append("「今天」= \(dateFmt.string(from: now))（\(weekdayFmt.string(from: now))）→ 趋势表中标记为「今天」的行")
+            }
+        }
+
+        // "今晚" / "tonight" — never previously handled. Context-dependent:
+        //   - During daytime/evening: tonight = today's evening, check today's remaining calendar
+        //   - Late night (0-4am): "tonight" = the night the user is currently in, which started
+        //     "yesterday evening". Sleep data (if any) would be in today's row (wake-up attribution).
+        let tonightWords = ["今晚", "今天晚上", "今夜", "tonight"]
+        if tonightWords.contains(where: { lower.contains($0) }) {
+            if hourOfDay < 5 {
+                hints.append("「今晚」→ 现在是凌晨\(hourOfDay)点，用户说「今晚」指的是当前正在经历的这个夜晚（从\(dateFmt.string(from: yesterdayDate))晚上开始）。如果问睡眠相关，这段睡眠醒来后会归属到日历今天（\(dateFmt.string(from: now))）的睡眠行。如果问日程相关，指的是\(dateFmt.string(from: yesterdayDate))晚上的安排。")
+            } else {
+                hints.append("「今晚」= \(dateFmt.string(from: now))晚上 → 查看今天的日历日程中晚间时段（18:00之后）的安排")
+            }
+        }
 
         // "昨天" / "yesterday"
         let yesterdayWords = ["昨天", "昨日", "yesterday"]

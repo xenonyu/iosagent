@@ -330,15 +330,29 @@ final class GPTContextBuilder {
             }
             let historyToShow = cleaned.suffix(6)
             if !historyToShow.isEmpty {
+                let histTimeFmt = DateFormatter(); histTimeFmt.dateFormat = "HH:mm"
+                let histDateFmt = DateFormatter(); histDateFmt.dateFormat = "M月d日 HH:mm"
+                let histCal = Calendar.current
                 let historyLines = historyToShow.map { msg in
-                    let prefix = msg.isUser ? "用户：" : "助理："
+                    let prefix = msg.isUser ? "用户" : "助理"
                     let content = msg.content
                     // Truncate long assistant replies to save tokens, but keep enough
                     // context for meaningful follow-up conversations (300 chars).
                     // User messages are kept in full (usually short).
                     let limit = msg.isUser ? 200 : 300
                     let truncated = content.count > limit ? String(content.prefix(limit)) + "…" : content
-                    return prefix + truncated
+                    // Include timestamp so GPT can reason about temporal references
+                    // like "刚才说的" or "今天早上聊的". Same-day messages show HH:mm,
+                    // older messages show full date to distinguish cross-day context.
+                    let timeLabel: String
+                    if histCal.isDateInToday(msg.timestamp) {
+                        timeLabel = histTimeFmt.string(from: msg.timestamp)
+                    } else if histCal.isDateInYesterday(msg.timestamp) {
+                        timeLabel = "昨天\(histTimeFmt.string(from: msg.timestamp))"
+                    } else {
+                        timeLabel = histDateFmt.string(from: msg.timestamp)
+                    }
+                    return "[\(timeLabel)] \(prefix)：\(truncated)"
                 }
                 parts.append("[对话历史（用于理解上下文，回答时参考最近的话题）]\n" + historyLines.joined(separator: "\n"))
             }

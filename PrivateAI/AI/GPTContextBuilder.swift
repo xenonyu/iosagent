@@ -204,15 +204,25 @@ final class GPTContextBuilder {
         }
 
         // CONVERSATION HISTORY (truncated to save tokens)
+        // Note: ChatViewModel adds the current user message to conversationHistory
+        // before calling buildPrompt, so we must strip it to avoid duplicating the
+        // query that already appears in [当前问题].
         if !conversationHistory.isEmpty {
-            let historyLines = conversationHistory.suffix(6).map { msg in
-                let prefix = msg.isUser ? "用户：" : "助理："
-                let content = msg.content
-                // Truncate long assistant replies to save tokens
-                let truncated = content.count > 150 ? String(content.prefix(150)) + "…" : content
-                return prefix + truncated
+            var recentHistory = Array(conversationHistory.suffix(7)) // grab one extra in case we drop one
+            if let last = recentHistory.last, last.isUser, last.content == userQuery {
+                recentHistory.removeLast()
             }
-            parts.append("[对话历史]\n" + historyLines.joined(separator: "\n"))
+            let historyToShow = recentHistory.suffix(6)
+            if !historyToShow.isEmpty {
+                let historyLines = historyToShow.map { msg in
+                    let prefix = msg.isUser ? "用户：" : "助理："
+                    let content = msg.content
+                    // Truncate long assistant replies to save tokens
+                    let truncated = content.count > 150 ? String(content.prefix(150)) + "…" : content
+                    return prefix + truncated
+                }
+                parts.append("[对话历史]\n" + historyLines.joined(separator: "\n"))
+            }
         }
 
         // CURRENT QUESTION
@@ -278,7 +288,9 @@ final class GPTContextBuilder {
         let fmt = DateFormatter(); fmt.dateFormat = "M/d"
         let cal = Calendar.current
         var lines = ["[近7天健康趋势]", "日期  | 步数  | 运动(分) | 睡眠(h) | 心率(bpm)"]
-        for s in summaries.prefix(7) {
+        // Show oldest→newest so GPT can naturally read the trend direction
+        let chronological = Array(summaries.prefix(7).reversed())
+        for s in chronological {
             let dateLabel = cal.isDateInToday(s.date) ? "\(fmt.string(from: s.date))(今天)" : fmt.string(from: s.date)
             let steps = s.steps > 0 ? "\(Int(s.steps))" : "-"
             let ex = s.exerciseMinutes > 0 ? "\(Int(s.exerciseMinutes))" : "-"

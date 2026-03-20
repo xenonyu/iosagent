@@ -322,6 +322,7 @@ final class GPTContextBuilder {
         - ⚠️ 卡路里说明：「活动kcal」是运动/活动消耗，「总消耗kcal」= 活动 + 基础代谢（身体维持生命所需能量）。用户问「今天消耗了多少卡路里」时，应回答总消耗值。基础代谢约占总消耗60-75%，这是正常的。
         - 涉及多天数据时，可引用「近7天趋势」进行对比分析，指出趋势变化。
         - 周统计中会标注「X天中Y天有运动」，回答时要如实反映活跃天数，不要把少数几天的数据当作每天都达到了。例如7天中2天运动共60分钟，应该说「这周运动了2天，共60分钟」，而不是「日均运动30分钟」。
+        - ⚠️ 跨周对比时，务必使用「日均」数据进行公平比较，因为本周天数可能不足7天。例如本周4天日均消耗2100kcal vs 上周7天日均2000kcal → 说明本周消耗更高，而不是比较总量（8400 vs 14000）得出本周更少的错误结论。
         - 不要重复罗列所有数据，只回答用户问到的内容。
         - 如果用户提到家人（如"我妈"、"我爸"等），参考下方[用户信息]中的家庭成员数据来回答。
         - 日历日程中 [日历名] 标签表示事件来源（如 [Work]、[个人]、[家庭]），用户问「工作会议」时参考此标签区分。日程的「备注」字段包含议程或描述，用户问「那个会议聊什么」时可引用。日历数据已标注星期几和相对日期（昨天/前天/明天/后天），用户问「周三有什么安排」时直接匹配对应日期即可。
@@ -951,7 +952,8 @@ final class GPTContextBuilder {
         let exDays = days.filter { $0.exerciseMinutes > 0 }
         if !exDays.isEmpty {
             let totalMin = Int(exDays.map(\.exerciseMinutes).reduce(0, +))
-            items.append("\(exDays.count)天运动共\(totalMin)分钟")
+            let avgMin = Int(Double(totalMin) / Double(days.count))
+            items.append("\(exDays.count)/\(days.count)天运动共\(totalMin)分钟（日均\(avgMin)分钟）")
         } else {
             items.append("无运动记录")
         }
@@ -962,14 +964,20 @@ final class GPTContextBuilder {
             items.append("均睡\(String(format: "%.1f", avg))h")
         }
 
+        // Show both total and daily average for calories so GPT can fairly compare
+        // weeks of different lengths. Without daily average, GPT sees "本周(4天)总消耗
+        // 8500kcal" vs "上周(7天)总消耗14000kcal" and wrongly concludes "this week less
+        // active" — but daily avg is 2125 vs 2000, meaning this week is actually better.
         let calDays = days.filter { $0.activeCalories > 0 || $0.basalCalories > 0 }
         if !calDays.isEmpty {
             let activeTotal = Int(calDays.map(\.activeCalories).reduce(0, +))
             let totalAll = Int(calDays.map { $0.activeCalories + $0.basalCalories }.reduce(0, +))
             if totalAll > activeTotal {
-                items.append("总消耗\(totalAll)kcal")
+                let dailyAvg = Int(Double(totalAll) / Double(days.count))
+                items.append("总消耗\(totalAll)kcal（日均\(dailyAvg)kcal）")
             } else {
-                items.append("活动消耗\(activeTotal)kcal")
+                let dailyAvg = Int(Double(activeTotal) / Double(days.count))
+                items.append("活动消耗\(activeTotal)kcal（日均\(dailyAvg)kcal）")
             }
         }
 

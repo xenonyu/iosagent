@@ -282,6 +282,10 @@ final class GPTContextBuilder {
         2. 基于已有数据给出部分回答（如「近7天内…」）
         3. 不要将7天数据外推为更长时间段的结论
         ⚠️ 「这周」和「近7天」是不同概念。用户说「这周」指本周一至今天，说「上周」指上周一至上周日。回答时务必按上方日期范围筛选对应的数据行，不要把上周的数据算入这周，也不要把这周的数据算入上周。
+        ⚠️ 睡眠日期归属规则（重要）：睡眠数据按「醒来当天」归属。例如3月19日晚23:00入睡→3月20日早7:00起床，这笔睡眠记录在3月20日（今天）的行中，而不是3月19日。因此：
+        - 用户问「昨晚睡了多久」「昨天晚上睡得怎么样」→ 查看「今天」行的睡眠数据（因为昨晚的睡眠醒来时已是今天）
+        - 用户问「前天晚上」→ 查看「昨天」行的睡眠数据
+        - 趋势表和睡眠分析中已标注每行对应的实际睡眠夜晚（如「3/19晚→3/20」），请据此匹配用户提到的时间。
 
         能力边界：
         - 你只能读取数据，不能创建、修改或保存任何记录。如果用户想记录事情，告诉他可以在 App 的生活记录页面手动添加。
@@ -692,7 +696,7 @@ final class GPTContextBuilder {
         let fmt = DateFormatter(); fmt.dateFormat = "M/d"
         let weekdayFmt = DateFormatter(); weekdayFmt.locale = Locale(identifier: "zh_CN"); weekdayFmt.dateFormat = "EEE"
         let cal = Calendar.current
-        var lines = ["[近7天健康趋势]", "日期  | 步数  | 运动(分) | 卡路里(kcal) | 睡眠(h) | 心率(bpm)"]
+        var lines = ["[近7天健康趋势]", "日期  | 步数  | 运动(分) | 卡路里(kcal) | 睡眠(h)（对应哪晚） | 心率(bpm)"]
         // Show oldest→newest so GPT can naturally read the trend direction
         let chronological = Array(summaries.prefix(7).reversed())
         for s in chronological {
@@ -709,7 +713,17 @@ final class GPTContextBuilder {
             let steps = s.steps > 0 ? "\(Int(s.steps))" : "-"
             let ex = s.exerciseMinutes > 0 ? "\(Int(s.exerciseMinutes))" : "-"
             let cal_ = s.activeCalories > 0 ? "\(Int(s.activeCalories))" : "-"
-            let sl = s.sleepHours > 0 ? String(format: "%.1f", s.sleepHours) : "-"
+            // Annotate sleep with the actual night it represents (sleep is attributed to
+            // wake-up day, so "today" row = last night's sleep). This prevents GPT from
+            // giving wrong data when user asks "昨晚睡了多久" and GPT looks at "yesterday" row.
+            let sl: String
+            if s.sleepHours > 0 {
+                let prevDay = cal.date(byAdding: .day, value: -1, to: s.date) ?? s.date
+                let nightLabel = "\(fmt.string(from: prevDay))晚→\(fmt.string(from: s.date))"
+                sl = "\(String(format: "%.1f", s.sleepHours))(\(nightLabel))"
+            } else {
+                sl = "-"
+            }
             let hr = s.heartRate > 0 ? "\(Int(s.heartRate))" : "-"
             lines.append("\(dateLabel)  | \(steps)  | \(ex)  | \(cal_)  | \(sl)  | \(hr)")
         }
@@ -1232,15 +1246,19 @@ final class GPTContextBuilder {
         let chronological = Array(daysWithSleep.reversed())
 
         for s in chronological {
+            // Label with actual sleep night (e.g. "3/19晚→3/20") since sleep is attributed
+            // to the wake-up day. This matches the SYSTEM prompt's sleep date rule.
+            let prevDay = cal.date(byAdding: .day, value: -1, to: s.date) ?? s.date
+            let nightLabel = "\(dateFmt.string(from: prevDay))晚→\(dateFmt.string(from: s.date))"
             let dayName: String
             if cal.isDateInToday(s.date) {
-                dayName = "今天"
+                dayName = "昨晚"
             } else if cal.isDateInYesterday(s.date) {
-                dayName = "昨天"
+                dayName = "前晚"
             } else {
-                dayName = weekdayFmt.string(from: s.date)
+                dayName = weekdayFmt.string(from: prevDay) + "晚"
             }
-            let dateLabel = "\(dateFmt.string(from: s.date))(\(dayName))"
+            let dateLabel = "\(nightLabel)(\(dayName))"
 
             var parts: [String] = []
             parts.append("总\(String(format: "%.1f", s.sleepHours))h")

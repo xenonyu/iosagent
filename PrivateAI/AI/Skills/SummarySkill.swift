@@ -1714,6 +1714,50 @@ struct SummarySkill: ClawSkill {
             }
         }
 
+        // --- Insight 6: Sleep quality → next day's activity level ---
+        // Pairs each night's sleep with the following day's step count
+        // to discover if the user performs better after good sleep.
+        if sleepDays.count >= 4 {
+            let sortedByDate = withData.sorted { $0.date < $1.date }
+            var goodSleepNextSteps: [Double] = []
+            var poorSleepNextSteps: [Double] = []
+
+            for i in 0..<(sortedByDate.count - 1) {
+                let tonight = sortedByDate[i]
+                let nextDay = sortedByDate[i + 1]
+                // Verify they are consecutive calendar days
+                guard tonight.sleepHours > 0,
+                      nextDay.steps > 0,
+                      let expectedNext = cal.date(byAdding: .day, value: 1, to: cal.startOfDay(for: tonight.date)),
+                      cal.isDate(nextDay.date, inSameDayAs: expectedNext)
+                else { continue }
+
+                if tonight.sleepHours >= 7.0 {
+                    goodSleepNextSteps.append(nextDay.steps)
+                } else if tonight.sleepHours < 6.0 {
+                    poorSleepNextSteps.append(nextDay.steps)
+                }
+            }
+
+            if goodSleepNextSteps.count >= 1 && poorSleepNextSteps.count >= 1 {
+                let goodAvg = goodSleepNextSteps.reduce(0, +) / Double(goodSleepNextSteps.count)
+                let poorAvg = poorSleepNextSteps.reduce(0, +) / Double(poorSleepNextSteps.count)
+                if poorAvg > 0 {
+                    let pctDiff = (goodAvg - poorAvg) / poorAvg * 100
+                    if pctDiff >= 15 {
+                        let stepDiff = Int(goodAvg - poorAvg)
+                        insights.append("😴↔️👟 睡满 7h 的第二天平均多走 \(stepDiff.formatted()) 步（+\(Int(pctDiff))%）—— 好睡眠是好状态的基础")
+                    } else if pctDiff <= -15 {
+                        insights.append("😴↔️👟 睡不够 6h 后第二天反而步数更高 —— 可能是通勤奔波所致，注意身体透支")
+                    }
+                }
+            }
+        }
+
+        // Rank insights by putting the most interesting ones first.
+        // Each insight has an implicit effect size encoded in its text;
+        // longer insights with larger numbers tend to be more surprising.
+        // Show the top 3 insights to keep the summary concise.
         return Array(insights.prefix(3))
     }
 

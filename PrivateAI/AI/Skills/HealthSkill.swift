@@ -186,6 +186,11 @@ struct HealthSkill: ClawSkill {
                 lines.append(contentsOf: workoutBreakdown(allWorkouts))
             }
 
+            // Workout schedule pattern: time-of-day preference + rest day rhythm
+            if allWorkouts.count >= 3 {
+                lines.append(contentsOf: workoutSchedulePattern(allWorkouts, daysWithData: daysWithData))
+            }
+
             // Best day highlight
             if daysWithData.count > 1 {
                 if let bestDay = daysWithData.max(by: { $0.steps < $1.steps }), bestDay.steps > 0 {
@@ -789,6 +794,82 @@ struct HealthSkill: ClawSkill {
         return dist
     }
 
+    /// Analyzes workout schedule patterns for multi-day exercise responses:
+    /// 1. Preferred time-of-day (morning exerciser vs evening exerciser?)
+    /// 2. Rest-day rhythm and consistency (every other day? irregular?)
+    /// These personal exercise habit insights help users understand their own patterns.
+    private func workoutSchedulePattern(_ workouts: [WorkoutRecord], daysWithData: [HealthSummary]) -> [String] {
+        var lines: [String] = []
+        let cal = Calendar.current
+
+        // --- Time-of-day distribution ---
+        let timeDist = workoutTimeDistribution(workouts)
+        let totalSessions = workouts.count
+
+        if timeDist.count >= 2 {
+            let sorted = timeDist.sorted { $0.value > $1.value }
+            if let top = sorted.first {
+                let topPct = top.value * 100 / totalSessions
+                if topPct >= 50 {
+                    var timeLine = "\n⏰ 你习惯在\(top.key)运动（\(top.value)次，\(topPct)%）"
+                    // Mention secondary preference if notable
+                    if sorted.count >= 2, sorted[1].value >= 2 {
+                        timeLine += "，偶尔\(sorted[1].key)"
+                    }
+                    lines.append(timeLine)
+                } else {
+                    // No dominant period — spread across the day
+                    let desc = sorted.prefix(3).map { "\($0.key)\($0.value)次" }.joined(separator: " · ")
+                    lines.append("\n⏰ 运动时间较分散：\(desc)")
+                }
+            }
+        } else if let only = timeDist.first, totalSessions >= 2 {
+            lines.append("\n⏰ 运动都在\(only.key)，你是\(only.key)运动者 💪")
+        }
+
+        // --- Rest-day rhythm: analyze workout/rest day alternation pattern ---
+        let workoutDays = Set(workouts.map { cal.startOfDay(for: $0.startDate) }).sorted()
+        if workoutDays.count >= 3 {
+            var gaps: [Int] = []
+            for i in 0..<(workoutDays.count - 1) {
+                if let daysBetween = cal.dateComponents([.day], from: workoutDays[i], to: workoutDays[i + 1]).day, daysBetween > 0 {
+                    gaps.append(daysBetween)
+                }
+            }
+
+            if !gaps.isEmpty {
+                let avgGap = Double(gaps.reduce(0, +)) / Double(gaps.count)
+                let totalDays = max(daysWithData.count, 1)
+                let activeDays = workoutDays.count
+                let restDays = max(0, totalDays - activeDays)
+
+                if avgGap <= 1.2 {
+                    lines.append("📅 几乎每天运动（\(activeDays)/\(totalDays) 天），频率很高！适当安排休息日有助于恢复。")
+                } else if avgGap <= 2.0 {
+                    lines.append("📅 \(activeDays) 天运动 · \(restDays) 天休息 — 接近隔天运动的节奏，很均衡 ✅")
+                } else if avgGap <= 3.5 {
+                    lines.append("📅 平均每 \(String(format: "%.0f", avgGap)) 天运动一次，频率适中。")
+                } else {
+                    lines.append("📅 运动间隔较长（平均 \(String(format: "%.0f", avgGap)) 天），试着在日历中预留固定运动时间。")
+                }
+
+                // Consistency check: is the interval between workouts regular?
+                if gaps.count >= 3 {
+                    let mean = avgGap
+                    let variance = gaps.reduce(0.0) { $0 + (Double($1) - mean) * (Double($1) - mean) } / Double(gaps.count)
+                    let stdDev = sqrt(variance)
+                    if stdDev < 0.5 {
+                        lines.append("   ✅ 运动间隔非常规律，已形成稳定的锻炼节奏。")
+                    } else if stdDev >= 1.5 {
+                        lines.append("   💡 运动间隔不太规律（有时连续运动，有时停几天），固定每周运动日更易坚持。")
+                    }
+                }
+            }
+        }
+
+        return lines
+    }
+
     // MARK: - Health Metric
 
     private func respondHealth(metric: String, range: QueryTimeRange, context: SkillContext, completion: @escaping (String) -> Void) {
@@ -1342,6 +1423,54 @@ struct HealthSkill: ClawSkill {
                     lines.append("")
                     lines.append("📅↔️😴 日程与睡眠的关联")
                     lines.append("   ✅ 即使忙碌日（≥\(threshold)个会议）也能保持 \(String(format: "%.1f", busyAvg))h 睡眠，时间管理很好！")
+                }
+            }
+        }
+
+        // --- Sleep → Next Day Activity Correlation ---
+        // Pairs each night's sleep with the following day's step count
+        // to reveal how sleep quality impacts daily performance.
+        let sortedByDate = summaries.sorted { $0.date < $1.date }
+        if sleepDays.count >= 4 && sortedByDate.count >= 3 {
+            var goodSleepNextSteps: [Double] = []
+            var poorSleepNextSteps: [Double] = []
+
+            for i in 0..<(sortedByDate.count - 1) {
+                let tonight = sortedByDate[i]
+                let nextDay = sortedByDate[i + 1]
+                // Verify consecutive calendar days
+                guard tonight.sleepHours > 0,
+                      nextDay.steps > 0,
+                      let expectedNext = cal.date(byAdding: .day, value: 1, to: cal.startOfDay(for: tonight.date)),
+                      cal.isDate(nextDay.date, inSameDayAs: expectedNext)
+                else { continue }
+
+                if tonight.sleepHours >= 7.0 {
+                    goodSleepNextSteps.append(nextDay.steps)
+                } else if tonight.sleepHours < 6.0 {
+                    poorSleepNextSteps.append(nextDay.steps)
+                }
+            }
+
+            if goodSleepNextSteps.count >= 2 && poorSleepNextSteps.count >= 1 {
+                let goodAvg = goodSleepNextSteps.reduce(0, +) / Double(goodSleepNextSteps.count)
+                let poorAvg = poorSleepNextSteps.reduce(0, +) / Double(poorSleepNextSteps.count)
+                if poorAvg > 0 {
+                    let pctDiff = (goodAvg - poorAvg) / poorAvg * 100
+                    if pctDiff >= 15 {
+                        let stepDiff = Int(goodAvg - poorAvg)
+                        lines.append("")
+                        lines.append("😴→👟 睡眠对第二天的影响")
+                        lines.append("   睡够 7h 后：次日均 \(Int(goodAvg).formatted()) 步")
+                        lines.append("   不足 6h 后：次日均 \(Int(poorAvg).formatted()) 步")
+                        lines.append("   📊 好睡眠让你第二天多走 \(stepDiff.formatted()) 步（+\(Int(pctDiff))%）")
+                        lines.append("   💡 睡好是活力的基础 — 今晚早点休息，明天会更有精力。")
+                    } else if pctDiff <= -20 {
+                        lines.append("")
+                        lines.append("😴→👟 睡眠对第二天的影响")
+                        lines.append("   💡 睡不够 6h 后第二天步数反而更高 — 可能是补偿性奔波。")
+                        lines.append("   ⚠️ 长期睡眠不足+高活动量容易导致身体透支，请注意休息。")
+                    }
                 }
             }
         }

@@ -1047,6 +1047,90 @@ final class GPTContextBuilder {
             }
         }
 
+        // --- Year references ---
+        // Users commonly ask "今年运动了多少次" or "去年这个时候我在干嘛".
+        // Without explicit guidance, GPT silently extrapolates 14 days → 365 days,
+        // giving wildly misleading answers (e.g. "今年跑步了52次" from 2 weeks of data).
+        let yearFmt = DateFormatter(); yearFmt.dateFormat = "yyyy年"
+        let thisYearStart = cal.date(from: cal.dateComponents([.year], from: now))!
+        let dayOfYear = cal.ordinality(of: .day, in: .year, for: now) ?? 1
+
+        let thisYearWords = ["今年", "今年以来", "this year"]
+        if thisYearWords.contains(where: { lower.contains($0) }) {
+            let dataStart = cal.date(byAdding: .day, value: -13, to: cal.startOfDay(for: now))!
+            if dayOfYear <= 14 {
+                hints.append("「今年」= \(yearFmt.string(from: now))（\(dateFmt.string(from: thisYearStart))~\(dateFmt.string(from: now))，已过\(dayOfYear)天，数据完整覆盖）")
+            } else {
+                hints.append("「今年」= \(yearFmt.string(from: now))（\(dateFmt.string(from: thisYearStart))~\(dateFmt.string(from: now))，已过\(dayOfYear)天）⚠️ 我们只有近14天数据（\(dateFmt.string(from: dataStart))起），无法回答全年问题。请先说明只有近两周数据，然后基于这14天给出部分回答，明确标注「近两周内」而非「今年」。绝不要将14天数据外推为全年结论。")
+            }
+        }
+
+        let lastYearWords = ["去年", "last year"]
+        if lastYearWords.contains(where: { lower.contains($0) }) {
+            let lastYearDate = cal.date(byAdding: .year, value: -1, to: thisYearStart)!
+            hints.append("「去年」= \(yearFmt.string(from: lastYearDate))（\(dateFmt.string(from: lastYearDate))~\(dateFmt.string(from: cal.date(byAdding: .day, value: -1, to: thisYearStart)!))）⚠️ 完全超出14天数据范围，无法回答。请坦诚告知用户我们只有近两周的数据，无法查看去年的记录。")
+        }
+
+        // --- "N天前" patterns ---
+        // Users say "三天前去了哪里" or "5天前", currently only "前天"/"大前天" are
+        // handled. This regex catches "三天前", "四天前", "5天前", "7天前" etc.
+        let nDaysAgoPatterns: [(pattern: String, days: Int)] = [
+            ("三天前", 3), ("四天前", 4), ("五天前", 5),
+            ("六天前", 6), ("七天前", 7), ("八天前", 8),
+            ("九天前", 9), ("十天前", 10)
+        ]
+        for (pattern, daysAgo) in nDaysAgoPatterns {
+            if lower.contains(pattern) {
+                let targetDate = cal.date(byAdding: .day, value: -daysAgo, to: cal.startOfDay(for: now))!
+                let dataStart = cal.date(byAdding: .day, value: -13, to: cal.startOfDay(for: now))!
+                if targetDate >= dataStart {
+                    hints.append("「\(pattern)」= \(dateFmt.string(from: targetDate))（\(weekdayFmt.string(from: targetDate))）→ 在数据范围内")
+                } else {
+                    hints.append("「\(pattern)」= \(dateFmt.string(from: targetDate))（\(weekdayFmt.string(from: targetDate))）⚠️ 超出14天数据范围")
+                }
+            }
+        }
+        // Also handle Arabic numeral patterns like "3天前", "5天前"
+        if let range = lower.range(of: #"(\d+)天前"#, options: .regularExpression) {
+            let numStr = lower[range].dropLast(2) // remove "天前"
+            if let daysAgo = Int(numStr), daysAgo >= 3 && daysAgo <= 30 {
+                // Skip if already handled by Chinese numeral patterns above
+                let alreadyHandled = nDaysAgoPatterns.contains { lower.contains($0.pattern) && $0.days == daysAgo }
+                if !alreadyHandled {
+                    let targetDate = cal.date(byAdding: .day, value: -daysAgo, to: cal.startOfDay(for: now))!
+                    let dataStart = cal.date(byAdding: .day, value: -13, to: cal.startOfDay(for: now))!
+                    if targetDate >= dataStart {
+                        hints.append("「\(daysAgo)天前」= \(dateFmt.string(from: targetDate))（\(weekdayFmt.string(from: targetDate))）→ 在数据范围内")
+                    } else {
+                        hints.append("「\(daysAgo)天前」= \(dateFmt.string(from: targetDate))（\(weekdayFmt.string(from: targetDate))）⚠️ 超出14天数据范围，无此日期数据")
+                    }
+                }
+            }
+        }
+
+        // --- "过去N天" / "过去一个月" range patterns ---
+        // Users say "过去30天运动了几次" or "过去一个月的睡眠" — need to clarify
+        // our 14-day data boundary so GPT doesn't silently extrapolate.
+        let pastRangePatterns: [(pattern: String, days: Int)] = [
+            ("过去一个月", 30), ("过去一月", 30), ("past month", 30),
+            ("过去30天", 30), ("past 30 days", 30),
+            ("过去两周", 14), ("过去2周", 14), ("past two weeks", 14),
+            ("过去三周", 21), ("过去3周", 21),
+            ("过去一周", 7), ("past week", 7)
+        ]
+        for (pattern, requestedDays) in pastRangePatterns {
+            if lower.contains(pattern) {
+                if requestedDays <= 14 {
+                    let rangeStart = cal.date(byAdding: .day, value: -(requestedDays - 1), to: cal.startOfDay(for: now))!
+                    hints.append("「\(pattern)」= \(dateFmt.string(from: rangeStart))~\(dateFmt.string(from: now))（\(requestedDays)天，数据完整覆盖）")
+                } else {
+                    let dataStart = cal.date(byAdding: .day, value: -13, to: cal.startOfDay(for: now))!
+                    hints.append("「\(pattern)」= 用户期望\(requestedDays)天数据，⚠️ 但我们只有近14天（\(dateFmt.string(from: dataStart))~\(dateFmt.string(from: now))）。请说明只有14天数据，基于已有数据回答，标注「近两周内」。")
+                }
+                break // Only match the first (most specific) pattern
+            }
+        }
+
         // --- Specific weekday references ---
         // "周三有什么安排？" → resolve to exact date.
         // Handles three patterns with increasing specificity:

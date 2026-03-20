@@ -61,19 +61,27 @@ final class HealthService: ObservableObject {
         let predicate = HKQuery.predicateForSamples(withStart: start, end: end)
 
         var summary = HealthSummary(date: date)
+        // NSLock protects `summary` from concurrent mutations.
+        // HealthKit dispatches each query callback on an arbitrary background queue,
+        // so ~15 callbacks can fire simultaneously on different threads, all mutating
+        // the same captured struct. Without serialization this is a data race: struct
+        // mutations are not atomic — thread A's write (e.g. steps) can be lost when
+        // thread B overwrites the entire struct with its own copy (e.g. calories).
+        // This manifests as health metrics randomly showing 0 in the GPT prompt.
+        let lock = NSLock()
         let group = DispatchGroup()
 
         // Steps
         group.enter()
         fetchSum(.stepCount, unit: .count(), predicate: predicate) { val in
-            summary.steps = val
+            lock.lock(); summary.steps = val; lock.unlock()
             group.leave()
         }
 
         // Active calories
         group.enter()
         fetchSum(.activeEnergyBurned, unit: .kilocalorie(), predicate: predicate) { val in
-            summary.activeCalories = val
+            lock.lock(); summary.activeCalories = val; lock.unlock()
             group.leave()
         }
 
@@ -82,21 +90,21 @@ final class HealthService: ObservableObject {
         // which is what users typically mean when asking "今天消耗了多少卡路里".
         group.enter()
         fetchSum(.basalEnergyBurned, unit: .kilocalorie(), predicate: predicate) { val in
-            summary.basalCalories = val
+            lock.lock(); summary.basalCalories = val; lock.unlock()
             group.leave()
         }
 
         // Exercise minutes
         group.enter()
         fetchSum(.appleExerciseTime, unit: .minute(), predicate: predicate) { val in
-            summary.exerciseMinutes = val
+            lock.lock(); summary.exerciseMinutes = val; lock.unlock()
             group.leave()
         }
 
         // Stand time (third Activity Ring — how much time standing, from Apple Watch)
         group.enter()
         fetchSum(.appleStandTime, unit: .minute(), predicate: predicate) { val in
-            summary.standMinutes = val
+            lock.lock(); summary.standMinutes = val; lock.unlock()
             group.leave()
         }
 
@@ -104,14 +112,16 @@ final class HealthService: ObservableObject {
         let hrUnit = HKUnit.count().unitDivided(by: .minute())
         group.enter()
         fetchAverage(.heartRate, unit: hrUnit, predicate: predicate) { val in
-            summary.heartRate = val
+            lock.lock(); summary.heartRate = val; lock.unlock()
             group.leave()
         }
 
         group.enter()
         fetchMinMax(.heartRate, unit: hrUnit, predicate: predicate) { minVal, maxVal in
+            lock.lock()
             summary.heartRateMin = minVal
             summary.heartRateMax = maxVal
+            lock.unlock()
             group.leave()
         }
 
@@ -120,7 +130,7 @@ final class HealthService: ObservableObject {
         fetchAverage(.restingHeartRate,
                      unit: HKUnit.count().unitDivided(by: .minute()),
                      predicate: predicate) { val in
-            summary.restingHeartRate = val
+            lock.lock(); summary.restingHeartRate = val; lock.unlock()
             group.leave()
         }
 
@@ -129,7 +139,7 @@ final class HealthService: ObservableObject {
         fetchAverage(.heartRateVariabilitySDNN,
                      unit: .secondUnit(with: .milli),
                      predicate: predicate) { val in
-            summary.hrv = val
+            lock.lock(); summary.hrv = val; lock.unlock()
             group.leave()
         }
 
@@ -144,6 +154,7 @@ final class HealthService: ObservableObject {
         let sleepQueryEnd = cal.date(byAdding: .hour, value: 18, to: start) ?? end
         group.enter()
         fetchSleepPhases(start: sleepQueryStart, end: sleepQueryEnd) { total, deep, rem, core, inBed, onset, wake in
+            lock.lock()
             summary.sleepHours = total
             summary.sleepDeepHours = deep
             summary.sleepREMHours = rem
@@ -151,34 +162,35 @@ final class HealthService: ObservableObject {
             summary.inBedHours = inBed
             summary.sleepOnset = onset
             summary.wakeTime = wake
+            lock.unlock()
             group.leave()
         }
 
         // Distance (walking + running)
         group.enter()
         fetchSum(.distanceWalkingRunning, unit: .meterUnit(with: .kilo), predicate: predicate) { val in
-            summary.distanceKm = val
+            lock.lock(); summary.distanceKm = val; lock.unlock()
             group.leave()
         }
 
         // Flights climbed
         group.enter()
         fetchSum(.flightsClimbed, unit: .count(), predicate: predicate) { val in
-            summary.flightsClimbed = val
+            lock.lock(); summary.flightsClimbed = val; lock.unlock()
             group.leave()
         }
 
         // Body mass (latest sample for this day — from smart scales or manual entry)
         group.enter()
         fetchLatest(.bodyMass, unit: .gramUnit(with: .kilo), predicate: predicate) { val in
-            summary.bodyMassKg = val
+            lock.lock(); summary.bodyMassKg = val; lock.unlock()
             group.leave()
         }
 
         // Blood oxygen saturation (SpO2, percentage 0-1 from HealthKit → convert to 0-100)
         group.enter()
         fetchAverage(.oxygenSaturation, unit: .percent(), predicate: predicate) { val in
-            summary.oxygenSaturation = val * 100  // HealthKit stores as 0-1 fraction
+            lock.lock(); summary.oxygenSaturation = val * 100; lock.unlock()
             group.leave()
         }
 
@@ -187,14 +199,14 @@ final class HealthService: ObservableObject {
         fetchLatest(.vo2Max,
                     unit: HKUnit(from: "ml/kg*min"),
                     predicate: predicate) { val in
-            summary.vo2Max = val
+            lock.lock(); summary.vo2Max = val; lock.unlock()
             group.leave()
         }
 
         // Workouts (individual sessions)
         group.enter()
         fetchWorkouts(start: start, end: end) { workouts in
-            summary.workouts = workouts
+            lock.lock(); summary.workouts = workouts; lock.unlock()
             group.leave()
         }
 

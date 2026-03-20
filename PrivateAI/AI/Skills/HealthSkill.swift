@@ -1247,9 +1247,9 @@ struct HealthSkill: ClawSkill {
             case "steps":
                 self.respondSteps(summaries: withData, allSummaries: allSummaries, range: range, completion: completion)
             case "flights":
-                self.respondFlights(summaries: withData, range: range, completion: completion)
+                self.respondFlights(summaries: withData, allSummaries: allSummaries, range: range, completion: completion)
             case "distance":
-                self.respondDistance(summaries: withData, range: range, completion: completion)
+                self.respondDistance(summaries: withData, allSummaries: allSummaries, range: range, completion: completion)
             case "calories":
                 self.respondCalories(summaries: withData, allSummaries: allSummaries, range: range, completion: completion)
             case "weight":
@@ -2837,19 +2837,58 @@ struct HealthSkill: ClawSkill {
 
     // MARK: - Flights Climbed
 
-    private func respondFlights(summaries: [HealthSummary], range: QueryTimeRange, completion: @escaping (String) -> Void) {
+    private func respondFlights(summaries: [HealthSummary], allSummaries: [HealthSummary] = [], range: QueryTimeRange, completion: @escaping (String) -> Void) {
         let flightDays = summaries.filter { $0.flightsClimbed > 0 }
         guard !flightDays.isEmpty else {
             completion("🏢 \(range.label)暂无爬楼数据。\niPhone 会自动记录爬楼层数，确保已开启健康权限。")
             return
         }
 
+        let cal = Calendar.current
         var lines: [String] = ["🏢 \(range.label)的爬楼数据\n"]
         let total = flightDays.reduce(0) { $0 + $1.flightsClimbed }
         let avg = total / Double(flightDays.count)
         let best = flightDays.max(by: { $0.flightsClimbed < $1.flightsClimbed })!
 
         lines.append("🪜 总楼层：\(Int(total)) 层（日均 \(Int(avg)) 层）")
+
+        // --- Personal baseline comparison for single-day queries ---
+        let isSingleDay = (range == .today || range == .yesterday || range == .dayBeforeYesterday)
+        if isSingleDay, let todayFlights = flightDays.first {
+            let interval = range.interval
+            let baseline = allSummaries.filter { $0.flightsClimbed > 0 && !interval.contains($0.date) }
+            if !baseline.isEmpty {
+                let baselineAvg = baseline.reduce(0) { $0 + $1.flightsClimbed } / Double(baseline.count)
+                let diff = todayFlights.flightsClimbed - baselineAvg
+                let pct = baselineAvg > 0 ? abs(diff) / baselineAvg * 100 : 0
+
+                if pct >= 15 && baselineAvg > 0 {
+                    if diff > 0 {
+                        lines.append("📈 比你 7 日均值（\(Int(baselineAvg)) 层）高 \(Int(pct))%")
+                    } else {
+                        lines.append("📉 比你 7 日均值（\(Int(baselineAvg)) 层）低 \(Int(pct))%")
+                    }
+                } else if baselineAvg > 0 {
+                    lines.append("📊 与你 7 日均值（\(Int(baselineAvg)) 层）持平")
+                }
+            }
+
+            // Yesterday comparison for today
+            if range == .today {
+                let yesterdaySummary = allSummaries.first { cal.isDateInYesterday($0.date) && $0.flightsClimbed > 0 }
+                if let yd = yesterdaySummary {
+                    let diff = todayFlights.flightsClimbed - yd.flightsClimbed
+                    if abs(diff) >= 3 {
+                        if diff > 0 {
+                            lines.append("↗️ 比昨天多爬了 \(Int(diff)) 层")
+                        } else {
+                            lines.append("↘️ 比昨天少爬了 \(Int(-diff)) 层")
+                        }
+                    }
+                }
+            }
+        }
+
         // 1 flight ≈ 3 meters of elevation gain
         let totalMeters = total * 3
         lines.append("📐 约等于爬升 \(Int(totalMeters)) 米")
@@ -2859,6 +2898,23 @@ struct HealthSkill: ClawSkill {
             fmt.dateFormat = "M月d日(E)"
             fmt.locale = Locale(identifier: "zh_CN")
             lines.append("🏆 最多的一天：\(fmt.string(from: best.date))，\(Int(best.flightsClimbed)) 层")
+        }
+
+        // --- Day-by-day trend chart ---
+        if flightDays.count >= 3 {
+            let sorted = flightDays.sorted { $0.date < $1.date }
+            lines.append("")
+            lines.append("📈 逐日趋势")
+            let dayFmt = DateFormatter()
+            dayFmt.dateFormat = "E"
+            dayFmt.locale = Locale(identifier: "zh_CN")
+            let maxFlights = sorted.map(\.flightsClimbed).max() ?? 1
+            for day in sorted {
+                let blocks = max(1, min(8, Int((day.flightsClimbed / maxFlights) * 8)))
+                let bar = String(repeating: "▓", count: blocks) + String(repeating: "░", count: 8 - blocks)
+                let color = day.flightsClimbed >= 10 ? "🟢" : (day.flightsClimbed >= 5 ? "🟡" : "🔴")
+                lines.append("   \(dayFmt.string(from: day.date)) \(color) \(bar) \(Int(day.flightsClimbed)) 层")
+            }
         }
 
         // Fun comparisons for motivation
@@ -2873,9 +2929,83 @@ struct HealthSkill: ClawSkill {
         }
 
         // Daily goal insight (WHO recommends regular stair climbing)
-        let activeDays = flightDays.filter { $0.flightsClimbed >= 10 }.count
-        if activeDays > 0 {
-            lines.append("🎯 有 \(activeDays) 天达到了 10 层以上，爬楼是很好的有氧运动！")
+        let goalFlights = 10.0
+        let activeDays = flightDays.filter { $0.flightsClimbed >= goalFlights }.count
+        let goalRate = Double(activeDays) / Double(flightDays.count) * 100
+        lines.append("🎯 达标天数（≥10层）：\(activeDays)/\(flightDays.count) 天（\(Int(goalRate))%）")
+
+        if goalRate >= 80 {
+            lines.append("   太棒了！经常爬楼，心肺功能一定不错 🏅")
+        } else if goalRate >= 50 {
+            lines.append("   过半天数达标，继续保持 💪")
+        } else if avg >= 5 {
+            lines.append("   每天再多爬 \(Int(goalFlights - avg)) 层就达标了，少坐电梯试试？")
+        } else {
+            lines.append("   可以试试每天走楼梯代替电梯，从 3-5 层开始。")
+        }
+
+        // --- Weekday vs Weekend pattern ---
+        if flightDays.count >= 5 {
+            let weekdays = flightDays.filter { !cal.isDateInWeekend($0.date) }
+            let weekends = flightDays.filter { cal.isDateInWeekend($0.date) }
+            if !weekdays.isEmpty && !weekends.isEmpty {
+                let wdAvg = weekdays.reduce(0) { $0 + $1.flightsClimbed } / Double(weekdays.count)
+                let weAvg = weekends.reduce(0) { $0 + $1.flightsClimbed } / Double(weekends.count)
+                let pct = wdAvg > 0 ? abs(weAvg - wdAvg) / wdAvg * 100 : 0
+                if pct > 20 {
+                    lines.append("")
+                    lines.append("🗓 工作日 vs 周末")
+                    lines.append("   工作日均 \(Int(wdAvg)) 层 · 周末均 \(Int(weAvg)) 层")
+                    if weAvg > wdAvg {
+                        lines.append("   周末爬楼更多（+\(Int(pct))%），可能有户外活动或逛街。")
+                    } else {
+                        lines.append("   工作日爬楼更多（+\(Int(pct))%），办公环境中经常走楼梯 👍")
+                    }
+                }
+            }
+        }
+
+        // --- Trend: first half vs second half ---
+        if flightDays.count >= 4 {
+            let sorted = flightDays.sorted { $0.date < $1.date }
+            let mid = sorted.count / 2
+            let olderAvg = sorted.prefix(mid).reduce(0) { $0 + $1.flightsClimbed } / Double(mid)
+            let recentAvg = sorted.suffix(from: mid).reduce(0) { $0 + $1.flightsClimbed } / Double(sorted.count - mid)
+            if olderAvg > 0 {
+                let pct = ((recentAvg - olderAvg) / olderAvg) * 100
+                if abs(pct) >= 15 {
+                    lines.append("")
+                    if pct > 0 {
+                        lines.append("📈 爬楼量呈上升趋势（+\(Int(pct))%），保持这个势头！")
+                    } else {
+                        lines.append("📉 爬楼量有所下降（\(Int(pct))%），试试每天多走一趟楼梯？")
+                    }
+                }
+            }
+        }
+
+        // --- Cross-metric: flights vs exercise correlation ---
+        if flightDays.count >= 4 {
+            let paired = summaries.filter { $0.flightsClimbed > 0 && $0.exerciseMinutes > 0 }
+            if paired.count >= 3 {
+                let flightMedian = paired.map(\.flightsClimbed).sorted()[paired.count / 2]
+                let highFlightDays = paired.filter { $0.flightsClimbed >= flightMedian }
+                let lowFlightDays = paired.filter { $0.flightsClimbed < flightMedian }
+                if !highFlightDays.isEmpty && !lowFlightDays.isEmpty {
+                    let exOnHigh = highFlightDays.reduce(0) { $0 + $1.exerciseMinutes } / Double(highFlightDays.count)
+                    let exOnLow = lowFlightDays.reduce(0) { $0 + $1.exerciseMinutes } / Double(lowFlightDays.count)
+                    let diff = exOnHigh - exOnLow
+                    if abs(diff) >= 5 {
+                        lines.append("")
+                        lines.append("🔗 爬楼与运动的关联")
+                        if diff > 0 {
+                            lines.append("   多爬楼的日子平均多运动 \(Int(diff)) 分钟 — 整体活动量更高。")
+                        } else {
+                            lines.append("   少爬楼的日子反而运动更多 — 可能在健身房专注训练。")
+                        }
+                    }
+                }
+            }
         }
 
         completion(lines.joined(separator: "\n"))
@@ -2883,7 +3013,7 @@ struct HealthSkill: ClawSkill {
 
     // MARK: - Distance
 
-    private func respondDistance(summaries: [HealthSummary], range: QueryTimeRange, completion: @escaping (String) -> Void) {
+    private func respondDistance(summaries: [HealthSummary], allSummaries: [HealthSummary] = [], range: QueryTimeRange, completion: @escaping (String) -> Void) {
         let cal = Calendar.current
         let distanceDays = summaries.filter { $0.distanceKm > 0.01 }
         guard !distanceDays.isEmpty else {
@@ -2897,8 +3027,67 @@ struct HealthSkill: ClawSkill {
         let best = distanceDays.max(by: { $0.distanceKm < $1.distanceKm })!
         let worst = distanceDays.min(by: { $0.distanceKm < $1.distanceKm })!
 
-        lines.append("🛣 总距离：\(String(format: "%.1f", total)) 公里（日均 \(String(format: "%.1f", avg)) 公里）")
-        lines.append("📊 波动范围：\(String(format: "%.1f", worst.distanceKm))~\(String(format: "%.1f", best.distanceKm)) 公里")
+        lines.append("🛣 总距离：\(String(format: "%.1f", total)) 公里")
+
+        // --- Personal baseline comparison for single-day queries ---
+        let isSingleDay = (range == .today || range == .yesterday || range == .dayBeforeYesterday)
+        if isSingleDay, let todayDist = distanceDays.first {
+            let interval = range.interval
+            let baseline = allSummaries.filter { $0.distanceKm > 0.01 && !interval.contains($0.date) }
+            if !baseline.isEmpty {
+                let baselineAvg = baseline.reduce(0) { $0 + $1.distanceKm } / Double(baseline.count)
+                let diff = todayDist.distanceKm - baselineAvg
+                let pct = baselineAvg > 0 ? abs(diff) / baselineAvg * 100 : 0
+
+                if pct >= 10 && baselineAvg > 0 {
+                    if diff > 0 {
+                        lines.append("📈 比你 7 日均值（\(String(format: "%.1f", baselineAvg)) km）高 \(Int(pct))%")
+                    } else {
+                        lines.append("📉 比你 7 日均值（\(String(format: "%.1f", baselineAvg)) km）低 \(Int(pct))%")
+                    }
+                } else if baselineAvg > 0 {
+                    lines.append("📊 与你 7 日均值（\(String(format: "%.1f", baselineAvg)) km）持平")
+                }
+            }
+
+            // Goal projection for today
+            if range == .today {
+                let hour = cal.component(.hour, from: Date())
+                let minute = cal.component(.minute, from: Date())
+                let elapsedHours = Double(hour) + Double(minute) / 60.0
+                let goalKm = 5.0
+                if elapsedHours >= 9 && elapsedHours < 22 && todayDist.distanceKm > 0.1 {
+                    let activeHoursLeft = max(0, 22.0 - elapsedHours)
+                    let pacePerHour = todayDist.distanceKm / elapsedHours
+                    let projected = todayDist.distanceKm + pacePerHour * activeHoursLeft * 0.6
+                    if projected >= goalKm && todayDist.distanceKm < goalKm {
+                        lines.append("🎯 按当前节奏，今天有望达到 \(String(format: "%.1f", projected)) km（达标 ✅）")
+                    } else if todayDist.distanceKm < goalKm {
+                        let remaining = goalKm - todayDist.distanceKm
+                        let walkMin = Int(remaining / 0.08) // ~80m per minute of walking
+                        lines.append("🎯 距 5km 目标还差 \(String(format: "%.1f", remaining)) km（约快走 \(walkMin) 分钟）")
+                    }
+                }
+            }
+
+            // Yesterday comparison for today
+            if range == .today {
+                let yesterdaySummary = allSummaries.first { cal.isDateInYesterday($0.date) && $0.distanceKm > 0.01 }
+                if let yd = yesterdaySummary {
+                    let diff = todayDist.distanceKm - yd.distanceKm
+                    if abs(diff) >= 0.5 {
+                        if diff > 0 {
+                            lines.append("↗️ 比昨天多走了 \(String(format: "%.1f", diff)) km")
+                        } else {
+                            lines.append("↘️ 比昨天少了 \(String(format: "%.1f", -diff)) km")
+                        }
+                    }
+                }
+            }
+        } else {
+            lines.append("📊 日均 \(String(format: "%.1f", avg)) 公里")
+            lines.append("📊 波动范围：\(String(format: "%.1f", worst.distanceKm))~\(String(format: "%.1f", best.distanceKm)) 公里")
+        }
 
         if distanceDays.count > 1 {
             let fmt = DateFormatter()

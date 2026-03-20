@@ -958,7 +958,14 @@ final class GPTContextBuilder {
     }
 
     private func lifeEventsSection(_ events: [CDLifeEvent]) -> String {
-        let fmt = DateFormatter(); fmt.dateFormat = "M月d日"
+        let cal = Calendar.current
+        let dateFmt = DateFormatter(); dateFmt.dateFormat = "M月d日"
+        let timeFmt = DateFormatter(); timeFmt.dateFormat = "HH:mm"
+        let weekdayFmt = DateFormatter()
+        weekdayFmt.locale = Locale(identifier: "zh_CN")
+        weekdayFmt.dateFormat = "EEE"
+        let now = Date()
+
         var lines = ["[生活记录（近期）]"]
 
         // Category distribution summary so GPT can answer "最近都在忙什么？"
@@ -976,9 +983,28 @@ final class GPTContextBuilder {
         for e in events.prefix(15) {
             let mood = MoodType(rawValue: e.mood ?? "") ?? .neutral
             let category = EventCategory(rawValue: e.category ?? "life") ?? .life
-            let date = e.timestamp.map { fmt.string(from: $0) } ?? ""
+
+            // Build date label with relative names and weekday, matching calendar/location sections
+            let dateLabel: String
+            if let ts = e.timestamp {
+                let relativeDay: String
+                if cal.isDateInToday(ts) {
+                    relativeDay = "今天"
+                } else if cal.isDateInYesterday(ts) {
+                    relativeDay = "昨天"
+                } else if let twoDaysAgo = cal.date(byAdding: .day, value: -2, to: cal.startOfDay(for: now)),
+                          cal.isDate(ts, inSameDayAs: twoDaysAgo) {
+                    relativeDay = "前天"
+                } else {
+                    relativeDay = weekdayFmt.string(from: ts)
+                }
+                dateLabel = "\(dateFmt.string(from: ts))(\(relativeDay)) \(timeFmt.string(from: ts))"
+            } else {
+                dateLabel = ""
+            }
+
             var line = "\(mood.emoji) [\(category.label)] \(e.title ?? "记录")"
-            if !date.isEmpty { line += "（\(date)）" }
+            if !dateLabel.isEmpty { line += "（\(dateLabel)）" }
             if let content = e.content, !content.isEmpty {
                 let preview = content.count > 100 ? String(content.prefix(100)) + "…" : content
                 line += "：\(preview)"

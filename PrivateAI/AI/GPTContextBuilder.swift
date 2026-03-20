@@ -51,8 +51,13 @@ final class GPTContextBuilder {
             group.leave()
         }
 
+        // Fetch 14 days so "上周" always has complete Mon-Sun data.
+        // Without this, on a Wednesday the 7-day window only covers Thu→Wed,
+        // leaving last Mon/Tue/Wed missing — GPT would caveat "仅有4/7天数据"
+        // and give incomplete weekly comparisons. The extra 7 days are only
+        // used for per-week stats; the trend table still shows the recent 7.
         group.enter()
-        healthService.fetchSummaries(days: 7) { summaries in
+        healthService.fetchSummaries(days: 14) { summaries in
             weeklyHealth = summaries
             group.leave()
         }
@@ -227,7 +232,8 @@ final class GPTContextBuilder {
         // Build explicit data time boundaries so GPT knows exact coverage
         let boundaryFmt = DateFormatter(); boundaryFmt.dateFormat = "M月d日"
         let dataStartDate = Calendar.current.date(byAdding: .day, value: -6, to: now) ?? now
-        let healthBoundary = "健康/运动/睡眠数据：\(boundaryFmt.string(from: dataStartDate))~\(boundaryFmt.string(from: now))（共7天）"
+        let healthRangeStart = Calendar.current.date(byAdding: .day, value: -13, to: now) ?? now
+        let healthBoundary = "健康/运动/睡眠数据：\(boundaryFmt.string(from: healthRangeStart))~\(boundaryFmt.string(from: now))（共14天，近7天有详细趋势表，完整覆盖本周+上周）"
         let locationBoundary = locationRecords.isEmpty ? "" : {
             let timestamps = locationRecords.compactMap { $0.timestamp }
             if let earliest = timestamps.min(), let latest = timestamps.max() {
@@ -266,7 +272,7 @@ final class GPTContextBuilder {
 
             let wkFmt = DateFormatter(); wkFmt.dateFormat = "M月d日"
             let thisWeekLabel = "\(wkFmt.string(from: thisMonday))~\(wkFmt.string(from: now))（周一至今天，共\(daysSinceMonday + 1)天）"
-            let lastWeekLabel = "\(wkFmt.string(from: lastMonday))~\(wkFmt.string(from: lastSunday))（周一至周日）"
+            let lastWeekLabel = "\(wkFmt.string(from: lastMonday))~\(wkFmt.string(from: lastSunday))（周一至周日，健康数据完整）"
             return "「这周」= \(thisWeekLabel)\n「上周」= \(lastWeekLabel)"
         }()
 
@@ -290,10 +296,10 @@ final class GPTContextBuilder {
         数据时间范围（重要）：
         \(dataBoundaryText)
         \(weekBoundaryText)
-        ⚠️ 你只拥有上述时间范围内的数据。如果用户询问的时间段超出数据覆盖范围（如「上个月」「今年」「过去30天」），你必须：
-        1. 先说明你只有近7天的数据
-        2. 基于已有数据给出部分回答（如「近7天内…」）
-        3. 不要将7天数据外推为更长时间段的结论
+        ⚠️ 你只拥有上述时间范围内的数据。健康数据覆盖近14天（本周+上周完整），其他数据（日历/位置/照片）覆盖近7天。如果用户询问的时间段超出数据覆盖范围（如「上个月」「今年」「过去30天」），你必须：
+        1. 先说明你拥有的数据范围（健康14天，其他7天）
+        2. 基于已有数据给出部分回答（如「近两周内…」）
+        3. 不要将有限数据外推为更长时间段的结论
         ⚠️ 「这周」和「近7天」是不同概念。用户说「这周」指本周一至今天，说「上周」指上周一至上周日。回答时务必按上方日期范围筛选对应的数据行，不要把上周的数据算入这周，也不要把这周的数据算入上周。
         ⚠️ 睡眠日期归属规则（重要）：睡眠数据按「醒来当天」归属。例如3月19日晚23:00入睡→3月20日早7:00起床，这笔睡眠记录在3月20日（今天）的行中，而不是3月19日。因此：
         - 用户问「昨晚睡了多久」「昨天晚上睡得怎么样」→ 查看「今天」行的睡眠数据（因为昨晚的睡眠醒来时已是今天）
@@ -852,7 +858,9 @@ final class GPTContextBuilder {
         // Per-week breakdowns so GPT can directly answer "这周运动了几次？" vs "上周走了多少步？"
         // without manually scanning and filtering rows from the trend table.
         // Uses Monday-based weeks consistent with weekBoundaryText in the SYSTEM prompt.
-        let perWeekStats = buildPerWeekStats(summaries: Array(week), cal: cal)
+        // Pass ALL summaries (14 days) so "上周" always has complete Mon-Sun data,
+        // even if the 7-day trend table only shows the most recent 7 days.
+        let perWeekStats = buildPerWeekStats(summaries: Array(summaries), cal: cal)
         if !perWeekStats.isEmpty {
             lines.append(perWeekStats)
         }
@@ -860,7 +868,9 @@ final class GPTContextBuilder {
         return lines.joined(separator: "\n")
     }
 
-    /// Builds separate "本周" and "上周" sub-totals from the 7-day trend data.
+    /// Builds separate "本周" and "上周" sub-totals from the 14-day health data.
+    /// With 14 days of data, "上周" always has complete Mon-Sun coverage regardless
+    /// of which day of the week it currently is.
     /// This prevents GPT from misusing the combined 7-day aggregate for week-specific queries.
     private func buildPerWeekStats(summaries: [HealthSummary], cal: Calendar) -> String {
         let now = Date()
@@ -868,6 +878,7 @@ final class GPTContextBuilder {
         let daysSinceMonday = (todayWeekday + 5) % 7 // Mon=0, Tue=1, ..., Sun=6
         let thisMonday = cal.date(byAdding: .day, value: -daysSinceMonday, to: cal.startOfDay(for: now))!
         let lastMonday = cal.date(byAdding: .day, value: -7, to: thisMonday)!
+        let twoWeeksAgoMonday = cal.date(byAdding: .day, value: -14, to: thisMonday)!
 
         // Split summaries into this week (Mon..today, excluding today) and last week
         let thisWeekDays = summaries.filter { s in
@@ -878,6 +889,11 @@ final class GPTContextBuilder {
             let dayStart = cal.startOfDay(for: s.date)
             return dayStart >= lastMonday && dayStart < thisMonday
         }
+        // Week before last — available from 14-day data for "大上周" queries
+        let weekBeforeLastDays = summaries.filter { s in
+            let dayStart = cal.startOfDay(for: s.date)
+            return dayStart >= twoWeeksAgoMonday && dayStart < lastMonday
+        }
 
         var parts: [String] = []
 
@@ -887,23 +903,31 @@ final class GPTContextBuilder {
             parts.append("\(label)：\(weekSubTotal(thisWeekDays))")
         }
 
-        // Last week stats — mark as partial when we only have some days
-        // (7-day data window may not cover a full Mon-Sun last week).
-        // Without this, GPT might say "上周只运动了1天" when we actually only
-        // have 3 days of data and the user may have exercised on the missing days.
+        // Last week stats — with 14-day fetch, this should always have 7 days
         if !lastWeekDays.isEmpty {
             let label: String
-            if lastWeekDays.count < 7 {
-                // Calculate which days of last week we DO have data for
-                let wkFmt = DateFormatter(); wkFmt.locale = Locale(identifier: "zh_CN"); wkFmt.dateFormat = "EEE"
-                let coveredDays = lastWeekDays
-                    .sorted { $0.date < $1.date }
-                    .map { wkFmt.string(from: $0.date) }
-                label = "上周（仅有\(lastWeekDays.count)/7天数据：\(coveredDays.joined(separator: "、"))，其余天超出7天数据范围，请勿据此推断完整上周情况）"
-            } else {
+            if lastWeekDays.count >= 7 {
                 label = "上周（完整7天）"
+            } else {
+                // Rare edge case: data gap within last week
+                label = "上周（\(lastWeekDays.count)/7天有数据）"
             }
             parts.append("\(label)：\(weekSubTotal(lastWeekDays))")
+        }
+
+        // Week before last — partial data (only days within 14-day window)
+        if !weekBeforeLastDays.isEmpty {
+            let label: String
+            if weekBeforeLastDays.count >= 7 {
+                label = "大上周（完整7天）"
+            } else {
+                let wkFmt = DateFormatter(); wkFmt.locale = Locale(identifier: "zh_CN"); wkFmt.dateFormat = "EEE"
+                let coveredDays = weekBeforeLastDays
+                    .sorted { $0.date < $1.date }
+                    .map { wkFmt.string(from: $0.date) }
+                label = "大上周（仅\(weekBeforeLastDays.count)/7天：\(coveredDays.joined(separator: "、"))）"
+            }
+            parts.append("\(label)：\(weekSubTotal(weekBeforeLastDays))")
         }
 
         guard !parts.isEmpty else { return "" }

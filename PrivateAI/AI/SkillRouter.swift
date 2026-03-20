@@ -472,10 +472,57 @@ struct SkillRouter {
             return .summary(range: briefingRange)
         }
 
+        // --- Analysis with specific topic → route to the appropriate skill ---
+        // "帮我分析睡眠" should route to health.sleep, not summary.
+        // "分析一下体重变化" should route to health.weight, not summary.
+        // "帮我分析日程" should route to calendar, not summary.
+        // Without this guard, the summary block's "帮我分析" keyword would greedily
+        // capture queries meant for downstream skills (health, calendar, comparison).
+        let analysisKeywords = ["帮我分析", "分析一下", "分析下", "analyze my", "analyze"]
+        if containsAny(lower, analysisKeywords) {
+            // Health topics → health skill (sleep, heart rate, weight, HRV, etc.)
+            let healthAnalysisTopics = ["睡眠", "睡了", "睡得", "睡觉", "失眠", "作息",
+                                         "心率", "心跳", "脉搏", "HRV", "hrv", "心率变异", "静息心率",
+                                         "体重", "减肥", "瘦身", "血氧", "vo2", "摄氧量",
+                                         "卡路里", "热量", "恢复", "身体", "健康",
+                                         "步数", "距离", "爬楼", "楼层",
+                                         "sleep", "heart rate", "weight", "health",
+                                         "recovery", "calories", "hrv", "vo2max"]
+            if containsAny(lower, healthAnalysisTopics) {
+                let metric = extractHealthMetric(from: lower)
+                let healthRange = hasExplicitTimeReference(lower) ? range : .today
+                return .health(metric: metric, range: healthRange)
+            }
+            // Calendar topics → calendar skill
+            if containsAny(lower, ["日程", "日历", "安排", "会议", "行程", "忙不忙",
+                                    "calendar", "schedule", "meeting", "agenda"]) {
+                let calRange = hasExplicitTimeReference(lower) ? range : .today
+                return .calendar(range: calRange)
+            }
+            // Comparison / trend topics → comparison skill
+            if containsAny(lower, ["趋势", "变化", "进步", "退步", "对比", "比较",
+                                    "trend", "progress", "change", "compare"]) {
+                let compRange = hasExplicitTimeReference(lower) ? range : .thisWeek
+                return .comparison(range: compRange)
+            }
+            // Location topics → location skill
+            if containsAny(lower, ["位置", "地方", "去过", "足迹", "通勤", "出行",
+                                    "location", "places", "commute"]) {
+                return .location(range: range)
+            }
+            // Photo topics → photos skill
+            if containsAny(lower, ["照片", "拍照", "相册", "photo", "picture"]) {
+                return .photos(range: range)
+            }
+            // No specific topic → general analysis = summary
+            return .summary(range: range)
+        }
+
         // --- Summary ---
         // Covers explicit summary words ("总结") AND natural status inquiries.
         // Important: include "怎么样", "怎样", and colloquial "咋样" variants —
         // Chinese users use them interchangeably ("过得怎么样" ≈ "过得怎样" ≈ "过得咋样").
+        // Note: "帮我分析"/"分析一下" are handled above with topic-aware routing.
         if containsAny(lower, ["总结", "回顾", "概括", "做了什么", "发生了什么",
                                 "过得怎么样", "过得怎样", "过得咋样", "过得如何", "过得好",
                                 "怎么过的", "咋过的",
@@ -499,8 +546,6 @@ struct SkillRouter {
                                 "前天怎", "前天咋", "前天如何",
                                 // Review synonyms
                                 "汇报", "盘点",
-                                // Analysis requests (general, no specific topic)
-                                "帮我分析", "分析一下",
                                 "summary", "recap", "review", "what happened", "what did i",
                                 "how was my", "how have i been", "how am i",
                                 "how's it going", "how am i doing"]) {

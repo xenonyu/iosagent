@@ -59,7 +59,12 @@ final class ChatViewModel: ObservableObject {
 
         // Restore conversation history from persisted messages so GPT retains
         // multi-turn context across app restarts.
-        conversationHistory = Array(messages.suffix(maxHistory))
+        // Filter out error messages (⚠️ prefix) — these were persisted for display
+        // but should not be sent to GPT as previous "assistant" responses.
+        conversationHistory = messages
+            .filter { $0.isUser || !$0.content.hasPrefix("⚠️") }
+            .suffix(maxHistory)
+            .map { $0 }
     }
 
     private func buildWelcomeMessage() -> String {

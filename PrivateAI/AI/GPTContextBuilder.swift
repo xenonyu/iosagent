@@ -222,6 +222,7 @@ final class GPTContextBuilder {
         - 如果用户提到家人（如"我妈"、"我爸"等），参考下方[用户信息]中的家庭成员数据来回答。
         - 日历日程中 [日历名] 标签表示事件来源（如 [Work]、[个人]、[家庭]），用户问「工作会议」时参考此标签区分。日程的「备注」字段包含议程或描述，用户问「那个会议聊什么」时可引用。
         - 今天的日程带有时间状态标注（已结束/进行中），回答日程问题时优先告诉用户接下来的安排，而不是罗列全天。例如下午3点问「今天有什么安排」，重点说还有哪些未完成的，已结束的可简要带过。
+        - 对话历史中的内容是之前的对话，注意用户可能会用「那…呢」「昨天的呢」「详细说说」等方式追问。如果用户的问题很短且含指代词（如「那个」「它」「上面说的」），结合对话历史推断用户指的是什么。
 
         回复格式：
         - 简单问题（如「今天几步」「心率多少」）：直接回答数值+一句话点评，不超过2-3行。
@@ -320,7 +321,14 @@ final class GPTContextBuilder {
             if let last = recentHistory.last, last.isUser, last.content == userQuery {
                 recentHistory.removeLast()
             }
-            let historyToShow = recentHistory.suffix(6)
+            // Filter out error/system messages that were persisted to CoreData.
+            // On app restart these get loaded into conversationHistory and would
+            // confuse GPT if sent as previous "assistant" responses (e.g. "⚠️ 请求超时了").
+            let cleaned = recentHistory.filter { msg in
+                guard !msg.isUser else { return true }
+                return !msg.content.hasPrefix("⚠️")
+            }
+            let historyToShow = cleaned.suffix(6)
             if !historyToShow.isEmpty {
                 let historyLines = historyToShow.map { msg in
                     let prefix = msg.isUser ? "用户：" : "助理："
@@ -332,7 +340,7 @@ final class GPTContextBuilder {
                     let truncated = content.count > limit ? String(content.prefix(limit)) + "…" : content
                     return prefix + truncated
                 }
-                parts.append("[对话历史]\n" + historyLines.joined(separator: "\n"))
+                parts.append("[对话历史（用于理解上下文，回答时参考最近的话题）]\n" + historyLines.joined(separator: "\n"))
             }
         }
 

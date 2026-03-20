@@ -43,20 +43,19 @@ final class GPTContextBuilder {
                      conversationHistory: [ChatMessage],
                      completion: @escaping (String) -> Void) {
         let group = DispatchGroup()
-        var todayHealth = HealthSummary()
         var weeklyHealth: [HealthSummary] = []
-
-        group.enter()
-        healthService.fetchDailySummary(for: Date()) { summary in
-            todayHealth = summary
-            group.leave()
-        }
 
         // Fetch 14 days so "上周" always has complete Mon-Sun data.
         // Without this, on a Wednesday the 7-day window only covers Thu→Wed,
         // leaving last Mon/Tue/Wed missing — GPT would caveat "仅有4/7天数据"
-        // and give incomplete weekly comparisons. The extra 7 days are only
-        // used for per-week stats; the trend table still shows the recent 7.
+        // and give incomplete weekly comparisons.
+        //
+        // Today's data is extracted from this same array (the i=0 entry) rather
+        // than fetched separately via fetchDailySummary. This eliminates ~13
+        // redundant HealthKit queries per prompt build AND prevents data
+        // inconsistency: if steps/calories arrive between two separate fetches,
+        // [今日健康数据] and the trend table's "今天" row would show different
+        // numbers, causing GPT to cite conflicting values.
         group.enter()
         healthService.fetchSummaries(days: 14) { summaries in
             weeklyHealth = summaries
@@ -79,10 +78,16 @@ final class GPTContextBuilder {
                     // HealthKit queries didn't complete in time — proceed with empty data.
                     // The callbacks may still fire later on main, but the local vars won't
                     // be read again, so there's no race condition.
-                    todayHealth = HealthSummary()
                     weeklyHealth = []
                     healthTimedOut = true
                 }
+
+                // Extract today's health from the 14-day array — guaranteed to be
+                // the exact same HealthSummary object used in the trend table, so
+                // GPT never sees conflicting numbers between sections.
+                let todayHealth: HealthSummary = weeklyHealth.first(where: {
+                    Calendar.current.isDateInToday($0.date)
+                }) ?? HealthSummary()
 
                 let now = Date()
                 let cal = Calendar.current

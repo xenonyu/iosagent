@@ -732,6 +732,7 @@ final class GPTContextBuilder {
 
         // Resting heart rate — Mayo Clinic reference
         lines.append("静息心率：正常60-100bpm，经常运动者可低至40-60bpm")
+        lines.append("心率范围：日间最低通常为静息值（睡眠时可更低），最高反映运动强度。持续静息>100bpm或<40bpm值得关注。运动时最高心率可参考220-年龄公式估算上限。")
 
         // HRV
         lines.append("HRV：数值因人而异，趋势比绝对值更重要，持续下降可能提示疲劳或压力")
@@ -808,6 +809,12 @@ final class GPTContextBuilder {
 
         if h.heartRate > 0 {
             var line = "心率：均值\(Int(h.heartRate))bpm"
+            // Include min-max range so GPT can detect anomalies and give richer insights.
+            // "均值75bpm" is far less useful than "均值75bpm（范围52~145bpm）" — the range
+            // reveals exercise peaks, nighttime lows, and potential arrhythmia signals.
+            if h.heartRateMin > 0 && h.heartRateMax > 0 {
+                line += "（范围\(Int(h.heartRateMin))~\(Int(h.heartRateMax))bpm）"
+            }
             if h.restingHeartRate > 0 { line += "，静息\(Int(h.restingHeartRate))bpm" }
             if h.hrv > 0 { line += "，HRV \(Int(h.hrv))ms" }
             lines.append(line)
@@ -893,7 +900,13 @@ final class GPTContextBuilder {
             }
             lines.append(line)
         }
-        if y.heartRate > 0 { lines.append("心率均值：\(Int(y.heartRate))bpm") }
+        if y.heartRate > 0 {
+            var hrLine = "心率均值：\(Int(y.heartRate))bpm"
+            if y.heartRateMin > 0 && y.heartRateMax > 0 {
+                hrLine += "（\(Int(y.heartRateMin))~\(Int(y.heartRateMax))bpm）"
+            }
+            lines.append(hrLine)
+        }
         return lines.joined(separator: "\n")
     }
 
@@ -906,7 +919,7 @@ final class GPTContextBuilder {
         let hasWeightData = trendDays.contains { $0.bodyMassKg > 0 }
 
         let headerWeight = hasWeightData ? " | 体重(kg)" : ""
-        var lines = ["[近7天健康趋势]", "日期  | 步数  | 运动(分) | 活动kcal | 总消耗kcal | 睡眠(h)（对应哪晚） | 心率(bpm)\(headerWeight)"]
+        var lines = ["[近7天健康趋势]", "日期  | 步数  | 运动(分) | 活动kcal | 总消耗kcal | 睡眠(h)（对应哪晚） | 心率avg(min~max)bpm\(headerWeight)"]
         // Show oldest→newest so GPT can naturally read the trend direction
         let chronological = trendDays
         for s in chronological {
@@ -940,7 +953,16 @@ final class GPTContextBuilder {
             } else {
                 sl = "-"
             }
-            let hr = s.heartRate > 0 ? "\(Int(s.heartRate))" : "-"
+            let hr: String
+            if s.heartRate > 0 {
+                if s.heartRateMin > 0 && s.heartRateMax > 0 {
+                    hr = "\(Int(s.heartRate))(\(Int(s.heartRateMin))~\(Int(s.heartRateMax)))"
+                } else {
+                    hr = "\(Int(s.heartRate))"
+                }
+            } else {
+                hr = "-"
+            }
             let weightCol = hasWeightData ? (s.bodyMassKg > 0 ? "  | \(String(format: "%.1f", s.bodyMassKg))" : "  | -") : ""
             lines.append("\(dateLabel)  | \(steps)  | \(ex)  | \(activeCal)  | \(totalCal)  | \(sl)  | \(hr)\(weightCol)")
         }

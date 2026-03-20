@@ -284,6 +284,10 @@ struct HealthSummary {
     /// When the user woke up (latest asleep sample end) — for circadian analysis
     var wakeTime: Date?
     var heartRate: Double = 0
+    /// Minimum heart rate recorded during the day — useful for detecting bradycardia or confirming low resting rate
+    var heartRateMin: Double = 0
+    /// Maximum heart rate recorded during the day — useful for detecting tachycardia or peak exercise intensity
+    var heartRateMax: Double = 0
     /// Resting heart rate — key cardiovascular fitness indicator (lower = fitter)
     var restingHeartRate: Double = 0
     /// Heart rate variability (SDNN in ms) — stress/recovery indicator (higher = better recovery)

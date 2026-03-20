@@ -92,12 +92,18 @@ final class HealthService: ObservableObject {
             group.leave()
         }
 
-        // Heart rate (average)
+        // Heart rate (average + min + max for range analysis)
+        let hrUnit = HKUnit.count().unitDivided(by: .minute())
         group.enter()
-        fetchAverage(.heartRate,
-                     unit: HKUnit.count().unitDivided(by: .minute()),
-                     predicate: predicate) { val in
+        fetchAverage(.heartRate, unit: hrUnit, predicate: predicate) { val in
             summary.heartRate = val
+            group.leave()
+        }
+
+        group.enter()
+        fetchMinMax(.heartRate, unit: hrUnit, predicate: predicate) { minVal, maxVal in
+            summary.heartRateMin = minVal
+            summary.heartRateMax = maxVal
             group.leave()
         }
 
@@ -253,6 +259,27 @@ final class HealthService: ObservableObject {
             let value = (samples?.first as? HKQuantitySample)?
                 .quantity.doubleValue(for: unit) ?? 0
             completion(value)
+        }
+        store.execute(query)
+    }
+
+    /// Fetches the minimum and maximum values for a discrete quantity type.
+    /// Useful for heart rate range — "avg 75bpm" is less informative than "52-145bpm range".
+    private func fetchMinMax(_ id: HKQuantityTypeIdentifier,
+                             unit: HKUnit,
+                             predicate: NSPredicate,
+                             completion: @escaping (Double, Double) -> Void) {
+        guard let type = HKQuantityType.quantityType(forIdentifier: id) else {
+            completion(0, 0); return
+        }
+        let query = HKStatisticsQuery(
+            quantityType: type,
+            quantitySamplePredicate: predicate,
+            options: [.discreteMin, .discreteMax]
+        ) { _, result, _ in
+            let minVal = result?.minimumQuantity()?.doubleValue(for: unit) ?? 0
+            let maxVal = result?.maximumQuantity()?.doubleValue(for: unit) ?? 0
+            completion(minVal, maxVal)
         }
         store.execute(query)
     }

@@ -89,37 +89,78 @@ struct CalendarSkill: ClawSkill {
         let todayEnd = cal.date(byAdding: .day, value: 1, to: cal.startOfDay(for: now))!
         let tomorrowEnd = cal.date(byAdding: .day, value: 1, to: todayEnd)!
 
-        let todayEvents = context.calendarService.fetchEvents(from: now, to: todayEnd)
+        // Fetch today's events from start-of-day (not now) so all-day events are reliably included,
+        // since some EventKit implementations may exclude all-day events whose start < query start.
+        let todayStart = cal.startOfDay(for: now)
+        let todayEvents = context.calendarService.fetchEvents(from: todayStart, to: todayEnd)
         let tomorrowEvents = context.calendarService.fetchEvents(from: todayEnd, to: tomorrowEnd)
 
-        // Split into ongoing and upcoming (today only)
+        // Split into timed (ongoing/upcoming) and all-day events
         let timedToday = todayEvents.filter { !$0.isAllDay }
+        let allDayToday = todayEvents.filter { $0.isAllDay }
         let ongoing = timedToday.filter { $0.startDate <= now && $0.endDate > now }
         let upcoming = timedToday.filter { $0.startDate > now }
         let remainingCount = ongoing.count + upcoming.count
 
-        // Nothing left today
+        // Nothing left today (timed)
         if remainingCount == 0 {
+            var msg = ""
+
+            // Show today's all-day events — these are still "active" context
+            if !allDayToday.isEmpty {
+                msg += "🏷️ 今天的全天事件：\n"
+                for event in allDayToday {
+                    msg += "  • \(event.title)\(calendarTag(event.calendar))\n"
+                }
+                msg += "\n"
+            }
+
             // Check tomorrow
             let timedTomorrow = tomorrowEvents.filter { !$0.isAllDay }
-            if timedTomorrow.isEmpty {
-                return "✅ 今天的安排已经全部结束了，明天也暂时没有日程。\n\n好好休息吧 🌙"
+            let allDayTomorrow = tomorrowEvents.filter { $0.isAllDay }
+
+            if timedTomorrow.isEmpty && allDayTomorrow.isEmpty {
+                msg += "✅ 今天的安排已经全部结束了，明天也暂时没有日程。\n\n好好休息吧 🌙"
+                return msg
             }
-            let first = timedTomorrow.sorted { $0.startDate < $1.startDate }.first!
-            let timeFmt = DateFormatter()
-            timeFmt.dateFormat = "HH:mm"
-            var msg = "✅ 今天的安排已经全部结束了。\n\n"
-            msg += "📅 明天最早的安排：\(timeFmt.string(from: first.startDate)) 「\(first.title)」"
-            if !first.location.isEmpty { msg += "\n  📍 \(first.location)" }
-            if timedTomorrow.count > 1 {
-                msg += "\n  明天共有 \(timedTomorrow.count) 个事件。"
+
+            msg += "✅ 今天的定时安排已经全部结束了。\n\n"
+
+            // Show tomorrow's all-day events
+            if !allDayTomorrow.isEmpty {
+                msg += "🏷️ 明天的全天事件：\n"
+                for event in allDayTomorrow {
+                    msg += "  • \(event.title)\(calendarTag(event.calendar))\n"
+                }
             }
+
+            // Show tomorrow's first timed event
+            if !timedTomorrow.isEmpty {
+                let first = timedTomorrow.sorted { $0.startDate < $1.startDate }.first!
+                let timeFmt = DateFormatter()
+                timeFmt.dateFormat = "HH:mm"
+                msg += "📅 明天最早的安排：\(timeFmt.string(from: first.startDate)) 「\(first.title)」"
+                if !first.location.isEmpty { msg += "\n  📍 \(first.location)" }
+                if timedTomorrow.count > 1 {
+                    msg += "\n  明天共有 \(timedTomorrow.count) 个定时事件。"
+                }
+            }
+
             return msg
         }
 
         var lines: [String] = []
         let timeFmt = DateFormatter()
         timeFmt.dateFormat = "HH:mm"
+
+        // Today's all-day events as context (birthdays, holidays, deadlines)
+        if !allDayToday.isEmpty {
+            lines.append("🏷️ 今天的全天事件：")
+            for event in allDayToday {
+                lines.append("  • \(event.title)\(calendarTag(event.calendar))")
+            }
+            lines.append("")
+        }
 
         // Ongoing events
         for event in ongoing {
@@ -229,6 +270,7 @@ struct CalendarSkill: ClawSkill {
         }
 
         /// Checks whether an event overlaps with this time-of-day period on the given date.
+        /// All-day events are excluded here since they're displayed separately.
         func matches(event: CalendarEventItem, on date: Date) -> Bool {
             if event.isAllDay { return false }
             let cal = Calendar.current

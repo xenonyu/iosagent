@@ -139,6 +139,32 @@ final class GPTContextBuilder {
         let availSummary = availableData.isEmpty ? "无" : availableData.joined(separator: "、")
         let unavailSummary = unavailableData.isEmpty ? "" : "\n不可用：\(unavailableData.joined(separator: "、"))"
 
+        // Build explicit data time boundaries so GPT knows exact coverage
+        let boundaryFmt = DateFormatter(); boundaryFmt.dateFormat = "M月d日"
+        let dataStartDate = Calendar.current.date(byAdding: .day, value: -6, to: now) ?? now
+        let healthBoundary = "健康/运动/睡眠数据：\(boundaryFmt.string(from: dataStartDate))~\(boundaryFmt.string(from: now))（共7天）"
+        let locationBoundary = locationRecords.isEmpty ? "" : {
+            let timestamps = locationRecords.compactMap { $0.timestamp }
+            if let earliest = timestamps.min(), let latest = timestamps.max() {
+                return "位置记录：\(boundaryFmt.string(from: earliest))~\(boundaryFmt.string(from: latest))"
+            }
+            return "位置记录：近7天"
+        }()
+        let calendarEndDate = Calendar.current.date(byAdding: .day, value: 7, to: now) ?? now
+        let calendarBoundary = "日历日程：\(boundaryFmt.string(from: now))~\(boundaryFmt.string(from: calendarEndDate))（未来7天）"
+        let lifeEventBoundary: String = {
+            let timestamps = lifeEvents.compactMap { $0.timestamp }
+            if let earliest = timestamps.min(), let latest = timestamps.max() {
+                return "生活记录：\(boundaryFmt.string(from: earliest))~\(boundaryFmt.string(from: latest))（最近\(lifeEvents.count)条）"
+            }
+            return ""
+        }()
+
+        var boundaries = [healthBoundary, calendarBoundary]
+        if !locationBoundary.isEmpty { boundaries.append(locationBoundary) }
+        if !lifeEventBoundary.isEmpty { boundaries.append(lifeEventBoundary) }
+        let dataBoundaryText = boundaries.joined(separator: "\n")
+
         // Determine tone based on user's AI style preference
         let toneInstruction: String
         switch self.profile.aiStyle {
@@ -155,6 +181,13 @@ final class GPTContextBuilder {
         你是 iosclaw，运行在用户 iPhone 上的私人 AI 助理。你可以读取用户的健康、位置、日历、照片、生活记录等本地数据。
         当前时间：\(weekday)
         可用数据源：\(availSummary)\(unavailSummary)
+
+        数据时间范围（重要）：
+        \(dataBoundaryText)
+        ⚠️ 你只拥有上述时间范围内的数据。如果用户询问的时间段超出数据覆盖范围（如「上个月」「今年」「过去30天」），你必须：
+        1. 先说明你只有近7天的数据
+        2. 基于已有数据给出部分回答（如「近7天内…」）
+        3. 不要将7天数据外推为更长时间段的结论
 
         能力边界：
         - 你只能读取数据，不能创建、修改或保存任何记录。如果用户想记录事情，告诉他可以在 App 的生活记录页面手动添加。

@@ -410,7 +410,7 @@ final class GPTContextBuilder {
 
         // PHOTO STATS
         if !recentPhotos.isEmpty {
-            parts.append(photoSection(recentPhotos))
+            parts.append(photoSection(recentPhotos, locationRecords: locationRecords))
         }
 
         // PHOTO SEARCH RESULTS (when user asks about specific photos)
@@ -1225,7 +1225,8 @@ final class GPTContextBuilder {
         return lines.joined(separator: "\n")
     }
 
-    private func photoSection(_ photos: [PhotoMetadataItem]) -> String {
+    private func photoSection(_ photos: [PhotoMetadataItem],
+                              locationRecords: [CDLocationRecord] = []) -> String {
         let cal = Calendar.current
         let total = photos.count
         let videos = photos.filter { $0.isVideo }.count
@@ -1237,6 +1238,15 @@ final class GPTContextBuilder {
         if geoTagged > 0 { lines.append("含地理位置：\(geoTagged) 张") }
         if favorites > 0 { lines.append("已收藏：\(favorites) 张") }
         if screenshots > 0 { lines.append("截图：\(screenshots) 张") }
+
+        // Build a lookup table from location records so we can resolve photo
+        // coordinates to human-readable place names. Without this, GPT only
+        // sees "you took 5 photos yesterday" but can't say "you took 5 photos
+        // at 星巴克". Cross-referencing with CDLocationRecord (which has reverse-
+        // geocoded place names) bridges the gap cheaply.
+        let placeRecords = locationRecords.filter {
+            $0.latitude != 0 || $0.longitude != 0
+        }
 
         // Per-day breakdown so GPT can answer "昨天拍了几张照片？" accurately
         var dayGroups: [Date: [PhotoMetadataItem]] = [:]
@@ -1287,10 +1297,103 @@ final class GPTContextBuilder {
                 let favNote = dayFavs > 0 ? " ⭐\(dayFavs)" : ""
 
                 lines.append("  \(dayLabel)：\(countParts.joined(separator: "、"))\(kindNote)\(favNote)")
+
+                // Add location clusters for this day's geo-tagged photos so GPT can
+                // answer "我在哪拍了照片？" or "昨天在哪些地方拍了照？" with place names.
+                let locationNote = photoLocationClusters(dayPhotos, placeRecords: placeRecords)
+                if !locationNote.isEmpty {
+                    lines.append("    拍摄地点：\(locationNote)")
+                }
             }
         }
 
         return lines.joined(separator: "\n")
+    }
+
+    /// Groups geo-tagged photos into location clusters and resolves place names
+    /// by matching against nearby CDLocationRecord entries (within ~1km).
+    /// Returns a compact summary like "星巴克(3张)、外滩(2张)" or falls back to
+    /// coordinates when no location record matches.
+    private func photoLocationClusters(_ photos: [PhotoMetadataItem],
+                                        placeRecords: [CDLocationRecord]) -> String {
+        let geoPhotos = photos.filter { $0.hasLocation }
+        guard !geoPhotos.isEmpty else { return "" }
+
+        // Cluster photos by proximity (~500m threshold).
+        // Simple greedy clustering: assign each photo to the first existing cluster
+        // within threshold, or create a new cluster.
+        let clusterThresholdKm = 0.5
+        var clusters: [(lat: Double, lon: Double, count: Int)] = []
+
+        for p in geoPhotos {
+            guard let lat = p.latitude, let lon = p.longitude else { continue }
+            var assigned = false
+            for i in clusters.indices {
+                let dist = Self.haversineKm(lat1: clusters[i].lat, lon1: clusters[i].lon,
+                                            lat2: lat, lon2: lon)
+                if dist < clusterThresholdKm {
+                    // Update cluster center to weighted average for better accuracy
+                    let n = Double(clusters[i].count)
+                    clusters[i].lat = (clusters[i].lat * n + lat) / (n + 1)
+                    clusters[i].lon = (clusters[i].lon * n + lon) / (n + 1)
+                    clusters[i].count += 1
+                    assigned = true
+                    break
+                }
+            }
+            if !assigned {
+                clusters.append((lat: lat, lon: lon, count: 1))
+            }
+        }
+
+        // Sort by photo count descending (most-photographed location first)
+        clusters.sort { $0.count > $1.count }
+
+        // Resolve each cluster to a place name via nearest location record (within 1km)
+        let matchThresholdKm = 1.0
+        let clusterNames: [String] = clusters.prefix(4).map { cluster in
+            // Find the nearest location record with a place name
+            var bestName: String?
+            var bestDist = Double.greatestFiniteMagnitude
+            for r in placeRecords {
+                let name = r.placeName ?? ""
+                let addr = r.address ?? ""
+                guard !name.isEmpty || !addr.isEmpty else { continue }
+                let dist = Self.haversineKm(lat1: cluster.lat, lon1: cluster.lon,
+                                            lat2: r.latitude, lon2: r.longitude)
+                if dist < matchThresholdKm && dist < bestDist {
+                    bestDist = dist
+                    bestName = !name.isEmpty ? name : addr
+                }
+            }
+
+            let label: String
+            if let name = bestName {
+                label = name
+            } else {
+                // Fallback to coordinates — GPT knows world geography well
+                let latS = cluster.lat >= 0 ? "N" : "S"
+                let lonS = cluster.lon >= 0 ? "E" : "W"
+                label = String(format: "%.3f°%@,%.3f°%@",
+                               abs(cluster.lat), latS, abs(cluster.lon), lonS)
+            }
+            return cluster.count > 1 ? "\(label)(\(cluster.count)张)" : label
+        }
+
+        return clusterNames.joined(separator: "、")
+    }
+
+    /// Haversine formula — great-circle distance in km between two lat/lon points.
+    private static func haversineKm(lat1: Double, lon1: Double,
+                                     lat2: Double, lon2: Double) -> Double {
+        let R = 6371.0 // Earth radius in km
+        let dLat = (lat2 - lat1) * .pi / 180.0
+        let dLon = (lon2 - lon1) * .pi / 180.0
+        let a = sin(dLat / 2) * sin(dLat / 2)
+            + cos(lat1 * .pi / 180.0) * cos(lat2 * .pi / 180.0)
+            * sin(dLon / 2) * sin(dLon / 2)
+        let c = 2 * atan2(sqrt(a), sqrt(1 - a))
+        return R * c
     }
 
     private func lifeEventsSection(_ events: [CDLifeEvent]) -> String {

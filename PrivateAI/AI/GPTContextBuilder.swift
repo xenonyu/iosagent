@@ -1009,27 +1009,57 @@ final class GPTContextBuilder {
         }
 
         // --- Specific weekday references ---
-        // "周三有什么安排？" → resolve to exact date
-        let weekdayNames = ["周一": 2, "周二": 3, "周三": 4, "周四": 5, "周五": 6, "周六": 7, "周日": 1,
-                            "星期一": 2, "星期二": 3, "星期三": 4, "星期四": 5, "星期五": 6, "星期六": 7, "星期天": 1, "星期日": 1]
-        for (name, targetWeekday) in weekdayNames {
+        // "周三有什么安排？" → resolve to exact date.
+        // Handles three patterns with increasing specificity:
+        //   1. "上周X" → directly resolve to last week (no ambiguity)
+        //   2. "下周X" → directly resolve to next week (no ambiguity)
+        //   3. Bare "周X" → disambiguate: today / past this week / upcoming this week
+        // Does NOT `break` after first match — "周三和周五" resolves both.
+        let weekdayMap: [(short: String, long: String, weekday: Int)] = [
+            ("周一", "星期一", 2), ("周二", "星期二", 3), ("周三", "星期三", 4),
+            ("周四", "星期四", 5), ("周五", "星期五", 6), ("周六", "星期六", 7),
+            ("周日", "星期日", 1)
+        ]
+        // Also handle "星期天" as alias for 星期日
+        let extraAliases: [(String, Int)] = [("星期天", 1)]
+
+        // Pre-check "上周X" and "下周X" prefixes to avoid ambiguous fallback
+        let hasLastWeekPrefix = ["上周", "上个星期", "上星期", "上个礼拜"]
+            .contains(where: { lower.contains($0) })
+        let hasNextWeekPrefix = ["下周", "下个星期", "下星期", "下个礼拜"]
+            .contains(where: { lower.contains($0) })
+
+        var resolvedWeekdays = Set<Int>() // avoid duplicates (周三 + 星期三)
+        let allNameMappings: [(String, Int)] = weekdayMap.flatMap { [($0.short, $0.weekday), ($0.long, $0.weekday)] }
+            + extraAliases
+
+        for (name, targetWeekday) in allNameMappings {
             guard lower.contains(name) else { continue }
-            // Determine if user means this week or last week's weekday.
-            // If the referenced weekday has already passed this week, it likely
-            // refers to last week (unless context suggests next week). If it hasn't
-            // come yet, it's this week.
+            guard !resolvedWeekdays.contains(targetWeekday) else { continue }
+            resolvedWeekdays.insert(targetWeekday)
+
             let targetDaysSinceMonday = (targetWeekday + 5) % 7
             let targetThisWeek = cal.date(byAdding: .day, value: targetDaysSinceMonday, to: thisMonday)!
+            let targetLastWeek = cal.date(byAdding: .day, value: -7, to: targetThisWeek)!
+            let targetNextWeek = cal.date(byAdding: .day, value: 7, to: targetThisWeek)!
+            let shortName = weekdayMap.first { $0.weekday == targetWeekday }?.short ?? name
 
-            if targetThisWeek <= cal.startOfDay(for: now) {
-                // This weekday has passed — could be this week (past) or last week
-                let targetLastWeek = cal.date(byAdding: .day, value: -7, to: targetThisWeek)!
-                hints.append("「\(name)」→ 本周\(name) = \(dateFmt.string(from: targetThisWeek))（已过），上周\(name) = \(dateFmt.string(from: targetLastWeek))")
+            if hasLastWeekPrefix {
+                // "上周三" → unambiguously last week
+                hints.append("「上\(shortName)」= \(dateFmt.string(from: targetLastWeek))")
+            } else if hasNextWeekPrefix {
+                // "下周三" → unambiguously next week
+                hints.append("「下\(shortName)」= \(dateFmt.string(from: targetNextWeek))→ 查看日历日程中对应日期")
+            } else if cal.isDate(targetThisWeek, inSameDayAs: cal.startOfDay(for: now)) {
+                // The referenced weekday IS today — "周五" asked on Friday
+                hints.append("「\(shortName)」= \(dateFmt.string(from: targetThisWeek))（今天）")
+            } else if targetThisWeek < cal.startOfDay(for: now) {
+                // This weekday already passed this week — provide both options
+                hints.append("「\(shortName)」→ 本周\(shortName) = \(dateFmt.string(from: targetThisWeek))（已过），上\(shortName) = \(dateFmt.string(from: targetLastWeek))")
             } else {
-                // This weekday hasn't come yet — this week
-                hints.append("「\(name)」→ 本周\(name) = \(dateFmt.string(from: targetThisWeek))（即将到来）")
+                // This weekday hasn't come yet — upcoming this week
+                hints.append("「\(shortName)」→ 本周\(shortName) = \(dateFmt.string(from: targetThisWeek))（即将到来）")
             }
-            break // only resolve one weekday reference
         }
 
         guard !hints.isEmpty else { return "" }

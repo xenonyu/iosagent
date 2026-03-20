@@ -1338,7 +1338,19 @@ final class GPTContextBuilder {
             // when user asks "前天走了多少步", GPT can directly match the label.
             let dayName: String
             if cal.isDateInToday(s.date) {
-                dayName = "今天"
+                // Annotate today's row with the current hour so GPT knows
+                // this is partial/accumulating data and avoids premature
+                // comparisons like "今天步数比昨天少很多" when it's only 10am.
+                let hour = cal.component(.hour, from: Date())
+                if hour < 6 {
+                    dayName = "今天,凌晨"
+                } else if hour < 12 {
+                    dayName = "今天,截至\(hour)点"
+                } else if hour < 22 {
+                    dayName = "今天,截至\(hour)点⚠️未完整"
+                } else {
+                    dayName = "今天,接近全天"
+                }
             } else if cal.isDateInYesterday(s.date) {
                 dayName = "昨天"
             } else if let twoDaysAgo = cal.date(byAdding: .day, value: -2, to: cal.startOfDay(for: Date())),

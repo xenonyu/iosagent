@@ -2599,26 +2599,86 @@ final class GPTContextBuilder {
             }
         }
 
-        // Sleep regularity — std dev of onset times
+        // Sleep schedule metrics — average bedtime, wake time, and regularity.
+        // Pre-computed so GPT can directly answer "我一般几点睡？几点起？" and
+        // "我睡眠规律吗？" without manually averaging 14 data points.
         let onsets = daysWithSleep.compactMap { $0.sleepOnset }
+        let wakes = daysWithSleep.compactMap { $0.wakeTime }
+
+        // Helper: convert time to minutes-since-18:00 (handles cross-midnight bedtimes)
+        let toNormalizedMinutes: (Date) -> Double = { time in
+            let comps = cal.dateComponents([.hour, .minute], from: time)
+            var mins = Double((comps.hour ?? 0) * 60 + (comps.minute ?? 0))
+            if mins < 18 * 60 { mins += 24 * 60 }  // e.g. 01:00 → 25*60
+            return mins
+        }
+        // Helper: convert normalized minutes back to HH:mm display
+        let normalizedToTimeStr: (Double) -> String = { mins in
+            var totalMins = Int(mins.rounded())
+            if totalMins >= 24 * 60 { totalMins -= 24 * 60 }
+            let h = totalMins / 60
+            let m = totalMins % 60
+            return String(format: "%02d:%02d", h, m)
+        }
+
         if onsets.count >= 3 {
-            // Convert onset to minutes-since-18:00 for comparison (handles cross-midnight)
-            let onsetMinutes = onsets.map { onset -> Double in
-                let comps = cal.dateComponents([.hour, .minute], from: onset)
-                var mins = Double((comps.hour ?? 0) * 60 + (comps.minute ?? 0))
-                // Normalize: times before 18:00 are next-day (e.g. 01:00 = 25*60)
-                if mins < 18 * 60 { mins += 24 * 60 }
-                return mins
-            }
+            let onsetMinutes = onsets.map(toNormalizedMinutes)
             let mean = onsetMinutes.reduce(0, +) / Double(onsetMinutes.count)
             let variance = onsetMinutes.map { ($0 - mean) * ($0 - mean) }.reduce(0, +) / Double(onsetMinutes.count)
             let stdDevMins = Int(variance.squareRoot())
+
+            // Average bedtime display (e.g. "平均入睡23:15")
+            summaryParts.append("平均入睡\(normalizedToTimeStr(mean))")
+
+            // Regularity assessment
             if stdDevMins <= 30 {
-                summaryParts.append("入睡时间较规律（波动≈\(stdDevMins)分钟）")
+                summaryParts.append("入睡较规律（波动≈\(stdDevMins)分钟）")
             } else if stdDevMins <= 60 {
-                summaryParts.append("入睡时间有些波动（波动≈\(stdDevMins)分钟）")
+                summaryParts.append("入睡有波动（波动≈\(stdDevMins)分钟）")
             } else {
-                summaryParts.append("入睡时间不太规律（波动≈\(stdDevMins)分钟）")
+                summaryParts.append("入睡不规律（波动≈\(stdDevMins)分钟）")
+            }
+
+            // Bedtime trend — is the user sleeping later or earlier over the period?
+            // Compare first half vs second half average to detect drift direction.
+            if onsetMinutes.count >= 6 {
+                let half = onsetMinutes.count / 2
+                // chronological order: reversed() already applied to daysWithSleep
+                let firstHalfAvg = onsetMinutes.prefix(half).reduce(0, +) / Double(half)
+                let secondHalfAvg = onsetMinutes.suffix(half).reduce(0, +) / Double(half)
+                let driftMins = Int((secondHalfAvg - firstHalfAvg).rounded())
+                if driftMins > 20 {
+                    summaryParts.append("入睡渐晚（近期比早期晚约\(driftMins)分钟）")
+                } else if driftMins < -20 {
+                    summaryParts.append("入睡渐早（近期比早期早约\(abs(driftMins))分钟）")
+                }
+            }
+        }
+
+        // Wake time schedule — same analysis for wake regularity.
+        // Without this, GPT can answer "几点睡" but not "几点起" questions,
+        // and can't assess overall circadian regularity (which needs both).
+        if wakes.count >= 3 {
+            // Wake times are morning times — normalize differently (minutes from midnight)
+            let wakeMinutes = wakes.map { wake -> Double in
+                let comps = cal.dateComponents([.hour, .minute], from: wake)
+                return Double((comps.hour ?? 0) * 60 + (comps.minute ?? 0))
+            }
+            let wakeMean = wakeMinutes.reduce(0, +) / Double(wakeMinutes.count)
+            let wakeVariance = wakeMinutes.map { ($0 - wakeMean) * ($0 - wakeMean) }.reduce(0, +) / Double(wakeMinutes.count)
+            let wakeStdDev = Int(wakeVariance.squareRoot())
+
+            let wakeH = Int(wakeMean) / 60
+            let wakeM = Int(wakeMean) % 60
+            let wakeTimeStr = String(format: "%02d:%02d", wakeH, wakeM)
+            summaryParts.append("平均起床\(wakeTimeStr)")
+
+            if wakeStdDev <= 30 {
+                summaryParts.append("起床较规律（波动≈\(wakeStdDev)分钟）")
+            } else if wakeStdDev <= 60 {
+                summaryParts.append("起床有波动（波动≈\(wakeStdDev)分钟）")
+            } else {
+                summaryParts.append("起床不规律（波动≈\(wakeStdDev)分钟）")
             }
         }
 

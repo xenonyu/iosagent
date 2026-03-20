@@ -497,14 +497,16 @@ struct SummarySkill: ClawSkill {
                 }
 
                 // Detect back-to-back meetings (no gap or <10 min gap)
-                let sorted = timedEvents.sorted { $0.startDate < $1.startDate }
-                var backToBackCount = 0
-                for i in 0..<(sorted.count - 1) {
-                    let gap = sorted[i + 1].startDate.timeIntervalSince(sorted[i].endDate) / 60
-                    if gap < 10 { backToBackCount += 1 }
-                }
-                if backToBackCount > 0 {
-                    lines.append("  ⚠️ \(backToBackCount) 组会议背靠背，注意留出休息时间")
+                if timedEvents.count >= 2 {
+                    let sorted = timedEvents.sorted { $0.startDate < $1.startDate }
+                    var backToBackCount = 0
+                    for i in 0..<(sorted.count - 1) {
+                        let gap = sorted[i + 1].startDate.timeIntervalSince(sorted[i].endDate) / 60
+                        if gap < 10 { backToBackCount += 1 }
+                    }
+                    if backToBackCount > 0 {
+                        lines.append("  ⚠️ \(backToBackCount) 组会议背靠背，注意留出休息时间")
+                    }
                 }
             }
 

@@ -439,7 +439,10 @@ final class GPTContextBuilder {
         // position may not be persisted yet. Adding CLLocation gives GPT
         // the ability to answer "我现在在哪？" accurately.
         if !locationRecords.isEmpty || self.locationService.currentLocation != nil {
-            parts.append(locationSection(locationRecords, currentLocation: self.locationService.currentLocation))
+            parts.append(locationSection(locationRecords,
+                                         currentLocation: self.locationService.currentLocation,
+                                         currentPlaceName: self.locationService.currentPlaceName,
+                                         currentAddress: self.locationService.currentAddress))
         }
 
         // PHOTO STATS
@@ -1643,7 +1646,9 @@ final class GPTContextBuilder {
     }
 
     private func locationSection(_ records: [CDLocationRecord],
-                                  currentLocation: CLLocation? = nil) -> String {
+                                  currentLocation: CLLocation? = nil,
+                                  currentPlaceName: String? = nil,
+                                  currentAddress: String? = nil) -> String {
         let cal = Calendar.current
         let dateFmt = DateFormatter(); dateFmt.dateFormat = "M月d日（EEEE）"
         dateFmt.locale = Locale(identifier: "zh_CN")
@@ -1670,21 +1675,42 @@ final class GPTContextBuilder {
             let coords = String(format: "%.4f°%@, %.4f°%@",
                                 abs(loc.coordinate.latitude), latS,
                                 abs(loc.coordinate.longitude), lonS)
-            // Try to match to the nearest CDLocationRecord for a human-readable name
-            var nearestName: String?
-            for r in records {
-                let dist = Self.haversineKm(lat1: loc.coordinate.latitude, lon1: loc.coordinate.longitude,
-                                            lat2: r.latitude, lon2: r.longitude)
-                if dist < 0.5 {
-                    let name = locationDisplayName(for: r)
-                    if name != "未知地点" {
-                        nearestName = name
-                        break
+            // Resolve human-readable name with priority:
+            // 1. Live reverse-geocoded name (most accurate — geocoded from this exact position)
+            // 2. Nearest CDLocationRecord within 500m (previously geocoded nearby point)
+            // 3. Raw coordinates fallback (GPT can approximate area from lat/lon)
+            var resolvedName: String?
+            var resolvedAddr: String?
+
+            // Priority 1: Live geocoded name from LocationService
+            if let liveName = currentPlaceName, !liveName.isEmpty {
+                resolvedName = liveName
+                resolvedAddr = currentAddress
+            }
+
+            // Priority 2: Nearest CDLocationRecord
+            if resolvedName == nil {
+                for r in records {
+                    let dist = Self.haversineKm(lat1: loc.coordinate.latitude, lon1: loc.coordinate.longitude,
+                                                lat2: r.latitude, lon2: r.longitude)
+                    if dist < 0.5 {
+                        let name = locationDisplayName(for: r)
+                        if name != "未知地点" {
+                            resolvedName = name
+                            break
+                        }
                     }
                 }
             }
-            if let name = nearestName {
-                lines.append("📍 当前位置：\(name)（\(coords)，\(freshness)）")
+
+            if let name = resolvedName {
+                // Include city/district context from address if available
+                var locationStr = name
+                if let addr = resolvedAddr, !addr.isEmpty,
+                   let city = cityFromAddress(addr), !name.contains(city) {
+                    locationStr += "，\(city)"
+                }
+                lines.append("📍 当前位置：\(locationStr)（\(coords)，\(freshness)）")
             } else {
                 lines.append("📍 当前位置：\(coords)（\(freshness)）")
             }

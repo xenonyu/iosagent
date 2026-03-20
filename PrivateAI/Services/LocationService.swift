@@ -11,6 +11,12 @@ final class LocationService: NSObject, ObservableObject {
     @Published var currentLocation: CLLocation?
     @Published var authorizationStatus: CLAuthorizationStatus = .notDetermined
 
+    /// Reverse-geocoded place name for the current live position.
+    /// Updated whenever `currentLocation` changes. Used by GPTContextBuilder
+    /// to show "📍 当前位置：南京西路" instead of raw coordinates.
+    @Published var currentPlaceName: String?
+    @Published var currentAddress: String?
+
     // MARK: - Private
 
     private let manager = CLLocationManager()
@@ -116,6 +122,39 @@ extension LocationService: CLLocationManagerDelegate {
         guard let location = locations.last else { return }
         DispatchQueue.main.async { self.currentLocation = location }
         saveIfNeeded(location)
+        geocodeCurrentLocation(location)
+    }
+
+    /// Reverse-geocodes the live position so GPTContextBuilder can show a
+    /// human-readable name (e.g. "南京西路") instead of raw coordinates.
+    /// Only fires on significant-change updates (≥200m), so geocoding is
+    /// infrequent and Apple's rate limits are not a concern.
+    private func geocodeCurrentLocation(_ location: CLLocation) {
+        // Skip if we already have a geocoded name for a nearby position.
+        // Prevents redundant geocoding when multiple updates arrive for
+        // the same approximate spot (e.g. GPS drift within 100m).
+        if let existing = currentLocation,
+           let _ = currentPlaceName,
+           location.distance(from: existing) < 100 {
+            return
+        }
+        // Use a separate geocoder instance to avoid cancelling the save
+        // geocoder if both fire at the same time. CLGeocoder only allows
+        // one outstanding request per instance.
+        let liveGeocoder = CLGeocoder()
+        liveGeocoder.reverseGeocodeLocation(location) { [weak self] placemarks, _ in
+            guard let self, let placemark = placemarks?.first else { return }
+            let name = placemark.name ?? placemark.locality ?? ""
+            let addr = [
+                placemark.thoroughfare,
+                placemark.locality,
+                placemark.administrativeArea
+            ].compactMap { $0 }.joined(separator: ", ")
+            DispatchQueue.main.async {
+                self.currentPlaceName = name.isEmpty ? nil : name
+                self.currentAddress = addr.isEmpty ? nil : addr
+            }
+        }
     }
 
     func locationManager(_ manager: CLLocationManager, didChangeAuthorization status: CLAuthorizationStatus) {

@@ -1563,6 +1563,40 @@ final class GPTContextBuilder {
             avgParts.append("体重\(String(format: "%.1f", singleWeight.bodyMassKg))kg（仅1次记录）")
         }
 
+        // Exercise streak — consecutive days with exercise ending at today/yesterday.
+        // Directly answers "我连续运动了几天？" / "运动连胜多少天？" which GPT
+        // frequently gets wrong when manually scanning 14 trend rows.
+        // Use ALL summaries (not just completedDays) because today's partial data
+        // still counts toward an active streak — the user DID exercise today.
+        let allChronological = summaries.sorted { $0.date < $1.date }
+        var currentStreak = 0
+        for s in allChronological.reversed() { // newest first
+            if s.exerciseMinutes > 0 || !s.workouts.isEmpty {
+                currentStreak += 1
+            } else {
+                break
+            }
+        }
+        if currentStreak >= 2 {
+            let streakNote = cal.isDateInToday(allChronological.last?.date ?? Date())
+                && (todaySummary?.exerciseMinutes ?? 0) > 0
+                ? "（含今天，仍在进行中 🔥）" : ""
+            avgParts.append("当前运动连续\(currentStreak)天\(streakNote)")
+        }
+
+        // Best activity day — pre-computed so GPT doesn't misidentify it from 14 rows
+        if let bestDay = completedDays.max(by: { $0.exerciseMinutes < $1.exerciseMinutes }),
+           bestDay.exerciseMinutes > 0 {
+            let bestDayFmt = DateFormatter(); bestDayFmt.dateFormat = "M/d"
+            let bestLabel: String
+            if cal.isDateInYesterday(bestDay.date) {
+                bestLabel = "昨天"
+            } else {
+                bestLabel = bestDayFmt.string(from: bestDay.date)
+            }
+            avgParts.append("最活跃日\(bestLabel)（\(Int(bestDay.exerciseMinutes))分钟）")
+        }
+
         // Note today's partial contribution if it has any data
         if let today = todaySummary, today.hasData {
             avgParts.append("今天数据尚在积累中，未计入统计")
@@ -3064,6 +3098,30 @@ final class GPTContextBuilder {
         let avgSleep = daysWithSleep.map(\.sleepHours).reduce(0, +) / Double(totalDays)
         var summaryParts: [String] = []
         summaryParts.append("\(totalDays)天有睡眠数据，均\(String(format: "%.1f", avgSleep))h")
+
+        // Best/worst sleep nights — pre-computed so GPT can directly answer
+        // "哪天睡得最好？" or "最近睡得最差是哪晚？" without scanning 14 rows.
+        // GPT frequently misidentifies extremes when comparing float values across
+        // a dense table (e.g. 7.2 vs 7.1 vs 7.3 across 14 entries).
+        if daysWithSleep.count >= 3 {
+            let sleepDateFmt = DateFormatter(); sleepDateFmt.dateFormat = "M/d"
+            let bestSleep = daysWithSleep.max { $0.sleepHours < $1.sleepHours }
+            let worstSleep = daysWithSleep.min { $0.sleepHours < $1.sleepHours }
+            if let best = bestSleep {
+                let prevDay = cal.date(byAdding: .day, value: -1, to: best.date) ?? best.date
+                let nightLabel = "\(sleepDateFmt.string(from: prevDay))晚"
+                var bestDesc = "最佳\(nightLabel)\(String(format: "%.1f", best.sleepHours))h"
+                if best.hasSleepPhases && best.sleepDeepHours > 0 {
+                    bestDesc += "（深睡\(String(format: "%.1f", best.sleepDeepHours))h）"
+                }
+                summaryParts.append(bestDesc)
+            }
+            if let worst = worstSleep, worst.sleepHours != bestSleep?.sleepHours {
+                let prevDay = cal.date(byAdding: .day, value: -1, to: worst.date) ?? worst.date
+                let nightLabel = "\(sleepDateFmt.string(from: prevDay))晚"
+                summaryParts.append("最差\(nightLabel)\(String(format: "%.1f", worst.sleepHours))h")
+            }
+        }
 
         // Average deep sleep ratio — key quality metric
         let daysWithPhases = daysWithSleep.filter { $0.hasSleepPhases }

@@ -2248,9 +2248,18 @@ final class GPTContextBuilder {
         // two text paragraphs (e.g. mixing up totals vs averages, or comparing
         // 4-day totals with 7-day totals). Pre-computing with daily averages for
         // fair comparison eliminates this entire class of errors.
-        // Require ≥2 completed days this week so the comparison is meaningful —
-        // on Monday with only today's partial data, week comparison would be misleading.
-        if thisWeekDays.count >= 2 && !lastWeekDays.isEmpty {
+        //
+        // Require ≥1 completed day this week. Previously required ≥2, but this
+        // meant on Monday and Tuesday the user asking "这周和上周比怎么样" got NO
+        // pre-computed comparison — forcing GPT to manually compute deltas from
+        // two separate stat blocks, which it frequently gets wrong (mixing up
+        // total vs average, confusing which number belongs to which week, etc.).
+        // Even a 1-day comparison is valuable when explicitly requested, because
+        // the header clearly states "本周1天日均 vs 上周7天日均" so GPT and the
+        // user know it's preliminary. Monday's 1-day comparison is especially
+        // useful: the user just finished a week and wants to see how the new
+        // week started vs the old one.
+        if thisWeekDays.count >= 1 && !lastWeekDays.isEmpty {
             let comparison = weekOverWeekComparison(
                 thisWeek: thisWeekDays,
                 lastWeek: lastWeekDays
@@ -2655,6 +2664,21 @@ final class GPTContextBuilder {
             let lastRHR = lastRHRDays.map(\.restingHeartRate).reduce(0, +) / Double(lastRHRDays.count)
             // For resting HR, lower is better — so "higher is NOT better"
             formatDelta("均静息心率", thisVal: thisRHR, lastVal: lastRHR, unit: "bpm", higherIsBetter: false)
+        }
+
+        // HRV (Heart Rate Variability) — key stress/recovery indicator.
+        // Users commonly ask "这周压力是不是比上周大？" or "HRV有变化吗？"
+        // HRV trending down across weeks suggests accumulated fatigue or stress;
+        // trending up suggests better recovery. Without this pre-computed delta,
+        // GPT has to manually extract HRV averages from two separate per-week
+        // stat blocks and do the subtraction — frequently miscalculating or
+        // confusing HRV with resting HR. Higher HRV = better recovery.
+        let thisHRVDays = thisWeek.filter { $0.hrv > 0 }
+        let lastHRVDays = lastWeek.filter { $0.hrv > 0 }
+        if !thisHRVDays.isEmpty && !lastHRVDays.isEmpty {
+            let thisHRV = thisHRVDays.map(\.hrv).reduce(0, +) / Double(thisHRVDays.count)
+            let lastHRV = lastHRVDays.map(\.hrv).reduce(0, +) / Double(lastHRVDays.count)
+            formatDelta("均HRV", thisVal: thisHRV, lastVal: lastHRV, unit: "ms")
         }
 
         // Distance — daily average km

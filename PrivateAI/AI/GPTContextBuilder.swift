@@ -876,6 +876,62 @@ final class GPTContextBuilder {
             hints.append("「下周」= \(dateFmt.string(from: nextMonday))（周一）~\(dateFmt.string(from: nextSunday))（周日）→ 查看日历日程中对应日期")
         }
 
+        // --- Weekend / Weekday references ---
+        // "周末" is one of the most common Chinese temporal expressions.
+        // Without explicit date resolution, GPT frequently misidentifies which
+        // Saturday/Sunday the user means, especially near week boundaries
+        // (e.g. on Monday, "周末" likely means last Sat-Sun, not next).
+
+        // Compute weekend dates for this week and last week
+        let thisSaturday = cal.date(byAdding: .day, value: 5, to: thisMonday)! // Mon+5 = Sat
+        let thisSundayDate = cal.date(byAdding: .day, value: 6, to: thisMonday)! // Mon+6 = Sun
+        let lastSaturday = cal.date(byAdding: .day, value: -7, to: thisSaturday)!
+        let lastSundayDate = cal.date(byAdding: .day, value: -7, to: thisSundayDate)!
+        let nextSaturday = cal.date(byAdding: .day, value: 7, to: thisSaturday)!
+        let nextSundayDate = cal.date(byAdding: .day, value: 7, to: thisSundayDate)!
+
+        // "上个周末" / "上周末" — always last week's Sat-Sun
+        let lastWeekendWords = ["上个周末", "上周末", "上个礼拜末", "上星期末", "last weekend"]
+        if lastWeekendWords.contains(where: { lower.contains($0) }) {
+            hints.append("「上个周末」= \(dateFmt.string(from: lastSaturday))（周六）~\(dateFmt.string(from: lastSundayDate))（周日）")
+        }
+        // "下个周末" / "下周末" — next week's Sat-Sun
+        else if ["下个周末", "下周末", "下个礼拜末", "下星期末", "next weekend"].contains(where: { lower.contains($0) }) {
+            hints.append("「下个周末」= \(dateFmt.string(from: nextSaturday))（周六）~\(dateFmt.string(from: nextSundayDate))（周日）→ 查看日历日程中对应日期")
+        }
+        // "这个周末" / "周末" — context-dependent:
+        //   Before Saturday → this week's upcoming Sat-Sun
+        //   On Sat/Sun → today (this weekend)
+        //   After Sunday (Mon) → likely refers to last weekend (just passed)
+        else if ["这个周末", "这周末", "周末", "礼拜末", "星期末", "weekend"].contains(where: { lower.contains($0) }) {
+            let todayStart = cal.startOfDay(for: now)
+            if todayStart >= thisSaturday {
+                // It's Sat or Sun — user is in the weekend
+                hints.append("「周末」= \(dateFmt.string(from: thisSaturday))（周六）~\(dateFmt.string(from: thisSundayDate))（周日）← 本周末（当前正处于周末）")
+            } else if daysSinceMonday <= 1 {
+                // Mon or Tue — "周末" most likely refers to the one that just passed
+                hints.append("「周末」→ 刚过去的周末 = \(dateFmt.string(from: lastSaturday))（周六）~\(dateFmt.string(from: lastSundayDate))（周日），即将到来的周末 = \(dateFmt.string(from: thisSaturday))（周六）~\(dateFmt.string(from: thisSundayDate))（周日）。结合用户问题的时态判断：回顾性问题（去了哪、做了什么）→ 上个周末；计划性问题（有什么安排）→ 这个周末。")
+            } else {
+                // Wed-Fri — "周末" most likely refers to the upcoming Sat-Sun
+                hints.append("「周末」= 即将到来的 \(dateFmt.string(from: thisSaturday))（周六）~\(dateFmt.string(from: thisSundayDate))（周日）")
+            }
+        }
+
+        // "工作日" / "weekday" — Monday to Friday
+        let weekdayTerms = ["工作日", "上班日", "weekday", "weekdays"]
+        if weekdayTerms.contains(where: { lower.contains($0) }) {
+            let thisFriday = cal.date(byAdding: .day, value: 4, to: thisMonday)! // Mon+4 = Fri
+            let lastFriday = cal.date(byAdding: .day, value: -7, to: thisFriday)!
+            if lastWeekWords.contains(where: { lower.contains($0) }) {
+                // "上周工作日"
+                hints.append("「上周工作日」= \(dateFmt.string(from: lastMonday))（周一）~\(dateFmt.string(from: lastFriday))（周五）")
+            } else {
+                // "这周工作日" or just "工作日"
+                let endDay = min(thisFriday, cal.startOfDay(for: now))
+                hints.append("「工作日」= 本周 \(dateFmt.string(from: thisMonday))（周一）~\(dateFmt.string(from: endDay))（\(daysSinceMonday < 5 ? "至今天" : "周五")），上周 \(dateFmt.string(from: lastMonday))（周一）~\(dateFmt.string(from: lastFriday))（周五）")
+            }
+        }
+
         // --- Ambiguous expressions ---
 
         // "最近" / "前几天" / "这几天" — common ambiguous terms

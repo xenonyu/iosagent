@@ -411,8 +411,15 @@ final class GPTContextBuilder {
             parts.append(workoutHistory)
         }
 
-        // CALENDAR
-        parts.append(calendarSection(todayEvents: todayEvents, upcoming: upcomingEvents, past: pastEvents))
+        // CALENDAR — only include when authorized or has data.
+        // When not authorized, all event arrays are empty and calendarSection would output
+        // "今天：无日程", which contradicts the SYSTEM prompt's "日历日程（未授权…）" message.
+        // This misleads GPT into saying "you have no events" instead of guiding the user
+        // to grant calendar permission. Location/photos/lifeEvents are already gated.
+        let hasCalendarData = !todayEvents.isEmpty || !upcomingEvents.isEmpty || !pastEvents.isEmpty
+        if hasCalendarData || self.calendarService.isAuthorized {
+            parts.append(calendarSection(todayEvents: todayEvents, upcoming: upcomingEvents, past: pastEvents))
+        }
 
         // LOCATION
         if !locationRecords.isEmpty {

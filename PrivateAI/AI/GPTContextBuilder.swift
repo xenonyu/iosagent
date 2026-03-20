@@ -73,7 +73,7 @@ final class GPTContextBuilder {
             let lifeEvents = CDLifeEvent.fetchRecent(limit: 15, in: self.coreDataContext)
 
             // Run photo search when query looks photo-related so GPT can describe results
-            let photoResults = self.searchPhotosIfNeeded(query: userQuery)
+            let (photoResults, photoQuery) = self.searchPhotosIfNeeded(query: userQuery)
 
             let prompt = self.assemble(
                 userQuery: userQuery,
@@ -86,7 +86,8 @@ final class GPTContextBuilder {
                 recentPhotos: recentPhotos,
                 locationRecords: locationRecords,
                 lifeEvents: lifeEvents,
-                photoSearchResults: photoResults
+                photoSearchResults: photoResults,
+                photoSearchQuery: photoQuery
             )
             completion(prompt)
         }
@@ -104,7 +105,8 @@ final class GPTContextBuilder {
                           recentPhotos: [PhotoMetadataItem],
                           locationRecords: [CDLocationRecord],
                           lifeEvents: [CDLifeEvent],
-                          photoSearchResults: [PhotoSearchService.SearchResult] = []) -> String {
+                          photoSearchResults: [PhotoSearchService.SearchResult] = [],
+                          photoSearchQuery: PhotoSearchService.PhotoQuery? = nil) -> String {
         var parts: [String] = []
 
         // SYSTEM
@@ -304,7 +306,13 @@ final class GPTContextBuilder {
 
         // PHOTO SEARCH RESULTS (when user asks about specific photos)
         if !photoSearchResults.isEmpty {
-            parts.append(photoSearchSection(photoSearchResults))
+            parts.append(photoSearchSection(photoSearchResults, query: photoSearchQuery))
+        } else if let pq = photoSearchQuery, (!pq.keywords.isEmpty || pq.location != nil) {
+            // Search was attempted but found no results — tell GPT so it can inform the user
+            var criteria: [String] = []
+            if !pq.keywords.isEmpty { criteria.append("关键词：\(pq.keywords.joined(separator: "、"))") }
+            if !pq.locationName.isEmpty { criteria.append("地点：\(pq.locationName)") }
+            parts.append("[照片搜索结果]\n搜索条件：\(criteria.joined(separator: "，"))\n未找到匹配的照片。可能是照片索引尚未建立，或相册中没有符合条件的照片。")
         }
 
         // LIFE EVENTS
@@ -971,7 +979,8 @@ final class GPTContextBuilder {
     // MARK: - Photo Search
 
     /// Detects photo-related queries and runs a local photo search.
-    private func searchPhotosIfNeeded(query: String) -> [PhotoSearchService.SearchResult] {
+    /// Returns both the search results and the parsed query so GPT knows what was searched for.
+    private func searchPhotosIfNeeded(query: String) -> (results: [PhotoSearchService.SearchResult], query: PhotoSearchService.PhotoQuery?) {
         let lower = query.lowercased()
         // Specific photo keywords — always trigger search
         let specificKeywords = [
@@ -988,21 +997,37 @@ final class GPTContextBuilder {
         let hasSpecific = specificKeywords.contains(where: { lower.contains($0) })
         let hasGenericWithContext = genericKeywords.contains(where: { lower.contains($0) })
             && photoContext.contains(where: { lower.contains($0) })
-        guard hasSpecific || hasGenericWithContext else { return [] }
+        guard hasSpecific || hasGenericWithContext else { return ([], nil) }
 
         let parsed = photoSearchService.parseQuery(query)
         // Only search if we have meaningful criteria (keywords or location)
-        guard !parsed.keywords.isEmpty || parsed.location != nil || parsed.isSelfie == true else { return [] }
-        return photoSearchService.search(query: parsed, limit: 20)
+        guard !parsed.keywords.isEmpty || parsed.location != nil || parsed.isSelfie == true else { return ([], parsed) }
+        let results = photoSearchService.search(query: parsed, limit: 20)
+        return (results, parsed)
     }
 
-    private func photoSearchSection(_ results: [PhotoSearchService.SearchResult]) -> String {
+    private func photoSearchSection(_ results: [PhotoSearchService.SearchResult],
+                                     query: PhotoSearchService.PhotoQuery? = nil) -> String {
         let dateFmt = DateFormatter()
         dateFmt.dateFormat = "M月d日"
         let total = results.count
         let withLocation = results.filter { $0.latitude != 0 }.count
 
         var lines = ["[照片搜索结果]"]
+
+        // Include search criteria so GPT can describe what was searched and give
+        // contextual responses (e.g. "找到15张在日本拍的风景照" vs "找到15张照片")
+        if let pq = query {
+            var criteria: [String] = []
+            if !pq.locationName.isEmpty { criteria.append("地点：\(pq.locationName)") }
+            if !pq.keywords.isEmpty { criteria.append("类型：\(pq.keywords.joined(separator: "、"))") }
+            if pq.isSelfie == true { criteria.append("自拍") }
+            if let min = pq.minFaces, min > 1 { criteria.append("多人合照") }
+            if !criteria.isEmpty {
+                lines.append("搜索条件：\(criteria.joined(separator: "，"))")
+            }
+        }
+
         lines.append("找到 \(total) 张匹配的照片" + (total >= 20 ? "（显示前20张）" : ""))
 
         // Date range of results

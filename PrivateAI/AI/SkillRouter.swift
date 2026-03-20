@@ -1039,8 +1039,25 @@ struct SkillRouter {
         let weekdayPatterns = ["周一", "周二", "周三", "周四", "周五", "周六", "周日", "周天",
                                "星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日", "星期天",
                                "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
-        return timeKeywords.contains(where: { text.contains($0) })
-            || weekdayPatterns.contains(where: { text.lowercased().contains($0) })
+        if timeKeywords.contains(where: { text.contains($0) }) { return true }
+        if weekdayPatterns.contains(where: { text.lowercased().contains($0) }) { return true }
+        // Absolute calendar dates: "3月15号", "3月15日", "15号", "15日", "3/15"
+        let lower = text.lowercased()
+        if lower.range(of: #"\d{1,2}月\d{1,2}[号日]"#, options: .regularExpression) != nil { return true }
+        if lower.range(of: #"(?<![月周期\d])\d{1,2}[号日]"#, options: .regularExpression) != nil { return true }
+        if lower.range(of: #"(?<!\d)\d{1,2}[/\-]\d{1,2}(?!\d)"#, options: .regularExpression) != nil { return true }
+        // Chinese numeral dates: "三月十五号", "十五号"
+        if lower.contains("号") || lower.contains("日") {
+            let chMonths = ["一月", "二月", "三月", "四月", "五月", "六月",
+                            "七月", "八月", "九月", "十月", "十一月", "十二月"]
+            if chMonths.contains(where: { lower.contains($0) }) { return true }
+        }
+        // English month names with a day number
+        let engMonths = ["january", "february", "march", "april", "may", "june",
+                         "july", "august", "september", "october", "november", "december",
+                         "jan", "feb", "mar", "apr", "jun", "jul", "aug", "sep", "sept", "oct", "nov", "dec"]
+        if engMonths.contains(where: { lower.contains($0) }) { return true }
+        return false
     }
 
     // MARK: - Time Range Extraction
@@ -1051,6 +1068,13 @@ struct SkillRouter {
         // Also English: "next monday", "this friday", "last wednesday"
         if let specificDate = extractSpecificWeekday(from: text) {
             return .specificDate(specificDate)
+        }
+
+        // --- Specific calendar date parsing (must check before relative days) ---
+        // Matches: "3月15号", "3月15日", "三月十五号", "15号", "15日", "3/15", "March 15"
+        // These are absolute dates that users naturally use: "3月25号有什么安排？"
+        if let calendarDate = extractSpecificCalendarDate(from: text) {
+            return .specificDate(calendarDate)
         }
 
         // --- Relative day count parsing (must check before generic keywords) ---
@@ -1454,6 +1478,220 @@ struct SkillRouter {
         if dayDiff < 0 { dayDiff += 7 }
 
         return cal.date(byAdding: .day, value: dayDiff, to: targetWeekStart)
+    }
+
+    // MARK: - Specific Calendar Date Extraction
+
+    /// Parses absolute calendar date expressions into a specific Date.
+    ///
+    /// Supported patterns:
+    /// - "3月15号" / "3月15日" → March 15 of the current (or most recent) year
+    /// - "三月十五号" / "三月十五日" → Chinese numeral month + day
+    /// - "15号" / "15日" → the 15th of the current month
+    /// - "十五号" / "十五日" → Chinese numeral day of current month
+    /// - "3/15" / "3-15" → month/day with slash or dash separator
+    /// - "March 15" / "Jan 1" / "march 15th" → English month names
+    ///
+    /// Ambiguity rule: if the resulting date is more than 6 months in the future,
+    /// assume the user meant last year (e.g. "1月1号" in July → last January 1st).
+    private static func extractSpecificCalendarDate(from text: String) -> Date? {
+        let lower = text.lowercased()
+        let cal = Calendar.current
+        let now = Date()
+        let currentYear = cal.component(.year, from: now)
+
+        // Chinese numeral → Int mapping (reused from extractRelativeDays)
+        let chineseDigits: [Character: Int] = [
+            "一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5,
+            "六": 6, "七": 7, "八": 8, "九": 9, "十": 10
+        ]
+
+        /// Parses a Chinese numeral (1–31) at the given position.
+        func parseChinese(from str: String, at idx: String.Index) -> (value: Int, endIdx: String.Index)? {
+            guard idx < str.endIndex else { return nil }
+            let ch = str[idx]
+            if let d = chineseDigits[ch] {
+                let next = str.index(after: idx)
+                if d == 10 {
+                    // "十" = 10, "十二" = 12
+                    if next < str.endIndex, let ones = chineseDigits[str[next]], ones < 10 {
+                        return (10 + ones, str.index(after: next))
+                    }
+                    return (10, next)
+                } else if d < 10 {
+                    // "二十" = 20, "二十一" = 21
+                    if next < str.endIndex && str[next] == "十" {
+                        let afterTen = str.index(after: next)
+                        if afterTen < str.endIndex, let ones = chineseDigits[str[afterTen]], ones < 10 {
+                            return (d * 10 + ones, str.index(after: afterTen))
+                        }
+                        return (d * 10, afterTen)
+                    }
+                    return (d, next)
+                }
+            }
+            // Arabic digit
+            if ch.isNumber {
+                var numStr = String(ch)
+                var endIdx = str.index(after: idx)
+                while endIdx < str.endIndex && str[endIdx].isNumber {
+                    numStr.append(str[endIdx])
+                    endIdx = str.index(after: endIdx)
+                }
+                if let n = Int(numStr) { return (n, endIdx) }
+            }
+            return nil
+        }
+
+        /// Builds a Date from month + day, resolving year ambiguity.
+        func buildDate(month: Int, day: Int) -> Date? {
+            guard month >= 1 && month <= 12 && day >= 1 && day <= 31 else { return nil }
+            var comps = DateComponents()
+            comps.year = currentYear
+            comps.month = month
+            comps.day = day
+            guard let date = cal.date(from: comps) else { return nil }
+            // Validate: the calendar might roll over (e.g. Feb 30 → Mar 2)
+            let actualMonth = cal.component(.month, from: date)
+            guard actualMonth == month else { return nil }
+            // Ambiguity: if date is >6 months in the future, assume last year
+            if date.timeIntervalSince(now) > 6 * 30 * 24 * 3600 {
+                comps.year = currentYear - 1
+                return cal.date(from: comps)
+            }
+            return cal.startOfDay(for: date)
+        }
+
+        // --- Pattern 1: "M月D号" / "M月D日" (Arabic or Chinese numerals) ---
+        // Regex approach for Arabic: "3月15号", "12月1日"
+        if let match = lower.range(of: #"(\d{1,2})月(\d{1,2})[号日]"#, options: .regularExpression) {
+            let matchStr = String(lower[match])
+            let parts = matchStr.split(separator: "月")
+            if let month = Int(parts[0]) {
+                let dayStr = String(parts[1]).replacingOccurrences(of: "号", with: "").replacingOccurrences(of: "日", with: "")
+                if let day = Int(dayStr) {
+                    return buildDate(month: month, day: day)
+                }
+            }
+        }
+
+        // Chinese numeral month + day: "三月十五号", "十二月一日"
+        // Look for Chinese month pattern: [Chinese numeral]月[Chinese numeral][号日]
+        for monthCandidate in 1...12 {
+            let monthStr: String
+            if monthCandidate <= 9 {
+                // Single digit months: 一月...九月
+                let chars = ["一", "二", "三", "四", "五", "六", "七", "八", "九"]
+                monthStr = chars[monthCandidate - 1] + "月"
+            } else if monthCandidate == 10 {
+                monthStr = "十月"
+            } else if monthCandidate == 11 {
+                monthStr = "十一月"
+            } else {
+                monthStr = "十二月"
+            }
+            if let monthRange = lower.range(of: monthStr) {
+                let afterMonth = monthRange.upperBound
+                if let (day, dayEnd) = parseChinese(from: lower, at: afterMonth) {
+                    if dayEnd < lower.endIndex {
+                        let suffix = lower[dayEnd]
+                        if suffix == "号" || suffix == "日" {
+                            return buildDate(month: monthCandidate, day: day)
+                        }
+                    }
+                }
+            }
+        }
+
+        // --- Pattern 2: "D号" / "D日" (day only → current month) ---
+        // Must NOT be preceded by "月" (already handled above) or "周"/"星期" (weekdays)
+        // Arabic: "15号", "1日"
+        if let match = lower.range(of: #"(?<![月周期\d])\b?(\d{1,2})[号日]"#, options: .regularExpression) {
+            let matchStr = String(lower[match])
+            let dayStr = matchStr.replacingOccurrences(of: "号", with: "").replacingOccurrences(of: "日", with: "")
+            if let day = Int(dayStr), day >= 1 && day <= 31 {
+                let currentMonth = cal.component(.month, from: now)
+                return buildDate(month: currentMonth, day: day)
+            }
+        }
+        // Chinese numeral day-only: "十五号", "二十日"
+        // Check for 号/日 suffix preceded by Chinese numeral, not preceded by 月
+        for suffix in ["号", "日"] {
+            if let suffixRange = lower.range(of: suffix) {
+                let beforeSuffix = suffixRange.lowerBound
+                // Make sure there's no "月" right before the number
+                if beforeSuffix > lower.startIndex {
+                    // Scan backward to find the start of the Chinese numeral
+                    var scanIdx = lower.startIndex
+                    var bestMatch: (day: Int, endIdx: String.Index)? = nil
+                    while scanIdx < beforeSuffix {
+                        if let (n, endIdx) = parseChinese(from: lower, at: scanIdx), endIdx == beforeSuffix {
+                            // Check character before scanIdx is not "月"
+                            if scanIdx > lower.startIndex {
+                                let prevIdx = lower.index(before: scanIdx)
+                                if lower[prevIdx] == "月" { break }
+                            }
+                            bestMatch = (n, endIdx)
+                            break
+                        }
+                        scanIdx = lower.index(after: scanIdx)
+                    }
+                    if let match = bestMatch, match.day >= 1 && match.day <= 31 {
+                        let currentMonth = cal.component(.month, from: now)
+                        return buildDate(month: currentMonth, day: match.day)
+                    }
+                }
+            }
+        }
+
+        // --- Pattern 3: "M/D" or "M-D" (slash or dash separated) ---
+        // "3/15", "12/1", "3-15" — common shorthand
+        // Guard: must be bare date, not part of a longer number or URL
+        if let match = lower.range(of: #"(?<!\d)(\d{1,2})[/\-](\d{1,2})(?!\d)"#, options: .regularExpression) {
+            let matchStr = String(lower[match])
+            let separator = matchStr.contains("/") ? "/" : "-"
+            let parts = matchStr.split(separator: Character(separator))
+            if parts.count == 2, let month = Int(parts[0]), let day = Int(parts[1]) {
+                if month >= 1 && month <= 12 && day >= 1 && day <= 31 {
+                    return buildDate(month: month, day: day)
+                }
+            }
+        }
+
+        // --- Pattern 4: English month names ---
+        // "March 15", "Jan 1", "march 15th", "december 25"
+        let englishMonths: [(names: [String], month: Int)] = [
+            (["january", "jan"], 1), (["february", "feb"], 2), (["march", "mar"], 3),
+            (["april", "apr"], 4), (["may"], 5), (["june", "jun"], 6),
+            (["july", "jul"], 7), (["august", "aug"], 8), (["september", "sep", "sept"], 9),
+            (["october", "oct"], 10), (["november", "nov"], 11), (["december", "dec"], 12)
+        ]
+        for (names, month) in englishMonths {
+            for name in names {
+                // "march 15", "march 15th"
+                if let nameRange = lower.range(of: name) {
+                    let afterName = nameRange.upperBound
+                    // Skip space
+                    var idx = afterName
+                    while idx < lower.endIndex && lower[idx] == " " { idx = lower.index(after: idx) }
+                    // Parse day number
+                    if idx < lower.endIndex && lower[idx].isNumber {
+                        var numStr = ""
+                        var numEnd = idx
+                        while numEnd < lower.endIndex && lower[numEnd].isNumber {
+                            numStr.append(lower[numEnd])
+                            numEnd = lower.index(after: numEnd)
+                        }
+                        if let day = Int(numStr) {
+                            // Skip optional "st", "nd", "rd", "th" suffix
+                            return buildDate(month: month, day: day)
+                        }
+                    }
+                }
+            }
+        }
+
+        return nil
     }
 
     // MARK: - Recommendation Topic

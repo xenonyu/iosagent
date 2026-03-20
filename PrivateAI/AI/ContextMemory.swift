@@ -135,7 +135,14 @@ final class ContextMemory {
             stripped = stripped.replacingOccurrences(of: filler, with: "")
         }
         stripped = stripped.trimmingCharacters(in: .whitespacesAndNewlines)
-        return timeWords.contains(where: { stripped == $0 || stripped.hasPrefix($0) && stripped.count <= $0.count + 2 })
+        if timeWords.contains(where: { stripped == $0 || stripped.hasPrefix($0) && stripped.count <= $0.count + 2 }) {
+            return true
+        }
+        // Also recognize bare calendar dates as time references: "3月15号", "15号", "3/15"
+        if stripped.range(of: #"^\d{1,2}月\d{1,2}[号日]$"#, options: .regularExpression) != nil { return true }
+        if stripped.range(of: #"^\d{1,2}[号日]$"#, options: .regularExpression) != nil { return true }
+        if stripped.range(of: #"^\d{1,2}[/\-]\d{1,2}$"#, options: .regularExpression) != nil { return true }
+        return false
     }
 
     /// Returns a context hint string to prepend to queries.
@@ -174,17 +181,9 @@ final class ContextMemory {
     /// If not, the query is using the default range from SkillRouter (.lastWeek) and we should
     /// inherit the time range from the previous conversational turn instead.
     private func hasExplicitTimeReference(_ text: String) -> Bool {
-        let timeKeywords = [
-            "今天", "昨天", "前天", "大前天", "明天", "后天",
-            "这周", "本周", "上周", "上上周", "下周",
-            "这个月", "本月", "上个月", "下个月",
-            "今年", "最近", "近期",
-            "today", "yesterday", "tomorrow",
-            "this week", "last week", "next week",
-            "this month", "last month",
-            "recently", "lately"
-        ]
-        return timeKeywords.contains(where: { text.contains($0) })
+        // Delegate to SkillRouter's comprehensive check which covers keywords,
+        // weekday patterns, absolute calendar dates (3月15号), and English month names.
+        return SkillRouter.hasExplicitTimeReference(text)
     }
 
     /// Extracts the QueryTimeRange from an existing intent, if it carries one.

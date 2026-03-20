@@ -858,9 +858,22 @@ final class GPTContextBuilder {
             parts.append("\(label)：\(weekSubTotal(thisWeekDays))")
         }
 
-        // Last week stats
+        // Last week stats — mark as partial when we only have some days
+        // (7-day data window may not cover a full Mon-Sun last week).
+        // Without this, GPT might say "上周只运动了1天" when we actually only
+        // have 3 days of data and the user may have exercised on the missing days.
         if !lastWeekDays.isEmpty {
-            let label = "上周（\(lastWeekDays.count)天）"
+            let label: String
+            if lastWeekDays.count < 7 {
+                // Calculate which days of last week we DO have data for
+                let wkFmt = DateFormatter(); wkFmt.locale = Locale(identifier: "zh_CN"); wkFmt.dateFormat = "EEE"
+                let coveredDays = lastWeekDays
+                    .sorted { $0.date < $1.date }
+                    .map { wkFmt.string(from: $0.date) }
+                label = "上周（仅有\(lastWeekDays.count)/7天数据：\(coveredDays.joined(separator: "、"))，其余天超出7天数据范围，请勿据此推断完整上周情况）"
+            } else {
+                label = "上周（完整7天）"
+            }
             parts.append("\(label)：\(weekSubTotal(lastWeekDays))")
         }
 
@@ -1116,9 +1129,17 @@ final class GPTContextBuilder {
 
         for day in sortedDays.prefix(7) {
             guard let dayRecords = dayGroups[day] else { continue }
-            let dayLabel = cal.isDateInToday(day) ? "今天" :
-                           cal.isDateInYesterday(day) ? "昨天" :
-                           dateFmt.string(from: day)
+            let dayLabel: String
+            if cal.isDateInToday(day) {
+                dayLabel = "今天"
+            } else if cal.isDateInYesterday(day) {
+                dayLabel = "昨天"
+            } else if let twoDaysAgo = cal.date(byAdding: .day, value: -2, to: cal.startOfDay(for: Date())),
+                      cal.isDate(day, inSameDayAs: twoDaysAgo) {
+                dayLabel = "前天"
+            } else {
+                dayLabel = dateFmt.string(from: day)
+            }
             // Deduplicate by place name, keep chronological order and visit times
             var seenPlaces: [String: (count: Int, times: [String], address: String?)] = [:]
             var placeOrder: [String] = []

@@ -129,6 +129,14 @@ final class ChatViewModel: ObservableObject {
                     }
                 } catch {
                     await MainActor.run {
+                        // Remove the orphaned user message from conversation history.
+                        // Without a paired assistant response, GPT would see a dangling
+                        // question on the next query and may try to answer it alongside
+                        // the new question, causing confused multi-topic responses.
+                        if let lastIdx = self.conversationHistory.lastIndex(where: { $0.isUser && $0.content == text }) {
+                            self.conversationHistory.remove(at: lastIdx)
+                        }
+
                         let errorText = self.friendlyErrorMessage(error)
                         let errorMsg = ChatMessage(
                             content: errorText,

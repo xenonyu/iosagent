@@ -267,6 +267,8 @@ struct WorkoutRecord {
 struct HealthSummary {
     var steps: Double = 0
     var activeCalories: Double = 0
+    /// Basal (resting) energy burned — metabolism at rest, typically 1200-2000 kcal/day
+    var basalCalories: Double = 0
     var exerciseMinutes: Double = 0
     var sleepHours: Double = 0
     /// Deep sleep (N3 stage) — most restorative phase

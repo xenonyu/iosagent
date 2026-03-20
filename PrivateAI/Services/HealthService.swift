@@ -75,6 +75,15 @@ final class HealthService: ObservableObject {
             group.leave()
         }
 
+        // Basal (resting) energy — metabolism at rest, the "always-on" calorie burn.
+        // Combined with active calories gives total daily energy expenditure (TDEE),
+        // which is what users typically mean when asking "今天消耗了多少卡路里".
+        group.enter()
+        fetchSum(.basalEnergyBurned, unit: .kilocalorie(), predicate: predicate) { val in
+            summary.basalCalories = val
+            group.leave()
+        }
+
         // Exercise minutes
         group.enter()
         fetchSum(.appleExerciseTime, unit: .minute(), predicate: predicate) { val in

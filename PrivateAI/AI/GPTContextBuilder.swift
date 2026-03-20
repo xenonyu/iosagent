@@ -313,6 +313,7 @@ final class GPTContextBuilder {
         - 如果某项数据为 0 或为空，坦诚说明「暂无该数据」或「尚未授权」，不要猜测。
         - 回答健康、运动相关问题时，优先引用准确数值，再结合[健康参考标准]给出个性化解读（如「离建议的7000步还差1500步」），不要只说数字。
         - ⚠️ 今日健康数据标注了「截至X点」。如果现在还在上午或下午，今天的步数/运动/卡路里等数据还会继续增长，不要过早下结论说「今天步数偏少」「运动不够」。应该说「截至目前…」或「到目前为止…」，必要时可鼓励用户继续保持。只有晚上10点之后的数据才接近当天最终值。
+        - ⚠️ 卡路里说明：「活动kcal」是运动/活动消耗，「总消耗kcal」= 活动 + 基础代谢（身体维持生命所需能量）。用户问「今天消耗了多少卡路里」时，应回答总消耗值。基础代谢约占总消耗60-75%，这是正常的。
         - 涉及多天数据时，可引用「近7天趋势」进行对比分析，指出趋势变化。
         - 周统计中会标注「X天中Y天有运动」，回答时要如实反映活跃天数，不要把少数几天的数据当作每天都达到了。例如7天中2天运动共60分钟，应该说「这周运动了2天，共60分钟」，而不是「日均运动30分钟」。
         - 不要重复罗列所有数据，只回答用户问到的内容。
@@ -634,11 +635,21 @@ final class GPTContextBuilder {
             lines.append("步数：0步（今天还没有步行记录）")
         }
 
+        // Energy — show both active and total so GPT can answer "消耗了多少卡路里" accurately.
+        // Users asking about "calories" usually mean total daily expenditure (TDEE), not just
+        // exercise calories. TDEE = basal (resting metabolism) + active (exercise/movement).
+        if h.activeCalories > 0 || h.basalCalories > 0 {
+            let totalCal = Int(h.activeCalories + h.basalCalories)
+            var line = "能量消耗：活动\(Int(h.activeCalories))kcal"
+            if h.basalCalories > 0 {
+                line += " + 基础代谢\(Int(h.basalCalories))kcal = 总计\(totalCal)kcal"
+            }
+            lines.append(line)
+        }
+
         // Exercise — critical to show 0 so GPT answers "今天运动了吗？" accurately
         if h.exerciseMinutes > 0 {
-            var line = "运动时间：\(Int(h.exerciseMinutes))分钟"
-            if h.activeCalories > 0 { line += "，活动卡路里：\(Int(h.activeCalories))kcal" }
-            lines.append(line)
+            lines.append("运动时间：\(Int(h.exerciseMinutes))分钟")
         } else if healthAuthorized && hourOfDay >= 8 {
             lines.append("运动时间：0分钟（今天还没有运动记录）")
         }
@@ -710,7 +721,14 @@ final class GPTContextBuilder {
         var lines = ["[昨日健康概要]（今日数据尚在积累，以下为昨天参考）"]
         if y.steps > 0 { lines.append("步数：\(Int(y.steps))步") }
         if y.exerciseMinutes > 0 { lines.append("运动：\(Int(y.exerciseMinutes))分钟") }
-        if y.activeCalories > 0 { lines.append("活动消耗：\(Int(y.activeCalories))kcal") }
+        if y.activeCalories > 0 || y.basalCalories > 0 {
+            let total = Int(y.activeCalories + y.basalCalories)
+            if y.basalCalories > 0 {
+                lines.append("能量消耗：活动\(Int(y.activeCalories))kcal + 基础代谢\(Int(y.basalCalories))kcal = 总计\(total)kcal")
+            } else {
+                lines.append("活动消耗：\(Int(y.activeCalories))kcal")
+            }
+        }
         if y.sleepHours > 0 {
             var line = "睡眠：\(String(format: "%.1f", y.sleepHours))小时"
             if let onset = y.sleepOnset, let wake = y.wakeTime {
@@ -727,7 +745,7 @@ final class GPTContextBuilder {
         let fmt = DateFormatter(); fmt.dateFormat = "M/d"
         let weekdayFmt = DateFormatter(); weekdayFmt.locale = Locale(identifier: "zh_CN"); weekdayFmt.dateFormat = "EEE"
         let cal = Calendar.current
-        var lines = ["[近7天健康趋势]", "日期  | 步数  | 运动(分) | 卡路里(kcal) | 睡眠(h)（对应哪晚） | 心率(bpm)"]
+        var lines = ["[近7天健康趋势]", "日期  | 步数  | 运动(分) | 活动kcal | 总消耗kcal | 睡眠(h)（对应哪晚） | 心率(bpm)"]
         // Show oldest→newest so GPT can naturally read the trend direction
         let chronological = Array(summaries.prefix(7).reversed())
         for s in chronological {
@@ -748,7 +766,8 @@ final class GPTContextBuilder {
             let dateLabel = "\(fmt.string(from: s.date))(\(dayName))"
             let steps = s.steps > 0 ? "\(Int(s.steps))" : "-"
             let ex = s.exerciseMinutes > 0 ? "\(Int(s.exerciseMinutes))" : "-"
-            let cal_ = s.activeCalories > 0 ? "\(Int(s.activeCalories))" : "-"
+            let activeCal = s.activeCalories > 0 ? "\(Int(s.activeCalories))" : "-"
+            let totalCal = (s.activeCalories + s.basalCalories) > 0 ? "\(Int(s.activeCalories + s.basalCalories))" : "-"
             // Annotate sleep with the actual night it represents (sleep is attributed to
             // wake-up day, so "today" row = last night's sleep). This prevents GPT from
             // giving wrong data when user asks "昨晚睡了多久" and GPT looks at "yesterday" row.
@@ -761,7 +780,7 @@ final class GPTContextBuilder {
                 sl = "-"
             }
             let hr = s.heartRate > 0 ? "\(Int(s.heartRate))" : "-"
-            lines.append("\(dateLabel)  | \(steps)  | \(ex)  | \(cal_)  | \(sl)  | \(hr)")
+            lines.append("\(dateLabel)  | \(steps)  | \(ex)  | \(activeCal)  | \(totalCal)  | \(sl)  | \(hr)")
         }
         // Add weekly totals and averages with active-day counts so GPT can give
         // honest answers. E.g. "6天中有3天运动，共90分钟" is more useful than "日均30分钟"
@@ -798,10 +817,15 @@ final class GPTContextBuilder {
             let totalMin = Int(validExDays.map(\.exerciseMinutes).reduce(0, +))
             avgParts.append("过去\(completedDayCount)天中\(validExDays.count)天有运动，共\(totalMin)分钟")
         }
-        let validCalDays = completedDays.filter { $0.activeCalories > 0 }
+        let validCalDays = completedDays.filter { $0.activeCalories > 0 || $0.basalCalories > 0 }
         if !validCalDays.isEmpty {
-            let totalCal = Int(validCalDays.map(\.activeCalories).reduce(0, +))
-            avgParts.append("周活动消耗\(totalCal)kcal")
+            let totalActive = Int(validCalDays.map(\.activeCalories).reduce(0, +))
+            let totalAll = Int(validCalDays.map { $0.activeCalories + $0.basalCalories }.reduce(0, +))
+            if totalAll > totalActive {
+                avgParts.append("周总消耗\(totalAll)kcal（活动\(totalActive)kcal）")
+            } else {
+                avgParts.append("周活动消耗\(totalActive)kcal")
+            }
         }
         if !validSleepDays.isEmpty {
             let total = validSleepDays.map(\.sleepHours).reduce(0, +)
@@ -906,9 +930,15 @@ final class GPTContextBuilder {
             items.append("均睡\(String(format: "%.1f", avg))h")
         }
 
-        let calTotal = Int(days.filter { $0.activeCalories > 0 }.map(\.activeCalories).reduce(0, +))
-        if calTotal > 0 {
-            items.append("消耗\(calTotal)kcal")
+        let calDays = days.filter { $0.activeCalories > 0 || $0.basalCalories > 0 }
+        if !calDays.isEmpty {
+            let activeTotal = Int(calDays.map(\.activeCalories).reduce(0, +))
+            let totalAll = Int(calDays.map { $0.activeCalories + $0.basalCalories }.reduce(0, +))
+            if totalAll > activeTotal {
+                items.append("总消耗\(totalAll)kcal")
+            } else {
+                items.append("活动消耗\(activeTotal)kcal")
+            }
         }
 
         return items.joined(separator: "，")

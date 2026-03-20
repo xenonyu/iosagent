@@ -204,6 +204,7 @@ final class ContextMemory {
         // Rangeless intents: return their implicit time context so follow-ups
         // can inherit a meaningful range instead of falling back to .lastWeek.
         case .calendarNext:                return .today
+        case .calendarSearch(_, let r):    return r
         case .exerciseLastOccurrence:      return .lastWeek
         case .streak:                      return .thisWeek
         case .weeklyInsight:               return .thisWeek
@@ -223,6 +224,7 @@ final class ContextMemory {
         case .events:            return .events(range: range)
         case .health(let m, _):  return .health(metric: m, range: range)
         case .calendar:          return .calendar(range: range)
+        case .calendarSearch(let k, _): return .calendarSearch(keyword: k, range: range)
         case .photos:            return .photos(range: range)
         case .comparison:        return .comparison(range: range)
         default:                 return intent
@@ -245,6 +247,7 @@ final class ContextMemory {
         // e.g. calendarNext → "那明天呢" should become .calendar(range: .tomorrow),
         //      not stay stuck on calendarNext which ignores the time change.
         case .calendarNext:                     return .calendar(range: range)
+        case .calendarSearch(let k, _):         return .calendarSearch(keyword: k, range: range)
         case .exerciseLastOccurrence(let f):    return .exercise(range: range, workoutFilter: f)
         case .streak:                           return .exercise(range: range, workoutFilter: nil)
         case .weeklyInsight:                    return .summary(range: range)

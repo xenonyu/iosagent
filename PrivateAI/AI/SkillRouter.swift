@@ -14,6 +14,7 @@ enum QueryIntent {
     case health(metric: String, range: QueryTimeRange)
     case calendar(range: QueryTimeRange)
     case calendarNext
+    case calendarSearch(keyword: String, range: QueryTimeRange)
     case photos(range: QueryTimeRange)
     case profile
     case addEvent(title: String, content: String, mood: MoodType)
@@ -439,6 +440,28 @@ struct SkillRouter {
             return .weeklyInsight
         }
 
+        // --- Monthly Insight (parallel to weekly insight, checked before general summary) ---
+        // "月报", "月总结", "这个月怎么样" are the monthly equivalents of "周报", "这周怎么样".
+        // Without this block, monthly queries fall to .unknown — a major gap since users
+        // naturally ask for monthly summaries just as they do for weekly ones.
+        if containsAny(lower, ["月报", "月度总结", "月度回顾", "月度分析",
+                                "本月总结", "本月回顾", "本月分析", "本月表现",
+                                "这个月总结", "这个月回顾", "这个月分析", "这个月表现",
+                                "上个月总结", "上个月回顾", "上个月分析", "上个月表现",
+                                "这个月怎么样", "这个月怎样", "这个月咋样", "这个月如何",
+                                "这个月过得", "这个月好不好",
+                                "上个月怎么样", "上个月怎样", "上个月咋样", "上个月如何",
+                                "上个月过得", "上个月好不好",
+                                "本月怎么样", "本月怎样", "本月咋样", "本月如何",
+                                "一个月总结", "一月回顾",
+                                "monthly", "monthly review", "monthly summary",
+                                "month report", "this month review"]) {
+            // Use extracted time range if it has an explicit month reference;
+            // otherwise default to thisMonth (月报 = current month's report).
+            let monthRange = hasExplicitTimeReference(lower) ? range : .thisMonth
+            return .summary(range: monthRange)
+        }
+
         // --- Summary: daily briefing keywords (inherently today-scoped) ---
         // "日报", "早报", "晚报" mean today's report regardless of time extraction.
         // Must be checked before the general summary block to apply the .today default.
@@ -468,6 +491,11 @@ struct SkillRouter {
                                 "表现怎", "表现如何", "表现咋样",
                                 // General "how am I" patterns
                                 "日子过得", "日子怎", "日子咋",
+                                // Time + question patterns without "过得" prefix:
+                                // "今天怎么样", "昨天怎么样", "前天怎么样" — users frequently omit "过得"
+                                "今天怎", "今天咋", "今天如何",
+                                "昨天怎", "昨天咋", "昨天如何",
+                                "前天怎", "前天咋", "前天如何",
                                 // Review synonyms
                                 "汇报", "盘点",
                                 // Analysis requests (general, no specific topic)
@@ -670,6 +698,15 @@ struct SkillRouter {
         }
         if containsAny(lower, nextEventKeywords) && containsAny(lower, calendarContextKeywords) {
             return .calendarNext
+        }
+
+        // --- Calendar Search (keyword-based event lookup) ---
+        // Queries like "什么时候有面试", "下次1:1是什么时候", "有没有设计评审",
+        // "我跟张三有会吗", "standup是几点" want to search calendar by keyword.
+        // Must check BEFORE general calendar — "有没有会" is general, but
+        // "有没有产品评审" targets a specific event.
+        if let calSearchIntent = parseCalendarSearch(lower, original: text, range: range) {
+            return calSearchIntent
         }
 
         // --- Calendar ---
@@ -1559,6 +1596,161 @@ struct SkillRouter {
         }
 
         return nil
+    }
+
+    // MARK: - Calendar Search
+
+    /// Detects calendar keyword-search queries and extracts the search term.
+    /// Patterns:
+    ///   "什么时候有面试" → keyword "面试"
+    ///   "下次1:1是什么时候" → keyword "1:1"
+    ///   "有没有产品评审" → keyword "产品评审"
+    ///   "standup是几点" → keyword "standup"
+    ///   "我跟张三有会吗" → keyword "张三"
+    private static func parseCalendarSearch(_ lower: String, original: String, range: QueryTimeRange) -> QueryIntent? {
+        // Pattern 1: "什么时候有X" / "什么时候X" / "X什么时候"
+        // These ask about timing of a specific event, not a general calendar overview.
+        let whenPatterns: [(prefix: String, suffix: String)] = [
+            ("什么时候有", ""),
+            ("什么时候", ""),
+            ("啥时候有", ""),
+            ("啥时候", ""),
+            ("几点有", ""),
+            ("几点开", ""),
+        ]
+        for pat in whenPatterns {
+            if let keyword = extractBetween(lower, prefix: pat.prefix, suffix: pat.suffix),
+               !keyword.isEmpty && keyword.count <= 20 {
+                // Exclude generic words that would match general calendar intent
+                let genericWords = Set(["会", "会议", "事", "事情", "安排", "活动", "课", "课程"])
+                if !genericWords.contains(keyword) {
+                    let searchRange = hasExplicitTimeReference(lower) ? range : .thisWeek
+                    return .calendarSearch(keyword: keyword, range: searchRange)
+                }
+            }
+        }
+
+        // Pattern 2: "X是什么时候" / "X是几点" / "X在哪天"
+        let suffixPatterns = ["是什么时候", "是啥时候", "是几点", "在哪天", "在哪一天",
+                              "是哪天", "是哪一天", "几点开始", "几点钟"]
+        for suffix in suffixPatterns {
+            if lower.contains(suffix) {
+                let parts = lower.components(separatedBy: suffix)
+                if let raw = parts.first {
+                    let keyword = cleanCalendarKeyword(raw)
+                    if !keyword.isEmpty && keyword.count <= 20 {
+                        let searchRange = hasExplicitTimeReference(lower) ? range : .thisWeek
+                        return .calendarSearch(keyword: keyword, range: searchRange)
+                    }
+                }
+            }
+        }
+
+        // Pattern 3: "下次X" / "下一次X" (next occurrence of specific event)
+        let nextOccurrencePatterns = ["下次", "下一次"]
+        for pat in nextOccurrencePatterns {
+            if lower.hasPrefix(pat) || lower.contains(pat) {
+                if let keyword = extractAfter(lower, prefix: pat), !keyword.isEmpty && keyword.count <= 20 {
+                    // Exclude generic "下次会议" → that's calendarNext territory
+                    let genericWords = Set(["会", "会议", "安排", "事", "事情", "开会"])
+                    let cleaned = cleanCalendarKeyword(keyword)
+                    if !genericWords.contains(cleaned) && !cleaned.isEmpty {
+                        return .calendarSearch(keyword: cleaned, range: .thisWeek)
+                    }
+                }
+            }
+        }
+
+        // Pattern 4: "有没有X的会" / "有没有X" with specific noun (not generic)
+        // "有没有产品评审" / "有没有跟张三的会" / "有没有standup"
+        let searchTriggers = ["有没有", "有没有关于", "有关于"]
+        for trigger in searchTriggers {
+            if lower.contains(trigger) {
+                if let keyword = extractAfter(lower, prefix: trigger), !keyword.isEmpty {
+                    // Remove trailing generic words: "的会", "的会议", "的安排", "吗"
+                    var cleaned = keyword
+                    for tail in ["的会议", "的会", "的安排", "的事", "吗", "呢", "啊", "么"] {
+                        if cleaned.hasSuffix(tail) {
+                            cleaned = String(cleaned.dropLast(tail.count))
+                        }
+                    }
+                    cleaned = cleanCalendarKeyword(cleaned)
+                    let genericWords = Set(["会", "会议", "事", "事情", "安排", "活动"])
+                    if !genericWords.contains(cleaned) && !cleaned.isEmpty && cleaned.count <= 20 {
+                        let searchRange = hasExplicitTimeReference(lower) ? range : .thisWeek
+                        return .calendarSearch(keyword: cleaned, range: searchRange)
+                    }
+                }
+            }
+        }
+
+        // Pattern 5: English patterns: "when is X", "when is the X", "do I have X"
+        let enWhenPatterns = ["when is the ", "when is ", "when's the ", "when's ",
+                              "do i have ", "is there a ", "is there an "]
+        for pat in enWhenPatterns {
+            if lower.hasPrefix(pat) {
+                let keyword = String(lower.dropFirst(pat.count))
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .replacingOccurrences(of: "?", with: "")
+                if !keyword.isEmpty && keyword.count <= 30 {
+                    let genericWords = Set(["meeting", "event", "appointment", "a meeting", "an event"])
+                    if !genericWords.contains(keyword) {
+                        let searchRange = hasExplicitTimeReference(lower) ? range : .thisWeek
+                        return .calendarSearch(keyword: keyword, range: searchRange)
+                    }
+                }
+            }
+        }
+
+        return nil
+    }
+
+    /// Extracts text appearing after a prefix in the string.
+    private static func extractAfter(_ text: String, prefix: String) -> String? {
+        guard let prefixRange = text.range(of: prefix) else { return nil }
+        let after = text[prefixRange.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)
+        return after.isEmpty ? nil : after
+    }
+
+    /// Extracts text between a prefix and suffix (suffix empty = to end of string).
+    private static func extractBetween(_ text: String, prefix: String, suffix: String) -> String? {
+        guard let prefixRange = text.range(of: prefix) else { return nil }
+        let afterPrefix = text[prefixRange.upperBound...]
+        let content: Substring
+        if suffix.isEmpty {
+            content = afterPrefix
+        } else if let suffixRange = afterPrefix.range(of: suffix) {
+            content = afterPrefix[..<suffixRange.lowerBound]
+        } else {
+            content = afterPrefix
+        }
+        let result = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        return result.isEmpty ? nil : result
+    }
+
+    /// Cleans extracted calendar keyword by removing common filler/time words.
+    private static func cleanCalendarKeyword(_ raw: String) -> String {
+        var keyword = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Remove common prefix fillers
+        let prefixes = ["我的", "我们的", "跟", "和", "与", "关于", "那个"]
+        for p in prefixes {
+            if keyword.hasPrefix(p) {
+                keyword = String(keyword.dropFirst(p.count))
+            }
+        }
+        // Remove common suffix fillers
+        let suffixes = ["吗", "呢", "啊", "么", "了", "呀"]
+        for s in suffixes {
+            if keyword.hasSuffix(s) {
+                keyword = String(keyword.dropLast(s.count))
+            }
+        }
+        // Remove time words that leaked in
+        let timeWords = ["今天", "明天", "后天", "这周", "本周", "下周", "这个月", "下个月"]
+        for tw in timeWords {
+            keyword = keyword.replacingOccurrences(of: tw, with: "")
+        }
+        return keyword.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private static func parseGreeting(_ trimmed: String) -> GreetingType? {

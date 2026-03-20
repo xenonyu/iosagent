@@ -685,13 +685,34 @@ final class GPTContextBuilder {
     private func lifeEventsSection(_ events: [CDLifeEvent]) -> String {
         let fmt = DateFormatter(); fmt.dateFormat = "M月d日"
         var lines = ["[生活记录（近期）]"]
+
+        // Category distribution summary so GPT can answer "最近都在忙什么？"
+        var categoryCounts: [String: Int] = [:]
+        for e in events {
+            let cat = EventCategory(rawValue: e.category ?? "life") ?? .life
+            categoryCounts[cat.label, default: 0] += 1
+        }
+        if categoryCounts.count > 1 {
+            let summary = categoryCounts.sorted { $0.value > $1.value }
+                .map { "\($0.key)\($0.value)条" }
+            lines.append("分类：\(summary.joined(separator: "、"))")
+        }
+
         for e in events.prefix(15) {
             let mood = MoodType(rawValue: e.mood ?? "") ?? .neutral
+            let category = EventCategory(rawValue: e.category ?? "life") ?? .life
             let date = e.timestamp.map { fmt.string(from: $0) } ?? ""
-            var line = "\(mood.emoji) \(e.title ?? "记录")"
+            var line = "\(mood.emoji) [\(category.label)] \(e.title ?? "记录")"
             if !date.isEmpty { line += "（\(date)）" }
             if let content = e.content, !content.isEmpty {
-                line += "：\(content.prefix(60))"
+                let preview = content.count > 100 ? String(content.prefix(100)) + "…" : content
+                line += "：\(preview)"
+            }
+            // Include tags for searchability (e.g. "关于旅行的记录")
+            let tagsStr = e.tags ?? ""
+            let tags = tagsStr.split(separator: ",").map(String.init).filter { !$0.isEmpty }
+            if !tags.isEmpty {
+                line += " #\(tags.prefix(4).joined(separator: " #"))"
             }
             lines.append(line)
         }

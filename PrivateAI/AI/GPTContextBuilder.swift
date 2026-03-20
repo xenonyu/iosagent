@@ -1897,8 +1897,7 @@ final class GPTContextBuilder {
         if thisWeekDays.count >= 2 && !lastWeekDays.isEmpty {
             let comparison = weekOverWeekComparison(
                 thisWeek: thisWeekDays,
-                lastWeek: lastWeekDays,
-                todaySummary: todaySummary
+                lastWeek: lastWeekDays
             )
             if !comparison.isEmpty {
                 parts.append(comparison)
@@ -2098,8 +2097,7 @@ final class GPTContextBuilder {
     /// By providing explicit "↑步数日均多1200步(+18%)" style deltas, GPT can directly
     /// quote the comparison without any arithmetic.
     private func weekOverWeekComparison(thisWeek: [HealthSummary],
-                                         lastWeek: [HealthSummary],
-                                         todaySummary: HealthSummary?) -> String {
+                                         lastWeek: [HealthSummary]) -> String {
         var deltas: [String] = []
 
         // Helper: format a delta with direction arrow and percentage
@@ -2116,10 +2114,13 @@ final class GPTContextBuilder {
             let qualifier: String
             if diff > 0 {
                 arrow = "↑"
+                // For metrics where higher is bad (e.g. resting HR), flag increases
                 qualifier = higherIsBetter ? "" : "⚠️"
             } else {
                 arrow = "↓"
-                qualifier = higherIsBetter ? "" : ""
+                // For metrics where lower is better (e.g. resting HR), mark decreases positively;
+                // for metrics where higher is better (e.g. steps), flag significant decreases
+                qualifier = higherIsBetter ? "" : "👍"
             }
             // Show absolute delta + percentage for clear communication
             let absDiff: String
@@ -2186,6 +2187,55 @@ final class GPTContextBuilder {
                 let thisDeepAvg = thisDeepDays.map(\.sleepDeepHours).reduce(0, +) / Double(thisDeepDays.count)
                 let lastDeepAvg = lastDeepDays.map(\.sleepDeepHours).reduce(0, +) / Double(lastDeepDays.count)
                 formatDelta("均深睡", thisVal: thisDeepAvg, lastVal: lastDeepAvg, unit: "h")
+            }
+
+            // Sleep efficiency comparison — reveals whether sleep quality improved even
+            // if duration stayed the same. Two weeks with 7h sleep can differ greatly:
+            // 92% efficiency vs 78% tells a completely different quality story.
+            // GPT gets this wrong when manually comparing two per-week stat blocks because
+            // it has to find the efficiency% in each block and subtract — often miscalculating.
+            let thisEffDays = thisSleepDays.filter { $0.inBedHours > 0 && $0.inBedHours >= $0.sleepHours }
+            let lastEffDays = lastSleepDays.filter { $0.inBedHours > 0 && $0.inBedHours >= $0.sleepHours }
+            if thisEffDays.count >= 2 && lastEffDays.count >= 2 {
+                let thisEff = thisEffDays.map { ($0.sleepHours / $0.inBedHours) * 100 }.reduce(0, +) / Double(thisEffDays.count)
+                let lastEff = lastEffDays.map { ($0.sleepHours / $0.inBedHours) * 100 }.reduce(0, +) / Double(lastEffDays.count)
+                formatDelta("睡眠效率", thisVal: thisEff, lastVal: lastEff, unit: "%")
+            }
+
+            // Bedtime (onset) comparison — users commonly ask "这周比上周睡得晚吗？"
+            // "我最近是不是越睡越晚？". Bedtime shift is one of the most actionable
+            // lifestyle insights. GPT has to cross-reference onset times from two separate
+            // per-week stat blocks and do cross-midnight time arithmetic — a frequent
+            // source of errors (e.g. comparing 23:30 vs 00:15 as "23h difference").
+            let cal = Calendar.current
+            let thisOnsets = thisSleepDays.compactMap { $0.sleepOnset }
+            let lastOnsets = lastSleepDays.compactMap { $0.sleepOnset }
+            if thisOnsets.count >= 2 && lastOnsets.count >= 2 {
+                // Convert onset times to minutes-since-18:00 to handle cross-midnight correctly
+                let toNormMins: (Date) -> Double = { time in
+                    let comps = cal.dateComponents([.hour, .minute], from: time)
+                    var mins = Double((comps.hour ?? 0) * 60 + (comps.minute ?? 0))
+                    if mins < 18 * 60 { mins += 24 * 60 } // e.g. 01:00 → 25*60
+                    return mins
+                }
+                let normToTimeStr: (Double) -> String = { mins in
+                    var totalMins = Int(mins.rounded())
+                    if totalMins >= 24 * 60 { totalMins -= 24 * 60 }
+                    return String(format: "%02d:%02d", totalMins / 60, totalMins % 60)
+                }
+                let thisOnsetAvg = thisOnsets.map(toNormMins).reduce(0, +) / Double(thisOnsets.count)
+                let lastOnsetAvg = lastOnsets.map(toNormMins).reduce(0, +) / Double(lastOnsets.count)
+                let onsetDiffMins = Int((thisOnsetAvg - lastOnsetAvg).rounded())
+                // Only report if ≥10 min difference — smaller shifts are normal variation
+                if abs(onsetDiffMins) >= 10 {
+                    let thisTimeStr = normToTimeStr(thisOnsetAvg)
+                    let lastTimeStr = normToTimeStr(lastOnsetAvg)
+                    if onsetDiffMins > 0 {
+                        deltas.append("入睡时间：本周均\(thisTimeStr) vs 上周均\(lastTimeStr)，晚了约\(onsetDiffMins)分钟")
+                    } else {
+                        deltas.append("入睡时间：本周均\(thisTimeStr) vs 上周均\(lastTimeStr)，早了约\(abs(onsetDiffMins))分钟👍")
+                    }
+                }
             }
         }
 

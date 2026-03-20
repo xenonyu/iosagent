@@ -213,7 +213,7 @@ struct SummarySkill: ClawSkill {
                     }
                 }
 
-                // ── Recovery Metrics: HRV + Resting HR ──
+                // ── Recovery & Fitness Metrics: HRV, RHR, VO2 Max, SpO2, Weight ──
                 let recoveryLines = Self.buildRecoveryMetrics(
                     withData: withData,
                     prevSummaries: prevSummaries
@@ -1121,7 +1121,7 @@ struct SummarySkill: ClawSkill {
                     }
                 }
 
-                // Recovery metrics: HRV + Resting HR trends
+                // Recovery & fitness metrics: HRV, RHR, VO2 Max, SpO2, weight
                 let recoveryLines = Self.buildRecoveryMetrics(
                     withData: withData,
                     prevSummaries: lastWeekWithData
@@ -1140,8 +1140,11 @@ struct SummarySkill: ClawSkill {
                 let avgHRVW = hrvDaysW.isEmpty ? 0.0 : hrvDaysW.reduce(0) { $0 + $1.hrv } / Double(hrvDaysW.count)
                 let rhrDaysW = withData.filter { $0.restingHeartRate > 0 }
                 let avgRHRW = rhrDaysW.isEmpty ? 0.0 : rhrDaysW.reduce(0) { $0 + $1.restingHeartRate } / Double(rhrDaysW.count)
+                let spo2DaysW = withData.filter { $0.oxygenSaturation > 0 }
+                let avgSpO2W = spo2DaysW.isEmpty ? 0.0 : spo2DaysW.reduce(0) { $0 + $1.oxygenSaturation } / Double(spo2DaysW.count)
                 let recoveryGoodW = (avgHRVW > 0 && avgHRVW >= 40) || (avgRHRW > 0 && avgRHRW <= 65)
                 let recoveryPoorW = (avgHRVW > 0 && avgHRVW < 25) || (avgRHRW > 0 && avgRHRW >= 80)
+                    || (avgSpO2W > 0 && avgSpO2W < 93)
 
                 var score = 0
                 if avgSteps >= 8000 { score += 1 }
@@ -1748,9 +1751,13 @@ struct SummarySkill: ClawSkill {
         var lines: [String] = []
         let hrvDays = withData.filter { $0.hrv > 0 }
         let rhrDays = withData.filter { $0.restingHeartRate > 0 }
+        let vo2Days = withData.filter { $0.vo2Max > 0 }
+        let spo2Days = withData.filter { $0.oxygenSaturation > 0 }
+        let weightDays = withData.filter { $0.bodyMassKg > 0 }
 
-        // Need at least one recovery metric to show this section
-        guard !hrvDays.isEmpty || !rhrDays.isEmpty else { return [] }
+        // Need at least one recovery/fitness metric to show this section
+        guard !hrvDays.isEmpty || !rhrDays.isEmpty || !vo2Days.isEmpty
+              || !spo2Days.isEmpty || !weightDays.isEmpty else { return [] }
 
         // HRV average + trend vs previous period
         if !hrvDays.isEmpty {
@@ -1810,6 +1817,98 @@ struct SummarySkill: ClawSkill {
                 }
             }
             lines.append(rhrLine)
+        }
+
+        // VO2 Max — cardiorespiratory fitness (the #1 predictor of longevity)
+        // VO2 Max updates infrequently (after outdoor runs/walks with Apple Watch),
+        // so we show the latest reading with trend context rather than daily averages.
+        if !vo2Days.isEmpty {
+            let latest = vo2Days.sorted { $0.date > $1.date }.first!
+            var vo2Line = "  🏅 VO2 Max \(String(format: "%.1f", latest.vo2Max)) mL/(kg·min)"
+
+            // Fitness level interpretation (AHA/ACSM approximate guidelines)
+            let v = latest.vo2Max
+            if v >= 50 {
+                vo2Line += " — 优秀"
+            } else if v >= 43 {
+                vo2Line += " — 良好"
+            } else if v >= 36 {
+                vo2Line += " — 中等"
+            } else {
+                vo2Line += " — 待提升"
+            }
+
+            // Compare vs previous period for trend
+            let prevVO2Days = prevSummaries.filter { $0.vo2Max > 0 }
+            if let prevLatest = prevVO2Days.sorted(by: { $0.date > $1.date }).first {
+                let change = latest.vo2Max - prevLatest.vo2Max
+                if change > 0.5 {
+                    vo2Line += " 📈"
+                } else if change < -0.5 {
+                    vo2Line += " 📉"
+                }
+            }
+
+            lines.append(vo2Line)
+        }
+
+        // SpO2 — blood oxygen saturation (respiratory health indicator)
+        if !spo2Days.isEmpty {
+            let avgSpO2 = spo2Days.reduce(0) { $0 + $1.oxygenSaturation } / Double(spo2Days.count)
+            var spo2Line = "  🫁 血氧均值 \(String(format: "%.0f", avgSpO2))%"
+
+            // Clinical interpretation
+            if avgSpO2 >= 95 {
+                spo2Line += " ✅"
+            } else if avgSpO2 >= 90 {
+                spo2Line += " ⚠️ 偏低，留意呼吸状况"
+            } else {
+                spo2Line += " 🔴 异常偏低，建议就医检查"
+            }
+
+            // Flag any individual low readings as an alert
+            let lowDays = spo2Days.filter { $0.oxygenSaturation < 95 }
+            if !lowDays.isEmpty && lowDays.count < spo2Days.count {
+                spo2Line += "（\(lowDays.count)/\(spo2Days.count) 天低于 95%）"
+            }
+
+            lines.append(spo2Line)
+        }
+
+        // Weight trend — body composition tracking
+        // Shows latest weight with direction vs previous period.
+        // Even small trends matter when tracked weekly.
+        if !weightDays.isEmpty {
+            let sorted = weightDays.sorted { $0.date > $1.date }
+            let latestWeight = sorted.first!.bodyMassKg
+            var weightLine = "  ⚖️ 体重 \(String(format: "%.1f", latestWeight)) kg"
+
+            // Compare vs previous period
+            let prevWeightDays = prevSummaries.filter { $0.bodyMassKg > 0 }
+            if let prevLatest = prevWeightDays.sorted(by: { $0.date > $1.date }).first {
+                let change = latestWeight - prevLatest.bodyMassKg
+                if abs(change) >= 0.2 {
+                    let arrow = change > 0 ? "↑" : "↓"
+                    weightLine += "（\(arrow)\(String(format: "%.1f", abs(change))) kg vs 上期）"
+                }
+            }
+
+            // Intra-period stability
+            if sorted.count >= 3 {
+                let values = sorted.map { $0.bodyMassKg }
+                let mean = values.reduce(0, +) / Double(values.count)
+                let variance = values.reduce(0) { $0 + ($1 - mean) * ($1 - mean) } / Double(values.count)
+                let stdDev = sqrt(variance)
+                if stdDev < 0.3 {
+                    weightLine += " — 稳定"
+                } else if stdDev < 1.0 {
+                    weightLine += " — 小幅波动"
+                } else {
+                    weightLine += " — 波动较大"
+                }
+            }
+
+            lines.append(weightLine)
         }
 
         return lines
@@ -2751,7 +2850,29 @@ struct SummarySkill: ClawSkill {
             suggestions.append("📅 下周有日程安排，记得提前预留运动时间段")
         }
 
-        // --- Priority 5: Location-based suggestion ---
+        // --- Priority 5: VO2 Max / cardiorespiratory fitness ---
+        // VO2 Max is the strongest single predictor of longevity; if declining,
+        // nudge the user toward outdoor aerobic exercise next week.
+        let vo2Days = healthSummaries.filter { $0.vo2Max > 0 }
+        if vo2Days.count >= 2 {
+            let sorted = vo2Days.sorted { $0.date < $1.date }
+            let change = sorted.last!.vo2Max - sorted.first!.vo2Max
+            if change < -0.5 {
+                suggestions.append("🏅 VO2 Max 有下降趋势，下周安排 2-3 次 20 分钟以上户外快走或慢跑")
+            }
+        } else if vo2Days.isEmpty && avgExercise >= 30 {
+            // User exercises but has no VO2 Max data — likely indoor only
+            let allWorkouts = healthSummaries.flatMap { $0.workouts }
+            let hasOutdoor = allWorkouts.contains { w in
+                let name = w.typeName.lowercased()
+                return name.contains("跑步") || name.contains("步行") || name.contains("walking") || name.contains("running") || name.contains("hiking")
+            }
+            if !hasOutdoor {
+                suggestions.append("🏅 试试户外跑步或快走，Apple Watch 可以为你估算 VO2 Max（心肺适能）")
+            }
+        }
+
+        // --- Priority 6: Location-based suggestion ---
         if !locations.isEmpty {
             let uniquePlaces = Set(locations.map { $0.displayName }).count
             if uniquePlaces <= 2 {

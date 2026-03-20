@@ -184,7 +184,7 @@ struct PhotoSkill: ClawSkill {
     /// Clusters photos into events based on time proximity.
     /// Photos within `gapThreshold` (2 hours) of each other belong to the same event.
     /// Only events with 3+ photos are considered meaningful.
-    private func detectPhotoEvents(photos: [PhotoMetadataItem], context: SkillContext) -> [PhotoEvent] {
+    private func detectPhotoEvents(photos: [PhotoMetadataItem], context: SkillContext? = nil) -> [PhotoEvent] {
         guard photos.count >= 3 else { return [] }
 
         let sorted = photos.sorted { $0.date < $1.date }
@@ -591,7 +591,7 @@ struct PhotoSkill: ClawSkill {
             return msg
         }
 
-        return buildSearchResults(photos: resultPhotos, description: searchDescription)
+        return buildSearchResults(photos: resultPhotos, description: searchDescription, context: context)
     }
 
     // MARK: - Vision Index Search
@@ -814,18 +814,21 @@ struct PhotoSkill: ClawSkill {
 
     // MARK: - Search Results Formatting
 
-    private func buildSearchResults(photos: [PhotoMetadataItem], description: String) -> String {
+    private func buildSearchResults(photos: [PhotoMetadataItem], description: String,
+                                     context: SkillContext? = nil) -> String {
         let cal = Calendar.current
         let df = DateFormatter()
         df.dateFormat = "M月d日 HH:mm"
         df.locale = Locale(identifier: "zh_CN")
+        let dayDf = DateFormatter()
+        dayDf.dateFormat = "M月d日"
+        dayDf.locale = Locale(identifier: "zh_CN")
 
         var lines = ["📷 找到 **\(photos.count) 张**\(description)的照片\n"]
 
         // Date range
-        if let earliest = photos.last?.date, let latest = photos.first?.date {
-            let dayDf = DateFormatter()
-            dayDf.dateFormat = "M月d日"
+        let sortedByDate = photos.sorted { $0.date < $1.date }
+        if let earliest = sortedByDate.first?.date, let latest = sortedByDate.last?.date {
             if cal.isDate(earliest, inSameDayAs: latest) {
                 lines.append("📅 拍摄于 \(dayDf.string(from: earliest))")
             } else {
@@ -839,23 +842,116 @@ struct PhotoSkill: ClawSkill {
             lines.append("❤️ 其中 \(favCount) 张是收藏")
         }
 
-        // Location info
-        let withLoc = photos.filter { $0.hasLocation }.count
-        if withLoc > 0 && withLoc < photos.count {
-            lines.append("📍 \(withLoc) 张有位置信息")
+        // --- Time-of-day distribution (when results have enough data) ---
+        if photos.count >= 5 {
+            var periodCounts: [String: Int] = [:]
+            for photo in photos {
+                let hour = cal.component(.hour, from: photo.date)
+                let period = timeOfDayLabel(hour: hour)
+                periodCounts[period, default: 0] += 1
+            }
+            let sorted = periodCounts.sorted { $0.value > $1.value }
+            if let peak = sorted.first, sorted.count >= 2 {
+                let pct = Int(Double(peak.value) / Double(photos.count) * 100)
+                if pct >= 35 {
+                    lines.append("⏰ 主要拍摄于\(peak.key)（\(pct)%）")
+                }
+            }
         }
 
-        // Show most recent photos timeline
+        // --- Day-by-day breakdown (when results span multiple days) ---
+        var dayCount: [Date: Int] = [:]
+        photos.forEach {
+            let day = cal.startOfDay(for: $0.date)
+            dayCount[day, default: 0] += 1
+        }
+
+        if dayCount.count >= 2 && dayCount.count <= 10 {
+            let sortedDays = dayCount.sorted { $0.key < $1.key }
+            let maxDayCount = sortedDays.map(\.value).max() ?? 1
+            lines.append("\n📊 **逐日分布**:")
+            for (day, count) in sortedDays {
+                let barLen = max(1, Int(Double(count) / Double(maxDayCount) * 8))
+                let bar = String(repeating: "▓", count: barLen) + String(repeating: "░", count: max(0, 8 - barLen))
+                let weekday = cal.component(.weekday, from: day)
+                let wdNames = ["", "日", "一", "二", "三", "四", "五", "六"]
+                let wdStr = weekday < wdNames.count ? "周\(wdNames[weekday])" : ""
+                lines.append("  \(dayDf.string(from: day))(\(wdStr)) [\(bar)] \(count)张")
+            }
+        } else if dayCount.count > 10 {
+            // Too many days for full breakdown — show summary
+            let activeDays = dayCount.count
+            let avgPerDay = Double(photos.count) / Double(activeDays)
+            if let mostActive = dayCount.max(by: { $0.value < $1.value }) {
+                let dayFullDf = DateFormatter()
+                dayFullDf.dateFormat = "M月d日（E）"
+                dayFullDf.locale = Locale(identifier: "zh_CN")
+                lines.append("\n📊 覆盖 \(activeDays) 天，平均每天 \(String(format: "%.1f", avgPerDay)) 张")
+                lines.append("🏆 拍照最多: \(dayFullDf.string(from: mostActive.key))（\(mostActive.value) 张）")
+            }
+        }
+
+        // --- Photo event/moment detection (reuse existing logic) ---
+        if photos.count >= 6 {
+            let events = detectPhotoEvents(photos: photos, context: context)
+            if !events.isEmpty {
+                let eventSection = buildEventTimeline(events: events, totalPhotos: photos.count)
+                if !eventSection.isEmpty {
+                    lines.append("")
+                    lines.append(contentsOf: eventSection)
+                }
+            }
+        }
+
+        // --- Location clustering (when results have geotagged photos) ---
+        let geoPhotos = photos.filter { $0.hasLocation }
+        if geoPhotos.count >= 2 {
+            let clusters = buildLocationClusters(photos: geoPhotos, context: context)
+            if !clusters.isEmpty {
+                lines.append("\n📍 **拍照地点**:")
+                for cluster in clusters.prefix(5) {
+                    lines.append("  · \(cluster.name)（\(cluster.count) 张）")
+                }
+                if geoPhotos.count < photos.count {
+                    lines.append("  · 还有 \(photos.count - geoPhotos.count) 张没有位置信息")
+                }
+            }
+        } else {
+            let withLoc = geoPhotos.count
+            if withLoc > 0 && withLoc < photos.count {
+                lines.append("\n📍 \(withLoc) 张有位置信息")
+            }
+        }
+
+        // --- Content analysis from Vision index (if context available) ---
+        if let ctx = context, photos.count >= 3 {
+            let dates = photos.map { $0.date }
+            if let earliest = dates.min(), let latest = dates.max() {
+                let interval = DateInterval(start: earliest, end: latest.addingTimeInterval(1))
+                let contentSection = buildContentAnalysis(
+                    photoIds: photos.map { $0.id },
+                    interval: interval,
+                    totalCount: photos.count,
+                    context: ctx
+                )
+                if !contentSection.isEmpty {
+                    lines.append("")
+                    lines.append(contentsOf: contentSection)
+                }
+            }
+        }
+
+        // --- Recent photos list (compact, at the end) ---
         lines.append("\n**最近拍摄**:")
-        for photo in photos.prefix(8) {
+        for photo in photos.prefix(6) {
             let timeStr = df.string(from: photo.date)
             let fav = photo.isFavorite ? " ❤️" : ""
             let loc = photo.hasLocation ? " 📍" : ""
             lines.append("  · \(timeStr)\(fav)\(loc)")
         }
 
-        if photos.count > 8 {
-            lines.append("  …还有 \(photos.count - 8) 张")
+        if photos.count > 6 {
+            lines.append("  …还有 \(photos.count - 6) 张")
         }
 
         return lines.joined(separator: "\n")
@@ -923,6 +1019,35 @@ struct PhotoSkill: ClawSkill {
             (["伦敦", "london"], 51.5074, -0.1278, "伦敦", 40_000),
             (["悉尼", "sydney"], -33.8688, 151.2093, "悉尼", 40_000),
             (["富士山", "fuji"], 35.3606, 138.7274, "富士山", 30_000),
+            // Countries (large radius covers the entire country for trip-level matching)
+            (["日本", "japan"], 36.2048, 138.2529, "日本", 500_000),
+            (["韩国", "korea"], 35.9078, 127.7669, "韩国", 300_000),
+            (["泰国", "thailand"], 15.8700, 100.9925, "泰国", 500_000),
+            (["越南", "vietnam"], 14.0583, 108.2772, "越南", 500_000),
+            (["马来西亚", "malaysia"], 4.2105, 101.9758, "马来西亚", 500_000),
+            (["印度尼西亚", "印尼", "indonesia", "巴厘岛", "bali"], -0.7893, 113.9213, "印尼", 1_000_000),
+            (["美国", "america", "usa"], 37.0902, -95.7129, "美国", 2_000_000),
+            (["法国", "france"], 46.2276, 2.2137, "法国", 500_000),
+            (["英国", "uk", "britain"], 55.3781, -3.4360, "英国", 400_000),
+            (["意大利", "italy", "罗马", "rome", "威尼斯", "venice", "米兰", "milan"], 41.8719, 12.5674, "意大利", 500_000),
+            (["西班牙", "spain", "巴塞罗那", "barcelona", "马德里", "madrid"], 40.4637, -3.7492, "西班牙", 500_000),
+            (["德国", "germany"], 51.1657, 10.4515, "德国", 400_000),
+            (["澳大利亚", "australia", "墨尔本", "melbourne"], -25.2744, 133.7751, "澳大利亚", 1_500_000),
+            (["新西兰", "new zealand"], -40.9006, 174.8860, "新西兰", 500_000),
+            (["加拿大", "canada", "温哥华", "vancouver", "多伦多", "toronto"], 56.1304, -106.3468, "加拿大", 2_000_000),
+            (["瑞士", "switzerland", "苏黎世", "zurich"], 46.8182, 8.2275, "瑞士", 200_000),
+            (["土耳其", "turkey", "istanbul", "伊斯坦布尔"], 38.9637, 35.2433, "土耳其", 600_000),
+            (["埃及", "egypt", "开罗", "cairo"], 26.8206, 30.8025, "埃及", 500_000),
+            (["迪拜", "dubai"], 25.2048, 55.2708, "迪拜", 50_000),
+            // China regions
+            (["云南"], 25.0453, 101.7103, "云南", 200_000),
+            (["海南"], 19.1959, 109.7453, "海南", 150_000),
+            (["西藏", "拉萨", "tibet"], 29.6520, 91.1721, "西藏", 500_000),
+            (["新疆", "乌鲁木齐"], 43.7930, 87.6271, "新疆", 800_000),
+            (["四川", "九寨沟"], 30.5728, 104.0668, "四川", 300_000),
+            (["广西", "桂林"], 25.2354, 110.1799, "广西", 200_000),
+            (["长沙"], 28.2282, 112.9388, "长沙", 40_000),
+            (["哈尔滨", "冰城"], 45.8038, 126.5350, "哈尔滨", 40_000),
             // Scenes (use large radius as concept, not exact location)
             (["海边", "沙滩", "海滩", "beach"], 0, 0, "海边", 0),
             (["山", "mountain", "爬山", "登山"], 0, 0, "山上", 0),

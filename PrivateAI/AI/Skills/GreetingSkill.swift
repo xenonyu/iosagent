@@ -35,7 +35,9 @@ struct GreetingSkill: ClawSkill {
         case .selfIntro:
             completion(buildSelfIntroResponse())
         case .howAreYou:
-            completion(buildHowAreYouResponse(userName: userName))
+            buildDataAwareHowAreYou(userName: userName, hour: hour, context: context, completion: completion)
+        case .capabilities:
+            buildCapabilitiesShowcase(context: context, completion: completion)
         }
     }
 
@@ -336,14 +338,314 @@ struct GreetingSkill: ClawSkill {
         """
     }
 
-    private func buildHowAreYouResponse(userName: String) -> String {
-        let responses = [
-            "我很好呀，谢谢关心！😊 你今天过得怎么样？",
-            "我一切正常，随时准备为你服务！你呢，今天感觉如何？",
-            "我状态满分！💪 有什么我能帮到你的吗？",
-            "谢谢你的关心！我一直都在这里等你呢 😄 你最近好吗？"
-        ]
-        return responses[Int.random(in: 0..<responses.count)]
+    // MARK: - Data-Aware "How Are You"
+
+    /// When the user asks "你好吗" / "你怎么样", the AI flips the question:
+    /// instead of a canned "I'm fine", it shows genuine care by surfacing
+    /// the user's actual health and schedule state — a core iosclaw moment.
+    private func buildDataAwareHowAreYou(userName: String, hour: Int, context: SkillContext,
+                                          completion: @escaping (String) -> Void) {
+        let name = userName.isEmpty ? "" : "，\(userName)"
+
+        guard context.healthService.isHealthDataAvailable else {
+            // No HealthKit → still try calendar for a personal touch
+            let calInsight = howAreYouCalendarInsight(hour: hour, context: context)
+            var response = "我很好呀，谢谢关心\(name)！😊"
+            if !calInsight.isEmpty {
+                response += "\n\n不过比起我，我更在意你：\n\(calInsight)"
+            } else {
+                response += "\n你今天过得怎么样？"
+            }
+            completion(response)
+            return
+        }
+
+        // Fetch 7 days: today + 6 days for personal baseline
+        context.healthService.fetchSummaries(days: 7) { summaries in
+            let cal = Calendar.current
+            let today = summaries.first { cal.isDateInToday($0.date) } ?? HealthSummary(date: Date())
+            let yesterday = summaries.first { cal.isDateInYesterday($0.date) } ?? HealthSummary(date: Date())
+            // Baseline: recent days excluding today, with actual data
+            let baseline = summaries.filter { !cal.isDateInToday($0.date) && $0.hasData }
+
+            var response = "我很好，随时待命！😊"
+            response += "\n\n不过比起我，我更关心你\(name)："
+
+            var insights: [String] = []
+
+            // Sleep insight (from last night / yesterday's data)
+            let sleepData = yesterday.sleepHours > 0 ? yesterday : today
+            if sleepData.sleepHours > 0 {
+                let baselineAvg = baseline.isEmpty ? 0.0
+                    : baseline.filter { $0.sleepHours > 0 }.reduce(0) { $0 + $1.sleepHours }
+                      / Double(max(1, baseline.filter { $0.sleepHours > 0 }.count))
+
+                if sleepData.sleepHours >= 7.5 {
+                    var line = "😴 昨晚睡了 \(String(format: "%.1f", sleepData.sleepHours))h，休息得不错"
+                    if baselineAvg > 0 && sleepData.sleepHours - baselineAvg >= 0.5 {
+                        line += "，比平时还多 ✨"
+                    }
+                    insights.append(line)
+                } else if sleepData.sleepHours < 6 {
+                    var line = "😴 昨晚只睡了 \(String(format: "%.1f", sleepData.sleepHours))h，有些不足"
+                    if baselineAvg > 0 && baselineAvg - sleepData.sleepHours >= 0.5 {
+                        line += "，比平时少了不少"
+                    }
+                    if hour < 14 {
+                        line += "，今天注意休息"
+                    }
+                    insights.append(line)
+                } else {
+                    insights.append("😴 昨晚睡了 \(String(format: "%.1f", sleepData.sleepHours))h")
+                }
+            }
+
+            // Activity insight (today's progress)
+            if today.steps > 100 || today.exerciseMinutes >= 5 {
+                var parts: [String] = []
+                if today.steps > 100 {
+                    let pct = min(Int(today.steps / 8000.0 * 100), 999)
+                    if pct >= 100 {
+                        parts.append("已走 \(Int(today.steps).formatted()) 步 🏅")
+                    } else {
+                        parts.append("已走 \(Int(today.steps).formatted()) 步（\(pct)%）")
+                    }
+                }
+                if today.exerciseMinutes >= 5 {
+                    parts.append("运动 \(Int(today.exerciseMinutes))min")
+                }
+                insights.append("👟 今天\(parts.joined(separator: "，"))")
+            }
+
+            // HRV/RHR recovery signal
+            if today.restingHeartRate > 0 {
+                let baselineRHR = baseline.filter { $0.restingHeartRate > 0 }
+                let avgRHR = baselineRHR.isEmpty ? 0.0
+                    : baselineRHR.reduce(0) { $0 + $1.restingHeartRate } / Double(baselineRHR.count)
+                if avgRHR > 0 && today.restingHeartRate - avgRHR >= 5 {
+                    insights.append("❤️ 静息心率偏高（\(Int(today.restingHeartRate)) vs 平时 \(Int(avgRHR))），身体可能需要多休息")
+                } else if today.heartRate > 0 {
+                    insights.append("❤️ 心率 \(Int(today.heartRate)) bpm，状态正常")
+                }
+            }
+
+            // Calendar context
+            let calInsight = self.howAreYouCalendarInsight(hour: hour, context: context)
+            if !calInsight.isEmpty {
+                insights.append(calInsight)
+            }
+
+            // Assemble
+            if insights.isEmpty {
+                response += "\n今天的数据还在积累中，晚点再来问我，我能告诉你更多 😊"
+            } else {
+                response += "\n" + insights.joined(separator: "\n")
+
+                // Closing: a brief caring remark based on overall picture
+                let closing = self.howAreYouClosing(
+                    sleepHours: sleepData.sleepHours,
+                    steps: today.steps,
+                    exerciseMin: today.exerciseMinutes,
+                    hour: hour
+                )
+                if !closing.isEmpty {
+                    response += "\n\n\(closing)"
+                }
+            }
+
+            completion(response)
+        }
+    }
+
+    /// Builds a brief calendar insight for the "how are you" response.
+    private func howAreYouCalendarInsight(hour: Int, context: SkillContext) -> String {
+        guard context.calendarService.isAuthorized else { return "" }
+        let events = context.calendarService.todayEvents()
+        let timed = events.filter { !$0.isAllDay }
+
+        if timed.isEmpty { return "" }
+
+        let remaining = timed.filter { $0.endDate > Date() }
+        if hour < 12 {
+            if timed.count >= 4 {
+                return "📅 今天有 \(timed.count) 个安排，比较忙碌的一天"
+            } else if timed.count > 0 {
+                return "📅 今天有 \(timed.count) 个安排"
+            }
+        } else {
+            if remaining.isEmpty {
+                return "📅 今天的 \(timed.count) 个安排都结束了，可以放松一下"
+            } else if remaining.count >= 3 {
+                return "📅 还有 \(remaining.count) 个安排，继续加油"
+            } else if remaining.count > 0 {
+                return "📅 还剩 \(remaining.count) 个安排"
+            }
+        }
+        return ""
+    }
+
+    /// Produces a caring closing remark based on the user's overall state.
+    private func howAreYouClosing(sleepHours: Double, steps: Double, exerciseMin: Double, hour: Int) -> String {
+        // Poor sleep + busy day → extra care
+        if sleepHours > 0 && sleepHours < 6 && hour < 18 {
+            return "💡 昨晚睡得不够，今天别太拼，适当休息一下"
+        }
+        // Great activity + good sleep → encouragement
+        if steps >= 8000 && exerciseMin >= 30 && sleepHours >= 7 {
+            return "💪 从数据来看，你的状态很好！继续保持"
+        }
+        // Evening with good activity
+        if hour >= 18 && (steps >= 8000 || exerciseMin >= 30) {
+            return "✨ 今天活动量不错，好好休息，明天继续"
+        }
+        // Morning with good sleep
+        if hour < 12 && sleepHours >= 7.5 {
+            return "☀️ 休息得不错，今天会是充满能量的一天！"
+        }
+        return ""
+    }
+
+    // MARK: - Data-Aware Capabilities Showcase
+
+    /// Demonstrates iosclaw's capabilities by showing **real user data** for each skill area.
+    /// Instead of a static feature list, this creates a "wow moment" — the user immediately
+    /// sees that iosclaw already knows about their health, schedule, location, and photos.
+    ///
+    /// Falls back gracefully: each data source shows a static description if no data is available.
+    private func buildCapabilitiesShowcase(context: SkillContext, completion: @escaping (String) -> Void) {
+        let cal = Calendar.current
+
+        // Calendar + Location + Photos can be fetched synchronously
+        let calendarSnippet = buildCalendarCapabilitySnippet(context: context)
+        let locationSnippet = buildLocationCapabilitySnippet(cal: cal, context: context)
+        let photoSnippet = buildPhotoCapabilitySnippet(cal: cal, context: context)
+
+        // Health requires async fetch
+        guard context.healthService.isHealthDataAvailable else {
+            let response = assembleCapabilitiesResponse(
+                healthSnippet: nil,
+                calendarSnippet: calendarSnippet,
+                locationSnippet: locationSnippet,
+                photoSnippet: photoSnippet
+            )
+            completion(response)
+            return
+        }
+
+        context.healthService.fetchSummaries(days: 2) { summaries in
+            let today = summaries.first { cal.isDateInToday($0.date) }
+            let yesterday = summaries.first { !cal.isDateInToday($0.date) && $0.hasData }
+            let healthData = (today?.hasData == true) ? today : yesterday
+            let healthSnippet = self.buildHealthCapabilitySnippet(data: healthData)
+
+            let response = self.assembleCapabilitiesResponse(
+                healthSnippet: healthSnippet,
+                calendarSnippet: calendarSnippet,
+                locationSnippet: locationSnippet,
+                photoSnippet: photoSnippet
+            )
+            completion(response)
+        }
+    }
+
+    private func buildHealthCapabilitySnippet(data: HealthSummary?) -> String? {
+        guard let d = data else { return nil }
+        var parts: [String] = []
+        if d.steps > 0 { parts.append("\(Int(d.steps).formatted()) 步") }
+        if d.exerciseMinutes > 0 { parts.append("运动 \(Int(d.exerciseMinutes))min") }
+        if d.sleepHours > 0 { parts.append("睡 \(String(format: "%.1f", d.sleepHours))h") }
+        if d.heartRate > 0 { parts.append("心率 \(Int(d.heartRate))") }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    private func buildCalendarCapabilitySnippet(context: SkillContext) -> String? {
+        guard context.calendarService.isAuthorized else { return nil }
+        let events = context.calendarService.todayEvents()
+        let timed = events.filter { !$0.isAllDay }
+        if timed.isEmpty { return "今天没有安排" }
+        let remaining = timed.filter { $0.endDate > Date() }
+        if remaining.isEmpty {
+            return "今天 \(timed.count) 个安排已全部结束"
+        }
+        return "今天 \(timed.count) 个安排，还剩 \(remaining.count) 个"
+    }
+
+    private func buildLocationCapabilitySnippet(cal: Calendar, context: SkillContext) -> String? {
+        let weekStart = cal.date(byAdding: .day, value: -7, to: Date()) ?? Date()
+        let records = CDLocationRecord.fetch(from: weekStart, to: Date(), in: context.coreDataContext)
+        guard !records.isEmpty else { return nil }
+        // Count unique places by name (skip empty names from geocoding failures)
+        let uniquePlaces = Set(records.map(\.placeName).filter { !$0.isEmpty })
+        if uniquePlaces.isEmpty { return "这周有 \(records.count) 条位置记录" }
+        return "这周去了 \(uniquePlaces.count) 个地方"
+    }
+
+    private func buildPhotoCapabilitySnippet(cal: Calendar, context: SkillContext) -> String? {
+        let weekStart = cal.date(byAdding: .day, value: -7, to: Date()) ?? Date()
+        let dailyCounts = context.photoService.dailyPhotoCounts(from: weekStart, to: Date())
+        let totalCount = dailyCounts.values.reduce(0, +)
+        guard totalCount > 0 else { return nil }
+        return "这周拍了 \(totalCount) 张照片"
+    }
+
+    /// Assembles the final capabilities response with real data snippets where available.
+    private func assembleCapabilitiesResponse(
+        healthSnippet: String?,
+        calendarSnippet: String?,
+        locationSnippet: String?,
+        photoSnippet: String?
+    ) -> String {
+        var lines: [String] = []
+
+        lines.append("👋 我是 iosclaw — 你的本地 AI 私人助理")
+        lines.append("所有数据都在 iPhone 上，不联网、不上传。\n")
+        lines.append("我最擅长帮你了解「自己」：\n")
+
+        // Health — show real data or static description
+        if let snippet = healthSnippet {
+            lines.append("🏃 健康数据 — \(snippet)")
+            lines.append("   试试：「今天运动了多少」「昨晚睡得怎么样」「心率」")
+        } else {
+            lines.append("🏃 健康数据 — 步数、运动、睡眠、心率、HRV")
+            lines.append("   试试：「今天走了多少步」「这周睡眠怎么样」")
+        }
+
+        // Calendar
+        if let snippet = calendarSnippet {
+            lines.append("📅 日程 — \(snippet)")
+            lines.append("   试试：「今天有什么安排」「接下来有什么」")
+        } else {
+            lines.append("📅 日程 — 查看日历、分析忙碌程度、找空闲时段")
+            lines.append("   试试：「今天有什么安排」「本周什么时候有空」")
+        }
+
+        // Location
+        if let snippet = locationSnippet {
+            lines.append("📍 足迹 — \(snippet)")
+            lines.append("   试试：「最近去了哪些地方」「去过星巴克几次」")
+        } else {
+            lines.append("📍 足迹 — 去过的地方、常去场所、活动范围")
+            lines.append("   试试：「这周去了哪些地方」「最远去了哪」")
+        }
+
+        // Photos
+        if let snippet = photoSnippet {
+            lines.append("📸 照片 — \(snippet)")
+            lines.append("   试试：「这周拍了哪些照片」「帮我找海边的照片」")
+        } else {
+            lines.append("📸 照片 — 用自然语言搜索记忆中的照片")
+            lines.append("   试试：「最近拍了什么照片」「找上周的照片」")
+        }
+
+        // Secondary capabilities
+        lines.append("")
+        lines.append("还可以帮你：")
+        lines.append("📝 记录生活 — 「今天去爬山了，感觉很棒」")
+        lines.append("😊 追踪心情 — 「最近心情怎么样」")
+        lines.append("📋 总结回顾 — 「帮我总结这周」「这周怎么样」")
+        lines.append("📊 数据比较 — 「比上周运动多了吗」")
+
+        return lines.joined(separator: "\n")
     }
 
     // MARK: - Helpers

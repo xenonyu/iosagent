@@ -112,11 +112,14 @@ final class HealthService: ObservableObject {
         // Sleep (with phase breakdown + in-bed time + circadian timing)
         // Sleep spans across midnight (e.g. 23:00→07:00), so we must query from
         // the previous evening (18:00) to capture the full night's sleep cycle.
-        // Using strictStartDate default, samples starting before midnight would
-        // otherwise be silently dropped, causing underreported sleep hours.
+        // We use a strict 24-hour window [18:00(D-1), 18:00(D)] to avoid
+        // double-counting the same sleep session in consecutive days' summaries.
+        // (The old 30h window [18:00(D-1), 00:00(D+1)] overlapped with the next
+        // day's window, inflating the weekly sleep trend.)
         let sleepQueryStart = cal.date(byAdding: .hour, value: -6, to: start) ?? start
+        let sleepQueryEnd = cal.date(byAdding: .hour, value: 18, to: start) ?? end
         group.enter()
-        fetchSleepPhases(start: sleepQueryStart, end: end) { total, deep, rem, core, inBed, onset, wake in
+        fetchSleepPhases(start: sleepQueryStart, end: sleepQueryEnd) { total, deep, rem, core, inBed, onset, wake in
             summary.sleepHours = total
             summary.sleepDeepHours = deep
             summary.sleepREMHours = rem

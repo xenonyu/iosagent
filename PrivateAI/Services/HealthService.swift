@@ -225,13 +225,23 @@ final class HealthService: ObservableObject {
         let cal = Calendar.current
         let today = Date()
         var summaries: [HealthSummary] = []
+        // NSLock protects `summaries` from concurrent mutations.
+        // Each fetchDailySummary fires its completion on an arbitrary HealthKit
+        // background queue, so up to `days` callbacks (typically 14) can run
+        // simultaneously on different threads, all appending to the same array.
+        // Without serialization, concurrent Array.append is a data race: Swift
+        // arrays are not thread-safe — the internal buffer can be corrupted,
+        // causing lost elements (health days silently missing from the GPT prompt)
+        // or outright crashes. This mirrors the NSLock fix in fetchDailySummary
+        // (commit a88ad96) which protects the per-day HealthSummary struct.
+        let lock = NSLock()
         let group = DispatchGroup()
 
         for i in 0..<days {
             let date = cal.date(byAdding: .day, value: -i, to: today)!
             group.enter()
             fetchDailySummary(for: date) { s in
-                summaries.append(s)
+                lock.lock(); summaries.append(s); lock.unlock()
                 group.leave()
             }
         }

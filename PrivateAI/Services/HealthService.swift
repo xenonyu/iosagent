@@ -320,10 +320,16 @@ final class HealthService: ObservableObject {
     }
 
     /// Fetches individual workout sessions (HKWorkout) for the given date range.
+    /// Includes per-workout heart rate stats (avg/max) via HKWorkout.statistics(for:),
+    /// which returns pre-computed aggregates from Apple Watch — no extra async queries needed.
+    /// Heart rate during workouts is the key metric for exercise intensity analysis;
+    /// without it, GPT can only see duration + calories but can't assess cardio zones.
     private func fetchWorkouts(start: Date, end: Date,
                                completion: @escaping ([WorkoutRecord]) -> Void) {
         let predicate = HKQuery.predicateForSamples(withStart: start, end: end)
         let sortDesc = NSSortDescriptor(key: HKSampleSortIdentifierStartDate, ascending: true)
+        let hrType = HKQuantityType.quantityType(forIdentifier: .heartRate)!
+        let hrUnit = HKUnit.count().unitDivided(by: .minute())
         let query = HKSampleQuery(
             sampleType: HKObjectType.workoutType(),
             predicate: predicate,
@@ -331,13 +337,21 @@ final class HealthService: ObservableObject {
             sortDescriptors: [sortDesc]
         ) { _, samples, _ in
             let records = (samples as? [HKWorkout])?.map { w -> WorkoutRecord in
-                WorkoutRecord(
+                // HKWorkout.statistics(for:) returns pre-computed stats for quantities
+                // recorded during the workout (e.g. heart rate from Apple Watch).
+                // Available on iOS 16+ — returns nil if no HR data for this workout.
+                let hrStats = w.statistics(for: hrType)
+                let avgHR = hrStats?.averageQuantity()?.doubleValue(for: hrUnit) ?? 0
+                let maxHR = hrStats?.maximumQuantity()?.doubleValue(for: hrUnit) ?? 0
+                return WorkoutRecord(
                     activityType: w.workoutActivityType.rawValue,
                     duration: w.duration,
                     totalCalories: w.totalEnergyBurned?.doubleValue(for: .kilocalorie()) ?? 0,
                     totalDistance: w.totalDistance?.doubleValue(for: .meter()) ?? 0,
                     startDate: w.startDate,
-                    endDate: w.endDate
+                    endDate: w.endDate,
+                    avgHeartRate: avgHR,
+                    maxHeartRate: maxHR
                 )
             } ?? []
             completion(records)

@@ -804,6 +804,20 @@ final class GPTContextBuilder {
         lines.append("静息心率：正常60-100bpm，经常运动者可低至40-60bpm")
         lines.append("心率范围：日间最低通常为静息值（睡眠时可更低），最高反映运动强度。持续静息>100bpm或<40bpm值得关注。运动时最高心率可参考220-年龄公式估算上限。")
 
+        // Workout heart rate zones — helps GPT interpret per-workout avgHR and maxHR.
+        // Based on max HR estimated from age (220 - age). Without zones, GPT sees
+        // "均心率155bpm" but can't tell the user if that's easy jogging or intense cardio.
+        if let age = userAge, age > 10 {
+            let maxHR = 220 - age
+            let zone2Low = Int(Double(maxHR) * 0.6)
+            let zone2High = Int(Double(maxHR) * 0.7)
+            let zone3High = Int(Double(maxHR) * 0.8)
+            let zone4High = Int(Double(maxHR) * 0.9)
+            lines.append("运动心率区间（估算最大心率\(maxHR)bpm）：轻松<\(zone2Low) | 燃脂\(zone2Low)-\(zone2High) | 有氧\(zone2High)-\(zone3High) | 无氧\(zone3High)-\(zone4High) | 极限>\(zone4High)bpm")
+        } else {
+            lines.append("运动心率区间（通用）：轻松<60%最大心率 | 燃脂60-70% | 有氧70-80% | 无氧80-90% | 极限>90%（最大心率≈220-年龄）")
+        }
+
         // HRV
         lines.append("HRV：数值因人而异，趋势比绝对值更重要，持续下降可能提示疲劳或压力")
 
@@ -942,6 +956,11 @@ final class GPTContextBuilder {
                 var s = "\(name) \(dur)分钟"
                 if w.totalCalories > 0 { s += " \(Int(w.totalCalories))kcal" }
                 if w.totalDistance > 10 { s += " \(String(format: "%.1f", w.totalDistance / 1000))km" }
+                // Heart rate during workout — critical for intensity analysis
+                if w.avgHeartRate > 0 {
+                    s += " 均心率\(Int(w.avgHeartRate))bpm"
+                    if w.maxHeartRate > 0 { s += "(峰值\(Int(w.maxHeartRate)))" }
+                }
                 return s
             }
             lines.append("今日运动：" + wLines.joined(separator: "；"))
@@ -1974,6 +1993,11 @@ final class GPTContextBuilder {
             var line = "\(dayLabel) \(timeStr) \(name) \(dur)分钟"
             if w.totalCalories > 0 { line += " \(Int(w.totalCalories))kcal" }
             if w.totalDistance > 100 { line += " \(String(format: "%.1f", w.totalDistance / 1000))km" }
+            // Per-workout heart rate for intensity analysis
+            if w.avgHeartRate > 0 {
+                line += " 均心率\(Int(w.avgHeartRate))bpm"
+                if w.maxHeartRate > 0 { line += "(峰值\(Int(w.maxHeartRate)))" }
+            }
             lines.append(line)
         }
 

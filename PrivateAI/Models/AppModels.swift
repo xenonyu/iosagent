@@ -191,6 +191,11 @@ struct WorkoutRecord {
     var totalDistance: Double     // meters
     var startDate: Date
     var endDate: Date
+    /// Average heart rate during the workout (bpm). 0 if unavailable.
+    /// Populated from HKWorkout.statistics(for: heartRate) on iOS 16+.
+    var avgHeartRate: Double = 0
+    /// Maximum heart rate during the workout (bpm). 0 if unavailable.
+    var maxHeartRate: Double = 0
 
     /// Human-readable workout type name (Chinese).
     var typeName: String {

@@ -391,8 +391,17 @@ struct SkillRouter {
                                 "calories", "hiking", "swim", "cycling", "yoga"]) {
             let filter = extractWorkoutFilter(from: lower)
             // Exercise queries without explicit time words (e.g. "走了多少步", "运动了吗")
-            // intuitively mean today, not last week. Same pattern as calendar (line 578).
-            let exRange = hasExplicitTimeReference(lower) ? range : .today
+            // intuitively mean today, not last week. Same pattern as calendar.
+            // EXCEPT habitual queries ("平均走多少步", "我一般运动多久", "每天走多少步")
+            // which ask about long-term patterns and should use a week of data.
+            let exRange: QueryTimeRange
+            if hasExplicitTimeReference(lower) {
+                exRange = range
+            } else if isHabitualPatternQuery(lower) {
+                exRange = .thisWeek
+            } else {
+                exRange = .today
+            }
             return .exercise(range: exRange, workoutFilter: filter)
         }
 
@@ -536,7 +545,14 @@ struct SkillRouter {
                                          "recovery", "calories", "hrv", "vo2max"]
             if containsAny(lower, healthAnalysisTopics) {
                 let metric = extractHealthMetric(from: lower)
-                let healthRange = hasExplicitTimeReference(lower) ? range : .today
+                let healthRange: QueryTimeRange
+                if hasExplicitTimeReference(lower) {
+                    healthRange = range
+                } else if isHabitualPatternQuery(lower) {
+                    healthRange = .thisWeek
+                } else {
+                    healthRange = .today
+                }
                 return .health(metric: metric, range: healthRange)
             }
             // Calendar topics → calendar skill
@@ -627,7 +643,16 @@ struct SkillRouter {
             let metric = extractHealthMetric(from: lower)
             // Health queries without explicit time words (e.g. "心率多少", "睡得好吗")
             // intuitively mean today/recent, not last week. Matches calendar default pattern.
-            let healthRange = hasExplicitTimeReference(lower) ? range : .today
+            // EXCEPT habitual queries ("我一般几点睡", "平均心率多少", "通常睡多久")
+            // which ask about personal patterns and should use a week of data.
+            let healthRange: QueryTimeRange
+            if hasExplicitTimeReference(lower) {
+                healthRange = range
+            } else if isHabitualPatternQuery(lower) {
+                healthRange = .thisWeek
+            } else {
+                healthRange = .today
+            }
             return .health(metric: metric, range: healthRange)
         }
 
@@ -972,6 +997,23 @@ struct SkillRouter {
     /// Checks whether the query contains an explicit time reference.
     /// When false, the caller should apply an intent-appropriate default
     /// instead of the generic `.lastWeek` fallback.
+    /// Detects habitual/pattern queries like "我一般几点睡", "平均走多少步", "通常运动多久".
+    /// These ask about long-term patterns, not a single day's data, so the time range
+    /// should expand to at least a week even when no explicit time reference is present.
+    static func isHabitualPatternQuery(_ text: String) -> Bool {
+        return containsAny(text, [
+            // Chinese habitual/average words
+            "一般", "平均", "通常", "平时", "日常", "平常", "正常",
+            "每天", "每日", "每周", "每晚", "每次",
+            "习惯", "规律", "作息规律", "日常规律",
+            "多数时候", "大多数", "大部分时间",
+            // English equivalents
+            "usually", "normally", "typically", "generally",
+            "on average", "average", "daily average",
+            "how much do i", "how often", "what time do i"
+        ])
+    }
+
     static func hasExplicitTimeReference(_ text: String) -> Bool {
         let timeKeywords = [
             "今天", "昨天", "前天", "大前天", "明天", "后天", "大后天",

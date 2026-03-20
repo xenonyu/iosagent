@@ -353,23 +353,63 @@ final class GPTContextBuilder {
     }
 
     private func locationSection(_ records: [CDLocationRecord]) -> String {
-        var counts: [String: Int] = [:]
-        var latest: [String: Date] = [:]
+        let cal = Calendar.current
+        let dateFmt = DateFormatter(); dateFmt.dateFormat = "M月d日（EEEE）"
+        dateFmt.locale = Locale(identifier: "zh_CN")
+        let timeFmt = DateFormatter(); timeFmt.dateFormat = "HH:mm"
+
+        var lines = ["[位置记录（近7天）]"]
+
+        // Group records by day for temporal clarity — GPT can answer "where did I go yesterday?"
+        var dayGroups: [Date: [CDLocationRecord]] = [:]
+        for r in records {
+            guard let ts = r.timestamp else { continue }
+            let dayStart = cal.startOfDay(for: ts)
+            dayGroups[dayStart, default: []].append(r)
+        }
+        let sortedDays = dayGroups.keys.sorted(by: >)  // newest first
+
+        for day in sortedDays.prefix(7) {
+            guard let dayRecords = dayGroups[day] else { continue }
+            let dayLabel = cal.isDateInToday(day) ? "今天" :
+                           cal.isDateInYesterday(day) ? "昨天" :
+                           dateFmt.string(from: day)
+            // Deduplicate by place name, keep chronological order and visit times
+            var seenPlaces: [String: (count: Int, times: [String])] = [:]
+            var placeOrder: [String] = []
+            for r in dayRecords.sorted(by: { ($0.timestamp ?? .distantPast) < ($1.timestamp ?? .distantPast) }) {
+                let name = (r.placeName?.isEmpty == false ? r.placeName : r.address) ?? "未知地点"
+                if seenPlaces[name] == nil { placeOrder.append(name) }
+                let timeStr = r.timestamp.map { timeFmt.string(from: $0) } ?? ""
+                seenPlaces[name, default: (count: 0, times: [])].count += 1
+                if !timeStr.isEmpty && seenPlaces[name]!.times.count < 3 {
+                    seenPlaces[name]!.times.append(timeStr)
+                }
+            }
+            var dayLine = "\(dayLabel)："
+            let placeParts = placeOrder.prefix(6).map { name -> String in
+                let info = seenPlaces[name]!
+                var part = name
+                if !info.times.isEmpty { part += "（\(info.times.joined(separator: "、"))）" }
+                if info.count > 1 { part += "×\(info.count)" }
+                return part
+            }
+            dayLine += placeParts.joined(separator: "→")
+            lines.append(dayLine)
+        }
+
+        // Summary: frequently visited places across the week
+        var totalCounts: [String: Int] = [:]
         for r in records {
             let name = (r.placeName?.isEmpty == false ? r.placeName : r.address) ?? "未知地点"
-            counts[name, default: 0] += 1
-            if let ts = r.timestamp, (latest[name] == nil || ts > latest[name]!) {
-                latest[name] = ts
-            }
+            totalCounts[name, default: 0] += 1
         }
-        let sorted = counts.sorted { $0.value > $1.value }.prefix(10)
-        let fmt = DateFormatter(); fmt.dateFormat = "M月d日 HH:mm"
-        var lines = ["[位置记录（近7天）]"]
-        for (name, count) in sorted {
-            var line = "\(name)（\(count)次）"
-            if let ts = latest[name] { line += " 最近到访：\(fmt.string(from: ts))" }
-            lines.append(line)
+        let topPlaces = totalCounts.sorted { $0.value > $1.value }.prefix(5)
+        if topPlaces.count > 1 {
+            let summaryParts = topPlaces.map { "\($0.key)(\($0.value)次)" }
+            lines.append("常去地点：\(summaryParts.joined(separator: "、"))")
         }
+
         return lines.joined(separator: "\n")
     }
 

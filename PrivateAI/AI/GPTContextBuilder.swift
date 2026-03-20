@@ -443,6 +443,18 @@ final class GPTContextBuilder {
             parts.append(workoutHistory)
         }
 
+        // HEALTH INSIGHT ALERTS — pre-computed anomalies and noteworthy patterns.
+        // GPT struggles to detect patterns across 14 rows of dense tabular data
+        // (e.g. missing that sleep has declined for 4 consecutive nights, or that
+        // resting HR spiked 15bpm above baseline). These alerts give GPT explicit
+        // attention cues so it can proactively surface insights the user cares about.
+        if weeklyHealth.count >= 3 {
+            let insights = healthInsightAlerts(weeklyHealth)
+            if !insights.isEmpty {
+                parts.append(insights)
+            }
+        }
+
         // CALENDAR — only include when authorized or has data.
         // When not authorized, all event arrays are empty and calendarSection would output
         // "今天：无日程", which contradicts the SYSTEM prompt's "日历日程（未授权…）" message.
@@ -3787,6 +3799,184 @@ final class GPTContextBuilder {
         }
 
         return lines.joined(separator: "\n")
+    }
+
+    // MARK: - Health Insight Alerts
+
+    /// Pre-computes noteworthy health patterns and anomalies from 14-day data.
+    /// GPT is unreliable at detecting patterns across dense tabular data — it frequently
+    /// misses 4-night sleep decline trends, sudden resting HR spikes, or exercise gaps.
+    /// These alerts give GPT explicit cues to surface in relevant conversations.
+    ///
+    /// Only flags patterns that are genuinely noteworthy to avoid alert fatigue:
+    /// - Sleep deprivation: 3+ consecutive nights under 6 hours
+    /// - Sleep trend: consistent decline or improvement over recent nights
+    /// - Resting HR anomaly: sudden spike >10bpm above recent baseline
+    /// - Exercise gap: broke a 3+ day exercise streak
+    /// - Activity drop: step count fell >40% vs prior week average
+    /// - Late bedtime drift: bedtime shifted >30 min later over the past week
+    private func healthInsightAlerts(_ summaries: [HealthSummary]) -> String {
+        let cal = Calendar.current
+        // Work with chronological order (oldest → newest)
+        let chrono = summaries.sorted { $0.date < $1.date }
+        // Exclude today's partial data from pattern detection to avoid false alarms
+        // (e.g. 0 steps at 8am flagged as "activity drop")
+        let completed = chrono.filter { !cal.isDateInToday($0.date) }
+        guard completed.count >= 3 else { return "" }
+
+        let dateFmt = DateFormatter(); dateFmt.dateFormat = "M/d"
+        var alerts: [String] = []
+
+        // 1. Sleep deprivation streak — 3+ consecutive nights under 6h
+        //    This is clinically significant: chronic short sleep (<6h) accumulates
+        //    "sleep debt" that impairs cognition, mood, and immunity.
+        let sleepDays = completed.filter { $0.sleepHours > 0 }
+        if sleepDays.count >= 3 {
+            var shortSleepStreak = 0
+            var maxShortStreak = 0
+            var streakEndDate: Date?
+            for s in sleepDays {
+                if s.sleepHours < 6.0 {
+                    shortSleepStreak += 1
+                    if shortSleepStreak > maxShortStreak {
+                        maxShortStreak = shortSleepStreak
+                        streakEndDate = s.date
+                    }
+                } else {
+                    shortSleepStreak = 0
+                }
+            }
+            // Check if the streak is still active (ends at the most recent sleep day)
+            if maxShortStreak >= 3 {
+                let isOngoing = streakEndDate == sleepDays.last?.date
+                if isOngoing {
+                    alerts.append("⚠️ 连续\(maxShortStreak)晚睡眠不足6小时（仍在持续），可能累积睡眠债务，建议关注")
+                } else if let end = streakEndDate {
+                    alerts.append("📋 近期曾连续\(maxShortStreak)晚睡眠不足6小时（截至\(dateFmt.string(from: end))），已恢复")
+                }
+            }
+        }
+
+        // 2. Sleep trend — consistent decline or improvement over recent 5 nights
+        //    Detect if the last 5 sleep values show a clear directional trend.
+        let recentSleep = Array(sleepDays.suffix(5))
+        if recentSleep.count >= 5 {
+            let values = recentSleep.map(\.sleepHours)
+            // Count consecutive increases or decreases
+            var declines = 0
+            var increases = 0
+            for i in 1..<values.count {
+                if values[i] < values[i-1] - 0.1 { declines += 1 }
+                if values[i] > values[i-1] + 0.1 { increases += 1 }
+            }
+            if declines >= 4 {
+                let drop = values.first! - values.last!
+                alerts.append("📉 近5晚睡眠持续减少（从\(String(format: "%.1f", values.first!))h降至\(String(format: "%.1f", values.last!))h，减少\(String(format: "%.1f", drop))h），建议留意作息")
+            } else if increases >= 4 {
+                let gain = values.last! - values.first!
+                alerts.append("📈 近5晚睡眠持续改善（从\(String(format: "%.1f", values.first!))h升至\(String(format: "%.1f", values.last!))h，增加\(String(format: "%.1f", gain))h），状态不错👍")
+            }
+        }
+
+        // 3. Resting heart rate anomaly — sudden spike above baseline
+        //    A resting HR spike of >10bpm can indicate illness, stress, poor recovery,
+        //    or dehydration. This is one of the most clinically actionable daily metrics.
+        let rhrDays = completed.filter { $0.restingHeartRate > 0 }
+        if rhrDays.count >= 5 {
+            let baseline = rhrDays.dropLast(2) // all except last 2 days
+            let recent = Array(rhrDays.suffix(2))
+            if !baseline.isEmpty {
+                let baselineAvg = baseline.map(\.restingHeartRate).reduce(0, +) / Double(baseline.count)
+                for day in recent {
+                    let spike = day.restingHeartRate - baselineAvg
+                    if spike >= 10 {
+                        let dayLabel = cal.isDateInYesterday(day.date) ? "昨天" : dateFmt.string(from: day.date)
+                        alerts.append("⚠️ \(dayLabel)静息心率\(Int(day.restingHeartRate))bpm，比近期基线（\(Int(baselineAvg))bpm）高\(Int(spike))bpm，可能提示疲劳/压力/生病")
+                        break // Only flag the most recent spike
+                    }
+                }
+            }
+        }
+
+        // 4. Exercise gap after streak — user was exercising regularly then stopped
+        //    Breaking a habit is a key moment where encouragement matters most.
+        let allChrono = chrono // includes today
+        var exerciseStreak = 0
+        var gapDays = 0
+        var streakBroken = false
+        for s in allChrono.reversed() {
+            let hasExercise = s.exerciseMinutes > 0 || !s.workouts.isEmpty
+            if gapDays == 0 && !hasExercise && !cal.isDateInToday(s.date) {
+                gapDays += 1
+            } else if gapDays > 0 && !hasExercise {
+                gapDays += 1
+            } else if gapDays > 0 && hasExercise {
+                // Counting the streak before the gap
+                exerciseStreak += 1
+                streakBroken = true
+            } else if gapDays == 0 && hasExercise {
+                break // still exercising, no gap
+            }
+            if streakBroken && !hasExercise {
+                break
+            }
+        }
+        // Only flag if a meaningful streak (3+ days) was broken by 2+ rest days
+        if streakBroken && exerciseStreak >= 3 && gapDays >= 2 {
+            alerts.append("💪 之前连续运动\(exerciseStreak)天，已休息\(gapDays)天。适当休息是好的，但别忘了保持节奏")
+        }
+
+        // 5. Step count significant drop — weekly average dropped >40%
+        //    Sudden inactivity may indicate illness, injury, or lifestyle change.
+        let recentStepDays = Array(completed.suffix(7))
+        let olderStepDays = completed.count > 7 ? Array(completed.prefix(completed.count - 7).suffix(7)) : []
+        if recentStepDays.count >= 5 && olderStepDays.count >= 5 {
+            let recentWithSteps = recentStepDays.filter { $0.steps > 0 }
+            let olderWithSteps = olderStepDays.filter { $0.steps > 0 }
+            if recentWithSteps.count >= 3 && olderWithSteps.count >= 3 {
+                let recentAvg = recentWithSteps.map(\.steps).reduce(0, +) / Double(recentWithSteps.count)
+                let olderAvg = olderWithSteps.map(\.steps).reduce(0, +) / Double(olderWithSteps.count)
+                if olderAvg > 1000 && recentAvg < olderAvg * 0.6 {
+                    let dropPct = Int((1.0 - recentAvg / olderAvg) * 100)
+                    alerts.append("📉 近7天日均步数\(Int(recentAvg))步，比之前（\(Int(olderAvg))步）下降\(dropPct)%")
+                } else if olderAvg > 1000 && recentAvg > olderAvg * 1.4 {
+                    let gainPct = Int((recentAvg / olderAvg - 1.0) * 100)
+                    alerts.append("📈 近7天日均步数\(Int(recentAvg))步，比之前（\(Int(olderAvg))步）增加\(gainPct)%，活动量明显提升👍")
+                }
+            }
+        }
+
+        // 6. Late bedtime drift — bedtime shifting later over the past week
+        //    Already detected in weeklySleepSection's drift analysis, but that only
+        //    fires with 6+ data points split into halves. This catches shorter-term
+        //    3-night trends: "最近三晚越睡越晚".
+        let recentOnsets = Array(sleepDays.suffix(4)).compactMap { $0.sleepOnset }
+        if recentOnsets.count >= 3 {
+            let toMins: (Date) -> Double = { time in
+                let c = cal.dateComponents([.hour, .minute], from: time)
+                var m = Double((c.hour ?? 0) * 60 + (c.minute ?? 0))
+                if m < 18 * 60 { m += 24 * 60 } // handle cross-midnight
+                return m
+            }
+            let onsetMins = recentOnsets.map(toMins)
+            // Check if each night is later than the previous
+            var allLater = true
+            for i in 1..<onsetMins.count {
+                if onsetMins[i] <= onsetMins[i-1] + 10 { // allow 10min tolerance
+                    allLater = false
+                    break
+                }
+            }
+            if allLater {
+                let totalDrift = Int(onsetMins.last! - onsetMins.first!)
+                if totalDrift >= 30 {
+                    alerts.append("🌙 最近\(onsetMins.count)晚入睡时间逐渐推迟（共推迟约\(totalDrift)分钟），注意作息规律")
+                }
+            }
+        }
+
+        guard !alerts.isEmpty else { return "" }
+        return "[健康趋势提醒]\n⚠️ 以下为系统自动检测的健康模式变化，在相关问题中可主动提及，但不要在不相关的对话中硬塞：\n" + alerts.joined(separator: "\n")
     }
 
     // MARK: - Photo Search

@@ -816,7 +816,21 @@ struct SummarySkill: ClawSkill {
             let lastWeekStart = cal.date(byAdding: .day, value: -7, to: lastWeekEnd) ?? lastWeekEnd
             let lastWeekHealth = allSummaries.filter { $0.date >= lastWeekStart && $0.date < lastWeekEnd }
 
-            var lines: [String] = ["📊 本周生活洞察：\n"]
+            // Partial-week awareness: how many days have elapsed in the current week?
+            let elapsedDays = max(1, cal.dateComponents([.day], from: interval.start, to: Date()).day ?? 1)
+            let isPartialWeek = elapsedDays < 7
+
+            // Build header with day-of-week context for partial weeks
+            let headerLine: String
+            if isPartialWeek {
+                let dayFmt = DateFormatter()
+                dayFmt.dateFormat = "EEEE"
+                dayFmt.locale = Locale(identifier: "zh_CN")
+                headerLine = "📊 本周生活洞察（截至\(dayFmt.string(from: Date()))，第 \(elapsedDays) 天）：\n"
+            } else {
+                headerLine = "📊 本周生活洞察：\n"
+            }
+            var lines: [String] = [headerLine]
             var hasAnyData = false
 
             // --- Calendar Events (full week to include upcoming events) ---
@@ -833,6 +847,8 @@ struct SummarySkill: ClawSkill {
                 lines.append("📅 **日程**")
                 var calLine = "  共 \(calendarEvents.count) 个事件，约 \(Self.formatDuration(totalMinutes)) 有安排"
                 // Week-over-week calendar comparison
+                // Note: calendar events use the FULL week interval (including future),
+                // so this comparison is fair even for partial weeks.
                 if !lastWeekCalEvents.isEmpty {
                     let lastCount = lastWeekCalEvents.count
                     let delta = calendarEvents.count - lastCount
@@ -909,13 +925,27 @@ struct SummarySkill: ClawSkill {
                 }
                 lines.append(stepsLine)
 
-                // Goal attainment comparison
-                if hasLastWeek && lwGoalDays != goalDays {
-                    let diff = goalDays - lwGoalDays
-                    if diff > 0 {
-                        lines.append("     达标天数比上周多 \(diff) 天 📈")
-                    } else if diff < 0 {
-                        lines.append("     达标天数比上周少 \(-diff) 天 📉")
+                // Pace projection for partial weeks — predict full-week step total
+                if isPartialWeek && dayCount >= 2 {
+                    let projectedGoalDays = Int(round(Double(goalDays) / dayCount * 7))
+                    let projectedTotalSteps = avgSteps * 7
+                    lines.append("     📈 按当前节奏，全周预计 ~\(Int(projectedTotalSteps).formatted()) 步，约 \(projectedGoalDays) 天达标")
+                }
+
+                // Goal attainment comparison — use rate (%) for fair partial-week comparison
+                if hasLastWeek {
+                    let thisRate = Double(goalDays) / dayCount
+                    let lwRate = Double(lwGoalDays) / lwDayCount
+                    let rateDiff = thisRate - lwRate
+                    // Only show if the rate difference is meaningful (>15 percentage points)
+                    if abs(rateDiff) > 0.15 {
+                        if rateDiff > 0 {
+                            let thisPct = Int(thisRate * 100)
+                            lines.append("     达标率 \(thisPct)%，比上周提升 📈")
+                        } else {
+                            let thisPct = Int(thisRate * 100)
+                            lines.append("     达标率 \(thisPct)%，低于上周水平 📉")
+                        }
                     }
                 }
 
@@ -976,13 +1006,28 @@ struct SummarySkill: ClawSkill {
 
                 if totalCalories > 0 {
                     var calLine = "  🔥 累计消耗 \(Int(totalCalories).formatted()) 千卡"
-                    if lwTotalCalories > 0 {
-                        calLine += " \(Self.formatDelta(current: totalCalories, previous: lwTotalCalories))"
+                    // Compare daily average calories (not raw totals) for fair partial-week comparison
+                    if hasLastWeek {
+                        let avgCalPerDay = totalCalories / dayCount
+                        let lwAvgCalPerDay = lastWeekWithData.reduce(0) { $0 + $1.activeCalories } / lwDayCount
+                        if lwAvgCalPerDay > 0 {
+                            calLine += " \(Self.formatDelta(current: avgCalPerDay, previous: lwAvgCalPerDay))"
+                        }
                     }
                     lines.append(calLine)
+                    // Pace projection for partial weeks
+                    if isPartialWeek && dayCount >= 2 {
+                        let projectedWeekTotal = (totalCalories / dayCount) * 7
+                        lines.append("     📈 按当前日均节奏，本周预计消耗 ~\(Int(projectedWeekTotal).formatted()) 千卡")
+                    }
                 }
                 if totalDistance > 0.5 {
-                    lines.append("  📏 累计步行 \(String(format: "%.1f", totalDistance)) 公里")
+                    var distLine = "  📏 累计步行 \(String(format: "%.1f", totalDistance)) 公里"
+                    if isPartialWeek && dayCount >= 2 {
+                        let projectedDist = (totalDistance / dayCount) * 7
+                        distLine += "（预计全周 ~\(String(format: "%.1f", projectedDist)) 公里）"
+                    }
+                    lines.append(distLine)
                 }
                 if totalFlights > 0 {
                     lines.append("  🏢 累计爬楼 \(Int(totalFlights)) 层")
@@ -1124,7 +1169,10 @@ struct SummarySkill: ClawSkill {
                 if !lastWeekLocations.isEmpty {
                     let thisPlaces = Set(locations.map { $0.displayName }).count
                     let lastPlaces = Set(lastWeekLocations.map { $0.displayName }).count
-                    if thisPlaces > lastPlaces {
+                    if isPartialWeek {
+                        // For partial weeks, just show count; raw comparison is misleading
+                        lines.append("  🗺️ 已去过 \(thisPlaces) 个不同地方")
+                    } else if thisPlaces > lastPlaces {
                         lines.append("  📈 探索了 \(thisPlaces) 个地方，比上周多 \(thisPlaces - lastPlaces) 个")
                     } else if thisPlaces < lastPlaces {
                         lines.append("  📉 本周去了 \(thisPlaces) 个地方，比上周少 \(lastPlaces - thisPlaces) 个")
@@ -1136,12 +1184,20 @@ struct SummarySkill: ClawSkill {
                 hasAnyData = true
                 let lastWeekEvents = CDLifeEvent.fetch(from: lastWeekStart, to: lastWeekEnd, in: context.coreDataContext)
                 var eventLine = "📝 共记录 \(events.count) 条生活事件"
-                if !lastWeekEvents.isEmpty {
+                if !lastWeekEvents.isEmpty && !isPartialWeek {
+                    // Only compare raw event counts when the current week is complete
                     let delta = events.count - lastWeekEvents.count
                     if delta > 0 {
                         eventLine += "（比上周多 \(delta) 条）"
                     } else if delta < 0 {
                         eventLine += "（比上周少 \(-delta) 条）"
+                    }
+                } else if !lastWeekEvents.isEmpty && isPartialWeek {
+                    // For partial weeks, compare daily rate
+                    let thisRate = Double(events.count) / Double(elapsedDays)
+                    let lwRate = Double(lastWeekEvents.count) / 7.0
+                    if thisRate > lwRate * 1.3 {
+                        eventLine += "（节奏比上周更频繁）"
                     }
                 }
                 lines.append("\n\(eventLine)")
@@ -1156,14 +1212,24 @@ struct SummarySkill: ClawSkill {
                     let favCount = thisWeekPhotos.filter { $0.isFavorite }.count
 
                     var photoLine = "\n📷 本周拍了 \(thisWeekPhotos.count) 张照片，\(activeDays) 天有拍照"
-                    // Compare with last week
+                    // Compare with last week — use daily rate for partial weeks
                     let lastWeekPhotos = context.photoService.fetchMetadata(from: lastWeekStart, to: lastWeekEnd)
                     if !lastWeekPhotos.isEmpty {
-                        let delta = thisWeekPhotos.count - lastWeekPhotos.count
-                        if delta > 0 {
-                            photoLine += "（比上周多 \(delta) 张）"
-                        } else if delta < 0 {
-                            photoLine += "（比上周少 \(-delta) 张）"
+                        if isPartialWeek {
+                            let thisRate = Double(thisWeekPhotos.count) / Double(elapsedDays)
+                            let lwRate = Double(lastWeekPhotos.count) / 7.0
+                            if thisRate > lwRate * 1.3 {
+                                photoLine += "（日均拍照比上周更多）"
+                            } else if thisRate < lwRate * 0.7 {
+                                photoLine += "（日均拍照比上周少）"
+                            }
+                        } else {
+                            let delta = thisWeekPhotos.count - lastWeekPhotos.count
+                            if delta > 0 {
+                                photoLine += "（比上周多 \(delta) 张）"
+                            } else if delta < 0 {
+                                photoLine += "（比上周少 \(-delta) 张）"
+                            }
                         }
                     }
                     lines.append(photoLine)

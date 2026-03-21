@@ -952,6 +952,25 @@ final class GPTContextBuilder {
             topics.insert(.lifeEvents)
         }
 
+        // Mood/emotion queries benefit greatly from health context — sleep deprivation,
+        // exercise patterns, and HRV/resting-HR directly correlate with emotional state.
+        // Without health data, GPT can only list mood records but can't explain "you've
+        // been feeling down — note that you've slept <5h three nights in a row" or "your
+        // mood improved on days you exercised". The crossDomainInsights section (which
+        // computes exercise→sleep→mood correlations) lives under the health gate, so
+        // mood queries MUST include .health to unlock those insights.
+        //
+        // Only triggered by mood/emotion keywords, NOT by generic life-event words like
+        // "记录" or "备忘" — those are about browsing records, not emotional analysis.
+        let moodAnalysisWords = [
+            "心情", "情绪", "感受", "开心", "不开心", "难过", "伤心", "郁闷",
+            "烦躁", "烦", "低落", "沮丧", "高兴", "快乐", "幸福", "emo",
+            "mood", "feeling", "happy", "sad", "depressed", "anxious"
+        ]
+        if moodAnalysisWords.contains(where: { lower.contains($0) }) {
+            topics.insert(.health)
+        }
+
         // General/summary queries → include all.
         // IMPORTANT: Do NOT include temporal words like "今天", "这周", "上周" here!
         // Those are time modifiers, not topic indicators. "今天走了多少步" should
@@ -1061,7 +1080,19 @@ final class GPTContextBuilder {
 
         guard !sectionNames.isEmpty else { return "" }
 
-        return "[查询重点提示]\n用户问题主要涉及：\(sectionNames.joined(separator: "、"))。请重点参考这些部分的数据回答，其他部分的数据除非明显相关否则无需引用。"
+        var hint = "[查询重点提示]\n用户问题主要涉及：\(sectionNames.joined(separator: "、"))。请重点参考这些部分的数据回答，其他部分的数据除非明显相关否则无需引用。"
+
+        // When user is asking about mood/emotions AND health data is included,
+        // guide GPT to connect the dots between emotional state and physical data.
+        // This produces far more insightful answers than just listing mood records.
+        let moodQuery = ["心情", "情绪", "感受", "开心", "难过", "郁闷", "mood", "feeling", "emo"]
+        let lower = query.lowercased()
+        if topics.contains(.health) && topics.contains(.lifeEvents)
+            && moodQuery.contains(where: { lower.contains($0) }) {
+            hint += "\n💡 用户在问心情/情绪状态。除了引用[生活记录]中的心情记录外，请结合[生活模式洞察]和健康数据（睡眠质量、运动频率、HRV/静息心率等）分析可能影响情绪的因素。例如「从数据来看，你最近睡眠不足可能影响了心情」比「你最近记录了3次不开心」更有洞察力。"
+        }
+
+        return hint
     }
 
     // MARK: - Temporal Focus

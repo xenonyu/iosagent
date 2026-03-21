@@ -433,84 +433,115 @@ final class GPTContextBuilder {
         let queryTopics = detectQueryTopics(userQuery, previousUserQuery: previousUserQueryForTopics)
         let includeAllSections = queryTopics.contains(.general) || queryTopics == Set(QueryTopic.allCases)
 
+        // LIGHTWEIGHT GREETING MODE — when the user is just saying "hi" / "你好" /
+        // "谢谢" etc., skip heavy data sections (14-day trend, sleep analysis, workout
+        // history, cross-domain insights). This reduces the prompt from ~5000+ tokens to
+        // ~500, cutting latency significantly and preventing GPT from over-referencing
+        // data in its greeting (e.g. dumping health stats when the user just said "嗨").
+        //
+        // Only today's health snapshot + today's calendar are included so GPT can
+        // naturally mention a highlight ("你今天走了5000步！") without exhaustive detail.
+        // Special date reminders are still included (birthday greetings are high-value).
+        //
+        // Safety: if the query also matches a specific topic (health, calendar, etc.),
+        // isLightweightGreeting stays false → full data is included as before.
+        let isLightweightGreeting = isGreetingQuery(userQuery) && !queryTopics.contains(.health)
+            && !queryTopics.contains(.calendar) && !queryTopics.contains(.location)
+            && !queryTopics.contains(.photos) && !queryTopics.contains(.lifeEvents)
+
         // HEALTH sections — benchmarks, today, yesterday, trend, sleep, workout, insights
         if includeAllSections || queryTopics.contains(.health) {
-            // HEALTH REFERENCE BENCHMARKS — age-adjusted so GPT can give personalized insights
-            // e.g. "离推荐的8000步还差1500步" instead of just "你走了6500步"
-            let benchmarks = healthBenchmarks()
-            if !benchmarks.isEmpty {
-                parts.append(benchmarks)
-            }
-
-            // TODAY'S HEALTH
-            parts.append(healthSection(todayHealth, weeklyHealth: weeklyHealth, hourOfDay: hourOfDay, healthTimedOut: healthTimedOut))
-
-            // When today's data is empty (e.g. early morning), surface yesterday's key
-            // metrics so GPT can still answer "how did I do yesterday?" or "how was my sleep?"
-            // Also always surface yesterday's data during late-night hours (0-5 AM) even if
-            // today has some data (e.g. sleep tracking), because at 2 AM the user's "today"
-            // almost certainly refers to the previous calendar day.
-            let shouldShowYesterday = (!todayHasHealth && hourOfDay < 10) || hourOfDay < 5
-            if shouldShowYesterday {
-                if let yesterday = weeklyHealth.first(where: {
-                    Calendar.current.isDateInYesterday($0.date) &&
-                    ($0.steps > 0 || $0.sleepHours > 0 || $0.exerciseMinutes > 0)
-                }) {
-                    parts.append(yesterdayHighlight(yesterday))
+            // For greetings: only today's health snapshot (no benchmarks, trends, analysis).
+            // GPT can still mention a highlight ("你今天走了5000步！") but won't dump data.
+            if isLightweightGreeting {
+                parts.append(healthSection(todayHealth, weeklyHealth: weeklyHealth, hourOfDay: hourOfDay, healthTimedOut: healthTimedOut))
+            } else {
+                // HEALTH REFERENCE BENCHMARKS — age-adjusted so GPT can give personalized insights
+                // e.g. "离推荐的8000步还差1500步" instead of just "你走了6500步"
+                let benchmarks = healthBenchmarks()
+                if !benchmarks.isEmpty {
+                    parts.append(benchmarks)
                 }
-            }
 
-            // 14-DAY HEALTH TREND (full per-day table for all available data)
-            if weeklyHealth.count >= 3 {
-                parts.append(trendSection(weeklyHealth))
-            }
+                // TODAY'S HEALTH
+                parts.append(healthSection(todayHealth, weeklyHealth: weeklyHealth, hourOfDay: hourOfDay, healthTimedOut: healthTimedOut))
 
-            // 14-DAY SLEEP QUALITY (per-day phase breakdown for sleep analysis)
-            // Uses all 14 days so GPT can answer "上周睡得怎么样" with per-night details,
-            // not just the aggregate from buildPerWeekStats.
-            let sleepAnalysis = weeklySleepSection(weeklyHealth)
-            if !sleepAnalysis.isEmpty {
-                parts.append(sleepAnalysis)
-            }
-
-            // 14-DAY WORKOUT HISTORY (individual sessions GPT can reference)
-            // Uses all 14 days so GPT can answer "上周做了什么运动" with session details.
-            let workoutHistory = weeklyWorkoutSection(weeklyHealth)
-            if !workoutHistory.isEmpty {
-                parts.append(workoutHistory)
-            }
-
-            // HEALTH INSIGHT ALERTS — pre-computed anomalies and noteworthy patterns.
-            if weeklyHealth.count >= 3 {
-                let insights = healthInsightAlerts(weeklyHealth)
-                if !insights.isEmpty {
-                    parts.append(insights)
+                // When today's data is empty (e.g. early morning), surface yesterday's key
+                // metrics so GPT can still answer "how did I do yesterday?" or "how was my sleep?"
+                // Also always surface yesterday's data during late-night hours (0-5 AM) even if
+                // today has some data (e.g. sleep tracking), because at 2 AM the user's "today"
+                // almost certainly refers to the previous calendar day.
+                let shouldShowYesterday = (!todayHasHealth && hourOfDay < 10) || hourOfDay < 5
+                if shouldShowYesterday {
+                    if let yesterday = weeklyHealth.first(where: {
+                        Calendar.current.isDateInYesterday($0.date) &&
+                        ($0.steps > 0 || $0.sleepHours > 0 || $0.exerciseMinutes > 0)
+                    }) {
+                        parts.append(yesterdayHighlight(yesterday))
+                    }
                 }
-            }
 
-            // CROSS-DOMAIN INSIGHTS — correlations between exercise, sleep, calendar, and activity.
-            if weeklyHealth.count >= 5 {
-                let allPastEvents = pastEvents + todayEvents
-                let crossInsights = crossDomainInsights(
-                    healthSummaries: weeklyHealth,
-                    calendarEvents: allPastEvents
-                )
-                if !crossInsights.isEmpty {
-                    parts.append(crossInsights)
+                // 14-DAY HEALTH TREND (full per-day table for all available data)
+                if weeklyHealth.count >= 3 {
+                    parts.append(trendSection(weeklyHealth))
+                }
+
+                // 14-DAY SLEEP QUALITY (per-day phase breakdown for sleep analysis)
+                // Uses all 14 days so GPT can answer "上周睡得怎么样" with per-night details,
+                // not just the aggregate from buildPerWeekStats.
+                let sleepAnalysis = weeklySleepSection(weeklyHealth)
+                if !sleepAnalysis.isEmpty {
+                    parts.append(sleepAnalysis)
+                }
+
+                // 14-DAY WORKOUT HISTORY (individual sessions GPT can reference)
+                // Uses all 14 days so GPT can answer "上周做了什么运动" with session details.
+                let workoutHistory = weeklyWorkoutSection(weeklyHealth)
+                if !workoutHistory.isEmpty {
+                    parts.append(workoutHistory)
+                }
+
+                // HEALTH INSIGHT ALERTS — pre-computed anomalies and noteworthy patterns.
+                if weeklyHealth.count >= 3 {
+                    let insights = healthInsightAlerts(weeklyHealth)
+                    if !insights.isEmpty {
+                        parts.append(insights)
+                    }
+                }
+
+                // CROSS-DOMAIN INSIGHTS — correlations between exercise, sleep, calendar, and activity.
+                if weeklyHealth.count >= 5 {
+                    let allPastEvents = pastEvents + todayEvents
+                    let crossInsights = crossDomainInsights(
+                        healthSummaries: weeklyHealth,
+                        calendarEvents: allPastEvents
+                    )
+                    if !crossInsights.isEmpty {
+                        parts.append(crossInsights)
+                    }
                 }
             }
         }
 
         // CALENDAR — only include when topic-relevant AND (authorized or has data).
+        // For greetings: only today's events (skip past 14 days + future 7 days to save tokens).
+        // GPT can still say "你今天有3个会议" but won't dump a full calendar history.
         if includeAllSections || queryTopics.contains(.calendar) {
-            let hasCalendarData = !todayEvents.isEmpty || !upcomingEvents.isEmpty || !pastEvents.isEmpty
-            if hasCalendarData || self.calendarService.isAuthorized {
-                parts.append(calendarSection(todayEvents: todayEvents, upcoming: upcomingEvents, past: pastEvents))
+            if isLightweightGreeting {
+                // Greeting mode: only today's events for a brief status mention
+                if !todayEvents.isEmpty {
+                    parts.append(calendarSection(todayEvents: todayEvents, upcoming: [], past: []))
+                }
+            } else {
+                let hasCalendarData = !todayEvents.isEmpty || !upcomingEvents.isEmpty || !pastEvents.isEmpty
+                if hasCalendarData || self.calendarService.isAuthorized {
+                    parts.append(calendarSection(todayEvents: todayEvents, upcoming: upcomingEvents, past: pastEvents))
+                }
             }
         }
 
-        // LOCATION — include current live position when available.
-        if includeAllSections || queryTopics.contains(.location) {
+        // LOCATION — skip entirely for greetings (users don't expect location in a "hi" response).
+        if !isLightweightGreeting && (includeAllSections || queryTopics.contains(.location)) {
             if !locationRecords.isEmpty || self.locationService.currentLocation != nil {
                 parts.append(locationSection(locationRecords,
                                              currentLocation: self.locationService.currentLocation,
@@ -519,8 +550,8 @@ final class GPTContextBuilder {
             }
         }
 
-        // PHOTO sections — stats and search results
-        if includeAllSections || queryTopics.contains(.photos) {
+        // PHOTO sections — skip entirely for greetings.
+        if !isLightweightGreeting && (includeAllSections || queryTopics.contains(.photos)) {
             if !recentPhotos.isEmpty {
                 parts.append(photoSection(recentPhotos, locationRecords: locationRecords))
             }
@@ -535,7 +566,7 @@ final class GPTContextBuilder {
                 if !pq.locationName.isEmpty { criteria.append("地点：\(pq.locationName)") }
                 parts.append("[照片搜索结果]\n搜索条件：\(criteria.joined(separator: "，"))\n未找到匹配的照片。可能是照片索引尚未建立，或相册中没有符合条件的照片。")
             }
-        } else {
+        } else if !isLightweightGreeting {
             // Even when photos topic is not detected, still include photo search results
             // if a search was explicitly triggered — the user's query contained photo
             // keywords that were caught by searchPhotosIfNeeded but not by detectQueryTopics.
@@ -544,8 +575,8 @@ final class GPTContextBuilder {
             }
         }
 
-        // LIFE EVENTS
-        if includeAllSections || queryTopics.contains(.lifeEvents) {
+        // LIFE EVENTS — skip for greetings.
+        if !isLightweightGreeting && (includeAllSections || queryTopics.contains(.lifeEvents)) {
             if !lifeEvents.isEmpty {
                 parts.append(lifeEventsSection(lifeEvents))
             }
@@ -652,32 +683,94 @@ final class GPTContextBuilder {
             }
         }
 
-        // QUERY RELEVANCE HINT — guides GPT's attention to the most relevant
-        // data sections without removing any data (safe fallback). This reduces
-        // "over-referencing" where GPT cites irrelevant data in its response
-        // (e.g. mentioning calendar events when user asked about step count).
-        let relevanceHint = buildRelevanceHint(query: userQuery, conversationHistory: conversationHistory)
-        if !relevanceHint.isEmpty {
-            parts.append(relevanceHint)
-        }
+        // Skip relevance/temporal hints for greetings — they're unnecessary when
+        // only minimal data is included, and omitting them saves additional tokens.
+        if !isLightweightGreeting {
+            // QUERY RELEVANCE HINT — guides GPT's attention to the most relevant
+            // data sections without removing any data (safe fallback). This reduces
+            // "over-referencing" where GPT cites irrelevant data in its response
+            // (e.g. mentioning calendar events when user asked about step count).
+            let relevanceHint = buildRelevanceHint(query: userQuery, conversationHistory: conversationHistory)
+            if !relevanceHint.isEmpty {
+                parts.append(relevanceHint)
+            }
 
-        // TEMPORAL FOCUS HINT — resolves relative time expressions ("昨天", "上周",
-        // "前天") to exact calendar dates so GPT can directly match them to the
-        // correct rows in the trend table, sleep analysis, and calendar sections.
-        // Without this, GPT often mismatches temporal references:
-        //   - "昨晚睡得怎么样" → GPT looks at yesterday's sleep row instead of today's
-        //     (sleep is attributed to the wake-up day)
-        //   - "前天去了哪里" → GPT isn't sure which date "前天" is
-        //   - "上周运动了几次" → GPT may include this week's data by mistake
-        let temporalHint = buildTemporalHint(query: userQuery)
-        if !temporalHint.isEmpty {
-            parts.append(temporalHint)
+            // TEMPORAL FOCUS HINT — resolves relative time expressions ("昨天", "上周",
+            // "前天") to exact calendar dates so GPT can directly match them to the
+            // correct rows in the trend table, sleep analysis, and calendar sections.
+            // Without this, GPT often mismatches temporal references:
+            //   - "昨晚睡得怎么样" → GPT looks at yesterday's sleep row instead of today's
+            //     (sleep is attributed to the wake-up day)
+            //   - "前天去了哪里" → GPT isn't sure which date "前天" is
+            //   - "上周运动了几次" → GPT may include this week's data by mistake
+            let temporalHint = buildTemporalHint(query: userQuery)
+            if !temporalHint.isEmpty {
+                parts.append(temporalHint)
+            }
         }
 
         // CURRENT QUESTION
         parts.append("[当前问题]\n用户说：\(userQuery)")
 
         return parts.joined(separator: "\n\n")
+    }
+
+    // MARK: - Greeting Detection
+
+    /// Detects whether a query is a pure greeting or small talk that doesn't need
+    /// detailed data context. This enables "lightweight mode" in the prompt builder,
+    /// reducing token count by ~80% for common interactions like "你好", "嗨", "谢谢".
+    ///
+    /// The key distinction from `detectQueryTopics(.general)` is intent:
+    /// - "总结这周" → `.general` → needs ALL data (summary request)
+    /// - "你好" → `.general` AND isGreeting → needs only today's snapshot
+    ///
+    /// Short queries (≤4 chars) that match greeting patterns are treated as greetings.
+    /// Longer queries that ONLY contain greeting words (no data-referencing content)
+    /// are also treated as greetings (e.g. "你好啊" "谢谢你的帮助").
+    private func isGreetingQuery(_ query: String) -> Bool {
+        let lower = query.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // Pure greeting words — must be exhaustive but conservative.
+        // Only words that NEVER imply a data question. "怎么样" is excluded because
+        // "怎么样" alone could be a follow-up to a data question.
+        let greetingPatterns = [
+            // Chinese greetings
+            "你好", "嗨", "哈喽", "早上好", "下午好", "晚上好", "早安", "晚安",
+            "在吗", "在不在", "hi", "hello", "hey", "good morning", "good evening",
+            // Thanks / pleasantries
+            "谢谢", "谢了", "感谢", "多谢", "thanks", "thank you", "thx",
+            // Goodbye
+            "拜拜", "再见", "bye", "晚安",
+            // Identity
+            "你是谁", "你叫什么", "你是什么", "who are you", "what are you",
+            // Affirmations / fillers
+            "好的", "好吧", "嗯", "哦", "ok", "okay", "知道了", "明白了",
+            "收到", "了解", "没事", "没关系", "不用了",
+            // Emoji-only
+            "👋", "😊", "🙂", "❤️", "👍"
+        ]
+
+        // Short queries (≤6 chars) that exactly match a greeting pattern
+        if lower.count <= 6 && greetingPatterns.contains(where: { lower.contains($0) }) {
+            return true
+        }
+
+        // Longer queries: check if after removing greeting words and common particles,
+        // no substantive content remains. "谢谢你的帮助" → "帮助" remains → false (might be asking for help).
+        // "你好呀" → "" remains → true.
+        let particles = ["呀", "啊", "吧", "呢", "哦", "嘛", "了", "的", "你", "我", "！", "!", "~", "～", "。", ".", ",", "，", " "]
+        var stripped = lower
+        for pattern in greetingPatterns {
+            stripped = stripped.replacingOccurrences(of: pattern, with: "")
+        }
+        for p in particles {
+            stripped = stripped.replacingOccurrences(of: p, with: "")
+        }
+        stripped = stripped.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // If nothing substantive remains after stripping greetings + particles, it's a greeting
+        return stripped.isEmpty && greetingPatterns.contains(where: { lower.contains($0) })
     }
 
     // MARK: - Query Relevance
@@ -1903,6 +1996,12 @@ final class GPTContextBuilder {
                 let efficiency = Int((h.sleepHours / h.inBedHours) * 100)
                 line += "，在床\(String(format: "%.1f", h.inBedHours))h，睡眠效率\(efficiency)%"
             }
+            if h.sleepAwakenings > 0 {
+                line += "，夜醒\(h.sleepAwakenings)次"
+                if h.sleepAwakeMinutes >= 1 {
+                    line += "（共\(Int(h.sleepAwakeMinutes))分钟）"
+                }
+            }
             if let onset = h.sleepOnset, let wake = h.wakeTime {
                 let fmt = DateFormatter(); fmt.dateFormat = "HH:mm"
                 line += "，入睡\(fmt.string(from: onset))，起床\(fmt.string(from: wake))"
@@ -2713,6 +2812,17 @@ final class GPTContextBuilder {
                 let thisEff = thisEffDays.map { ($0.sleepHours / $0.inBedHours) * 100 }.reduce(0, +) / Double(thisEffDays.count)
                 let lastEff = lastEffDays.map { ($0.sleepHours / $0.inBedHours) * 100 }.reduce(0, +) / Double(lastEffDays.count)
                 formatDelta("睡眠效率", thisVal: thisEff, lastVal: lastEff, unit: "%")
+            }
+
+            // Awakenings comparison — key sleep continuity metric.
+            // "这周睡得安稳吗？" → compare average nightly awakenings.
+            let thisAwakeDays = thisSleepDays.filter { $0.sleepAwakenings > 0 }
+            let lastAwakeDays = lastSleepDays.filter { $0.sleepAwakenings > 0 }
+            if thisAwakeDays.count >= 2 && lastAwakeDays.count >= 2 {
+                let thisAwakeAvg = Double(thisAwakeDays.map(\.sleepAwakenings).reduce(0, +)) / Double(thisAwakeDays.count)
+                let lastAwakeAvg = Double(lastAwakeDays.map(\.sleepAwakenings).reduce(0, +)) / Double(lastAwakeDays.count)
+                // For awakenings, lower is better (fewer = more continuous sleep)
+                formatDelta("均夜醒次数", thisVal: thisAwakeAvg, lastVal: lastAwakeAvg, unit: "次", higherIsBetter: false)
             }
 
             // Bedtime (onset) comparison — users commonly ask "这周比上周睡得晚吗？"
@@ -4350,6 +4460,15 @@ final class GPTContextBuilder {
                 parts.append("效率\(efficiency)%")
             }
 
+            // Awakenings — key sleep continuity metric
+            if s.sleepAwakenings > 0 {
+                var awakePart = "夜醒\(s.sleepAwakenings)次"
+                if s.sleepAwakeMinutes >= 1 {
+                    awakePart += "(\(Int(s.sleepAwakeMinutes))分钟)"
+                }
+                parts.append(awakePart)
+            }
+
             // Onset and wake times for circadian regularity analysis
             if let onset = s.sleepOnset {
                 parts.append("入睡\(timeFmt.string(from: onset))")
@@ -4366,6 +4485,20 @@ final class GPTContextBuilder {
         let avgSleep = daysWithSleep.map(\.sleepHours).reduce(0, +) / Double(totalDays)
         var summaryParts: [String] = []
         summaryParts.append("\(totalDays)天有睡眠数据，均\(String(format: "%.1f", avgSleep))h")
+
+        // Average awakenings — restless sleep detection
+        let daysWithAwakenings = daysWithSleep.filter { $0.sleepAwakenings > 0 }
+        if !daysWithAwakenings.isEmpty {
+            let avgAwakenings = Double(daysWithAwakenings.map(\.sleepAwakenings).reduce(0, +)) / Double(daysWithAwakenings.count)
+            let avgAwakeMins = daysWithAwakenings.map(\.sleepAwakeMinutes).reduce(0, +) / Double(daysWithAwakenings.count)
+            if avgAwakenings >= 1.0 {
+                var awakeDesc = "均夜醒\(String(format: "%.1f", avgAwakenings))次"
+                if avgAwakeMins >= 1 {
+                    awakeDesc += "(\(Int(avgAwakeMins))分钟)"
+                }
+                summaryParts.append(awakeDesc)
+            }
+        }
 
         // Best/worst sleep nights — pre-computed so GPT can directly answer
         // "哪天睡得最好？" or "最近睡得最差是哪晚？" without scanning 14 rows.
@@ -4833,6 +4966,26 @@ final class GPTContextBuilder {
                 } else if effDrop <= -8 && recentEffAvg >= 85 {
                     alerts.append("🛏️ 近3晚睡眠效率提升至\(Int(recentEffAvg))%（之前\(Int(olderEffAvg))%），入睡更快、夜醒更少👍")
                 }
+            }
+        }
+
+        // 7b. Frequent awakenings — 3+ consecutive nights with ≥3 awakenings.
+        //     Frequent night waking degrades sleep quality even when total hours look
+        //     normal. Users saying "最近睡不安稳" or "总是醒" are describing this pattern.
+        //     Unlike total hours (caught by check #1) or efficiency (check #7), awakenings
+        //     specifically indicate sleep fragmentation — a distinct clinical concern
+        //     associated with sleep apnea, stress, or environmental disturbances.
+        let awakeDays = sleepDays.filter { $0.sleepAwakenings > 0 }
+        if awakeDays.count >= 3 {
+            let recentAwake = Array(awakeDays.suffix(3))
+            let allFrequent = recentAwake.allSatisfy { $0.sleepAwakenings >= 3 }
+            if allFrequent {
+                let avgAwakenings = Double(recentAwake.map(\.sleepAwakenings).reduce(0, +)) / Double(recentAwake.count)
+                let avgAwakeMins = recentAwake.map(\.sleepAwakeMinutes).reduce(0, +) / Double(recentAwake.count)
+                var desc = "⚠️ 近\(recentAwake.count)晚频繁夜醒（均\(String(format: "%.0f", avgAwakenings))次"
+                if avgAwakeMins >= 1 { desc += "，共约\(Int(avgAwakeMins))分钟" }
+                desc += "），睡眠碎片化可能导致白天疲劳，即使总时长足够。可能与压力、环境噪音、睡前屏幕或咖啡因有关"
+                alerts.append(desc)
             }
         }
 

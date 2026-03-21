@@ -291,6 +291,13 @@ struct HealthSummary {
     var sleepOnset: Date?
     /// When the user woke up (latest asleep sample end) — for circadian analysis
     var wakeTime: Date?
+    /// Total minutes spent awake during the sleep session (from HKCategoryValueSleepAnalysis.awake).
+    /// Distinct from "time in bed minus sleep" — this counts only HealthKit-detected awake intervals
+    /// within the sleep window. High values indicate restless sleep.
+    var sleepAwakeMinutes: Double = 0
+    /// Number of distinct awake episodes during the sleep session.
+    /// Frequent awakenings (≥3) degrade sleep quality even if total sleep hours are adequate.
+    var sleepAwakenings: Int = 0
     var heartRate: Double = 0
     /// Minimum heart rate recorded during the day — useful for detecting bradycardia or confirming low resting rate
     var heartRateMin: Double = 0

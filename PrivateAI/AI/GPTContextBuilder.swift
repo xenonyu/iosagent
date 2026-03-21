@@ -781,6 +781,28 @@ final class GPTContextBuilder {
             "👋", "😊", "🙂", "❤️", "👍"
         ]
 
+        // Capability / meta-queries — users asking ABOUT the app, not about their data.
+        // "你能做什么" / "你有什么功能" / "能帮我什么" / "what can you do" etc.
+        // These queries need zero user data — GPT only needs the SYSTEM prompt to
+        // describe its capabilities. Previously these fell through to general → all
+        // sections, sending 5000+ tokens of health/calendar/photo data just so GPT
+        // could answer "I can help with health, calendar, photos...". Treating them
+        // as lightweight saves ~80% tokens and reduces latency.
+        let capabilityPatterns = [
+            "你能做什么", "你会做什么", "你能干什么", "你会干什么",
+            "你有什么功能", "有什么功能", "你能帮我什么", "能帮我什么",
+            "你会什么", "你能什么", "你可以做什么", "可以做什么",
+            "能做些什么", "做些什么", "有哪些功能", "什么功能",
+            "怎么用", "怎么使用", "如何使用", "使用方法", "使用说明",
+            "what can you do", "what do you do", "how to use",
+            "how do i use", "what are your features", "help me with what",
+            "能查什么", "能看什么", "能问什么", "问你什么",
+            "举个例子", "举些例子", "给我个例子", "示例"
+        ]
+        if capabilityPatterns.contains(where: { lower.contains($0) }) {
+            return true
+        }
+
         // Short queries (≤6 chars) that exactly match a greeting pattern
         if lower.count <= 6 && greetingPatterns.contains(where: { lower.contains($0) }) {
             return true
@@ -953,7 +975,13 @@ final class GPTContextBuilder {
             "干了什么", "做了什么", "干什么了", "做什么了",
             "怎么过的", "发生了什么", "忙什么", "忙些什么",
             "都有什么", "都干了", "都做了",
-            "what did i do", "what happened"
+            "what did i do", "what happened",
+            // Capability / meta-queries — "你能做什么" / "有什么功能" etc.
+            // These are about the app itself, not user data. Marking them .general
+            // prevents follow-up topic inheritance from the previous query.
+            // (isGreetingQuery handles the lightweight mode separately.)
+            "你能做什么", "有什么功能", "能帮我什么", "怎么用",
+            "what can you do", "how to use"
         ]
         if generalWords.contains(where: { lower.contains($0) }) {
             topics.insert(.general)

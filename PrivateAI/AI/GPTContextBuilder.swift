@@ -356,7 +356,7 @@ final class GPTContextBuilder {
         - 睡眠分析中包含预计算的「工作日vs周末」对比数据和「睡眠负债」数据。用户问「周末有没有补觉」「工作日和周末睡眠差多少」「我作息规律吗」时，直接引用该对比数据，不需要自己分类统计。工作日 = 周一至周五醒来的夜晚，周末 = 周六/周日醒来的夜晚。用户问「需要补觉吗」「这周睡够了吗」「欠了多少觉」「睡眠负债」时，直接引用睡眠负债数据回答。
         - 涉及多天数据时，可引用「近14天趋势」进行对比分析，指出趋势变化。
         - ⚠️ 使用预计算统计数据（重要，避免算错）：
-          • 回答「这周运动了几次」「上周走了多少步」等聚合问题时，必须使用「本周/上周」周统计中的预计算数据（如「5天中3天有运动，共120分钟」），绝对不要自己手动数趋势表的行数或逐行加总。手动逐行统计14天数据极易出错（漏数、看错行、把上周数据算入本周）。
+          • 回答「这周运动了几次」「上周走了多少步」「这周消耗了多少卡路里」等聚合问题时，必须使用「本周/上周」周统计中的预计算数据（如「5天中3天有运动，共120分钟」、「本周累计：总32150步，总消耗12400kcal」），绝对不要自己手动数趋势表的行数或逐行加总。手动逐行统计14天数据极易出错（漏数、看错行、把上周数据算入本周）。本周累计数据已包含今天的部分数据，直接引用即可。
           • 周环比数据已预计算（如「日均步数↑1200步(+18%)」），直接引用，不要自己做减法或算百分比。
           • 睡眠概要中的「平均入睡/起床时间」「工作日vs周末」「睡眠负债」已预计算，直接引用，不要自己从14行中挑选和平均。
           • [健康趋势提醒]中的异常模式已预检测（如「连续3晚睡眠不足」「静息心率突升」），直接引用即可。
@@ -2788,6 +2788,22 @@ final class GPTContextBuilder {
                     line += "\n  → \(mergedLine)"
                 }
             }
+            // MERGED WEEK TOTALS — pre-computed cumulative totals for steps, calories,
+            // and distance including today's partial data. The SYSTEM prompt instructs GPT
+            // to "never manually count or sum trend table rows", but weekSubTotal shows
+            // only completed days' averages while todaySnapshot shows today's raw values.
+            // Users commonly ask "这周走了多少步？" or "这周消耗了多少卡路里？" and GPT must
+            // add completed-days total + today's value — exactly the arithmetic it's told
+            // NOT to do. This merged line eliminates the contradiction by providing a
+            // ready-to-cite cumulative total. Only exercise had a merged summary before;
+            // steps/calories/distance were missing, causing GPT to either undercount
+            // (quoting only completed days) or attempt manual addition (often wrong).
+            if let today = todaySummary, today.hasData {
+                let mergedTotals = mergedWeekCumulativeTotals(completedDays: thisWeekDays, today: today, hourOfDay: hourOfDay)
+                if !mergedTotals.isEmpty {
+                    line += "\n  → \(mergedTotals)"
+                }
+            }
             parts.append(line)
         } else if let today = todaySummary, today.hasData {
             // Monday (or first day of week): no completed days yet, but today has data.
@@ -3187,6 +3203,56 @@ final class GPTContextBuilder {
         }
 
         return result
+    }
+
+    /// Pre-computes cumulative weekly totals for steps, calories, and distance
+    /// including today's partial data. This eliminates the contradiction where the
+    /// SYSTEM prompt forbids GPT from manually summing rows, yet the only way to
+    /// answer "这周走了多少步？" was to add weekSubTotal (completed days) + todaySnapshot.
+    ///
+    /// Returns a single line like:
+    /// "本周累计（含今天截至14点）：总32150步，总消耗12400kcal，总距离18.5km"
+    ///
+    /// Only includes metrics where the combined total is meaningful (>0). Returns
+    /// empty string if there's nothing useful to show (e.g. no steps at all).
+    private func mergedWeekCumulativeTotals(completedDays: [HealthSummary],
+                                             today: HealthSummary,
+                                             hourOfDay: Int) -> String {
+        var items: [String] = []
+        let totalDays = completedDays.count + 1 // +1 for today
+
+        // Steps total — the most commonly asked "这周走了多少步？"
+        let completedSteps = completedDays.map(\.steps).reduce(0, +)
+        let totalSteps = completedSteps + today.steps
+        if totalSteps > 0 {
+            let dailyAvg = Int(totalSteps / Double(totalDays))
+            items.append("总\(Int(totalSteps))步（日均\(dailyAvg)步）")
+        }
+
+        // Calories total — "这周消耗了多少卡路里？"
+        let completedActiveCal = completedDays.map(\.activeCalories).reduce(0, +)
+        let completedBasalCal = completedDays.map(\.basalCalories).reduce(0, +)
+        let totalActiveCal = completedActiveCal + today.activeCalories
+        let totalBasalCal = completedBasalCal + today.basalCalories
+        let totalAllCal = totalActiveCal + totalBasalCal
+        if totalAllCal > totalActiveCal && totalAllCal > 0 {
+            // Have both active + basal → show total expenditure
+            let dailyAvg = Int(totalAllCal / Double(totalDays))
+            items.append("总消耗\(Int(totalAllCal))kcal（活动\(Int(totalActiveCal))kcal，日均\(dailyAvg)kcal）")
+        } else if totalActiveCal > 0 {
+            // Only active calories available
+            items.append("活动消耗\(Int(totalActiveCal))kcal")
+        }
+
+        // Distance total — "这周走了多远？"
+        let completedDist = completedDays.map(\.distanceKm).reduce(0, +)
+        let totalDist = completedDist + today.distanceKm
+        if totalDist > 0.1 {
+            items.append("总距离\(String(format: "%.1f", totalDist))km")
+        }
+
+        guard !items.isEmpty else { return "" }
+        return "本周累计（含今天截至\(hourOfDay)点）：\(items.joined(separator: "，"))"
     }
 
     /// Pre-computes week-over-week deltas using daily averages for fair comparison.

@@ -38,6 +38,8 @@ final class HealthService: ObservableObject {
         }
         // Workout sessions (running, cycling, yoga, etc.)
         types.insert(HKObjectType.workoutType())
+        // Activity Summary — needed to read the user's actual ring goals
+        types.insert(HKObjectType.activitySummaryType())
         return types
     }
 
@@ -209,6 +211,21 @@ final class HealthService: ObservableObject {
         group.enter()
         fetchWorkouts(start: start, end: end) { workouts in
             lock.lock(); summary.workouts = workouts; lock.unlock()
+            group.leave()
+        }
+
+        // Activity Ring Goals — fetch from HKActivitySummary so we use the user's
+        // actual Move/Exercise/Stand goals instead of hardcoded defaults. A user who
+        // set their Move goal to 300kcal would see 56% at 280kcal with the default
+        // 500kcal target, when they're actually at 93%. This is the most frequent
+        // source of ring accuracy complaints.
+        group.enter()
+        fetchActivityGoals(for: date) { moveGoal, exGoal, standGoal in
+            lock.lock()
+            summary.moveGoalKcal = moveGoal
+            summary.exerciseGoalMinutes = exGoal
+            summary.standGoalHours = standGoal
+            lock.unlock()
             group.leave()
         }
 
@@ -466,6 +483,29 @@ final class HealthService: ObservableObject {
 
             let total = deep + rem + core + unspecified
             completion(total, deep, rem, core, inBed, earliestOnset, latestWake, awakeMinutes, awakeCount)
+        }
+        store.execute(query)
+    }
+
+    /// Fetches the user's actual Activity Ring goals from HKActivitySummary for a given date.
+    /// Returns (moveGoalKcal, exerciseGoalMinutes, standGoalHours). All 0 if unavailable.
+    private func fetchActivityGoals(for date: Date,
+                                     completion: @escaping (Double, Double, Double) -> Void) {
+        let cal = Calendar.current
+        let components = cal.dateComponents([.year, .month, .day], from: date)
+        // Use a DateComponents predicate that matches the exact calendar day.
+        // HKActivitySummary is keyed by calendar day, so this returns 0 or 1 result.
+        let datePredicate = HKQuery.predicateForActivitySummary(with: components)
+        let query = HKActivitySummaryQuery(predicate: datePredicate) { _, summaries, _ in
+            guard let summary = summaries?.first else {
+                completion(0, 0, 0)
+                return
+            }
+            let moveGoal = summary.activeEnergyBurnedGoal.doubleValue(for: .kilocalorie())
+            // exerciseTimeGoal and standHoursGoal are optional on iOS 16+
+            let exGoal = summary.exerciseTimeGoal?.doubleValue(for: .minute()) ?? 0
+            let standGoal = summary.standHoursGoal?.doubleValue(for: .count()) ?? 0
+            completion(moveGoal, exGoal, standGoal)
         }
         store.execute(query)
     }

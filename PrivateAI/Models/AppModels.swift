@@ -319,6 +319,18 @@ struct HealthSummary {
     var workouts: [WorkoutRecord] = []
     var date: Date = Date()
 
+    // MARK: - Activity Ring Goals (from HKActivitySummary)
+    // 0 = not available (fall back to defaults in GPTContextBuilder)
+
+    /// User's actual Move ring goal in kcal (from Apple Watch Activity settings).
+    /// Varies widely between users (300-1000+ kcal). 0 means not available.
+    var moveGoalKcal: Double = 0
+    /// User's actual Exercise ring goal in minutes (typically 30, but customizable on watchOS 10+). 0 = not available.
+    var exerciseGoalMinutes: Double = 0
+    /// User's actual Stand ring goal as number of hours (typically 12). 0 = not available.
+    /// Note: this is "stand hours" (1-hour blocks where user stood ≥1 min), NOT total standing minutes.
+    var standGoalHours: Double = 0
+
     /// True if sleep phase data is available (requires Apple Watch)
     var hasSleepPhases: Bool {
         sleepDeepHours > 0 || sleepREMHours > 0 || sleepCoreHours > 0

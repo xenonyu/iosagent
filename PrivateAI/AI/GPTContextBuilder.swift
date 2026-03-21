@@ -352,7 +352,7 @@ final class GPTContextBuilder {
         - 回答健康、运动相关问题时，优先引用准确数值，再结合[健康参考标准]给出个性化解读（如「离建议的7000步还差1500步」），不要只说数字。
         - ⚠️ 今日健康数据标注了「截至X点」。如果现在还在上午或下午，今天的步数/运动/卡路里等数据还会继续增长，不要过早下结论说「今天步数偏少」「运动不够」。应该说「截至目前…」或「到目前为止…」，必要时可鼓励用户继续保持。只有晚上10点之后的数据才接近当天最终值。
         - ⚠️ 卡路里说明：「活动kcal」是运动/活动消耗，「总消耗kcal」= 活动 + 基础代谢（身体维持生命所需能量）。用户问「今天消耗了多少卡路里」时，应回答总消耗值。基础代谢约占总消耗60-75%，这是正常的。
-        - ⚠️ 活动圆环（Apple Watch 三圆环）说明：[今日健康数据]中包含预计算的圆环完成度（如「🔴活动 320/500kcal（64%）」），用户问「圆环合了吗」「三个圆环怎么样」时直接引用该数据回答，不要自己计算百分比。三圆环默认目标为🔴活动500kcal、🟢健身30分钟、🔵站立12小时（注意：用户可能在Apple Watch上自定义了不同目标）。如果某个圆环数据为0或缺失，说明可能未佩戴 Apple Watch。
+        - ⚠️ 活动圆环（Apple Watch 三圆环）说明：[今日健康数据]中包含预计算的圆环完成度（如「🔴活动 320/500kcal（64%）」），用户问「圆环合了吗」「三个圆环怎么样」时直接引用该数据回答，不要自己计算百分比。圆环目标标注为「个人目标」时是用户在Apple Watch上设置的实际目标，标注为「默认目标」时为🔴活动500kcal、🟢健身30分钟、🔵站立12小时。如果某个圆环数据为0或缺失，说明可能未佩戴 Apple Watch。
         - 睡眠分析中包含预计算的「工作日vs周末」对比数据和「睡眠负债」数据。用户问「周末有没有补觉」「工作日和周末睡眠差多少」「我作息规律吗」时，直接引用该对比数据，不需要自己分类统计。工作日 = 周一至周五醒来的夜晚，周末 = 周六/周日醒来的夜晚。用户问「需要补觉吗」「这周睡够了吗」「欠了多少觉」「睡眠负债」时，直接引用睡眠负债数据回答。
         - 涉及多天数据时，可引用「近14天趋势」进行对比分析，指出趋势变化。
         - ⚠️ 使用预计算统计数据（重要，避免算错）：
@@ -2345,26 +2345,36 @@ final class GPTContextBuilder {
         if healthAuthorized && hourOfDay >= 6 {
             let hasRingData = h.activeCalories > 0 || h.exerciseMinutes > 0 || h.standMinutes > 0
             if hasRingData {
-                let moveTarget: Double = 500   // kcal (Apple default)
-                let exerciseTarget: Double = 30 // minutes
-                let standTarget: Double = 720   // minutes (12 hours)
+                // Use the user's actual ring goals from HKActivitySummary when available.
+                // Many users customize their Move goal (300-1000+ kcal) — hardcoded 500kcal
+                // gives wildly wrong percentages (e.g. user at 280/300kcal = 93% shown as 56%).
+                let hasActualGoals = h.moveGoalKcal > 0
+                let moveTarget = h.moveGoalKcal > 0 ? h.moveGoalKcal : 500
+                let exerciseTarget = h.exerciseGoalMinutes > 0 ? h.exerciseGoalMinutes : 30
+                // Stand ring uses "hours with ≥1 min standing" (0-24), not total minutes.
+                // HKActivitySummary.standHoursGoal is in hours (typically 12).
+                // Our standMinutes comes from appleStandTime — convert to approximate hours
+                // for ring comparison (standMinutes ÷ 60 ≈ stand hours for rough %).
+                let standTargetHours = h.standGoalHours > 0 ? h.standGoalHours : 12
+                let standTargetMinutes = standTargetHours * 60
 
                 let movePct = min(Int((h.activeCalories / moveTarget) * 100), 999)
                 let exercisePct = min(Int((h.exerciseMinutes / exerciseTarget) * 100), 999)
-                let standPct = h.standMinutes > 0 ? min(Int((h.standMinutes / standTarget) * 100), 999) : 0
+                let standPct = h.standMinutes > 0 ? min(Int((h.standMinutes / standTargetMinutes) * 100), 999) : 0
 
                 let moveStatus = movePct >= 100 ? "✅" : "⬜"
                 let exStatus = exercisePct >= 100 ? "✅" : "⬜"
                 let standStatus = standPct >= 100 ? "✅" : "⬜"
 
                 let allClosed = movePct >= 100 && exercisePct >= 100 && standPct >= 100
-                let ringHeader = allClosed ? "🎉 三圆环全部合拢！" : "圆环进度（默认目标）："
+                let goalSource = hasActualGoals ? "个人目标" : "默认目标"
+                let ringHeader = allClosed ? "🎉 三圆环全部合拢！" : "圆环进度（\(goalSource)）："
 
                 var ringParts: [String] = []
                 ringParts.append("\(moveStatus)🔴活动 \(Int(h.activeCalories))/\(Int(moveTarget))kcal（\(movePct)%）")
                 ringParts.append("\(exStatus)🟢健身 \(Int(h.exerciseMinutes))/\(Int(exerciseTarget))分钟（\(exercisePct)%）")
                 if h.standMinutes > 0 {
-                    ringParts.append("\(standStatus)🔵站立 \(Int(h.standMinutes))/\(Int(standTarget))分钟（\(standPct)%）")
+                    ringParts.append("\(standStatus)🔵站立 \(Int(h.standMinutes))/\(Int(standTargetMinutes))分钟（\(standPct)%）")
                 } else {
                     ringParts.append("⬜🔵站立 无数据（可能未佩戴 Apple Watch）")
                 }

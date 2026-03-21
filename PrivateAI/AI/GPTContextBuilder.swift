@@ -1831,6 +1831,154 @@ final class GPTContextBuilder {
             }
         }
 
+        // --- "最近N天" / "过去N天" / "last N days" references ---
+        // Extremely common Chinese query pattern: "最近3天睡得怎么样", "过去5天运动了几次",
+        // "近两周步数". Without explicit resolution, GPT has to guess whether "最近3天"
+        // includes today's partial data, and which specific dates are in range. This
+        // frequently causes: (1) including today's incomplete data in averages, making
+        // activity look worse (e.g. 0 steps at 9am counted as a full day), or (2) off-by-one
+        // errors where GPT counts 4 days instead of 3. Pre-resolving to exact date ranges
+        // with today-exclusion guidance eliminates these errors.
+        //
+        // Supported patterns:
+        //   Chinese: "最近N天/日", "过去N天/日", "近N天", "前N天", "这N天"
+        //   Chinese week: "最近N周/个星期/个礼拜"
+        //   English: "last N days", "past N days", "recent N days"
+        let recentDayPatterns: [(regex: String, unit: String)] = [
+            // Chinese day patterns
+            (#"(最近|近|过去|前|这)(\d{1,2})(天|日)"#, "day"),
+            // Chinese week patterns — "最近两周", "过去2个星期"
+            (#"(最近|近|过去|前|这)(\d{1,2})(周|个?星期|个?礼拜)"#, "week"),
+            // English patterns
+            (#"(last|past|recent)\s*(\d{1,2})\s*(days?|weeks?)"#, "dayOrWeek")
+        ]
+
+        for pattern in recentDayPatterns {
+            guard let range = lower.range(of: pattern.regex, options: .regularExpression) else { continue }
+            let matched = String(lower[range])
+            // Extract the number from the matched string
+            let numberStr = matched.components(separatedBy: CharacterSet.decimalDigits.inverted)
+                .filter { !$0.isEmpty }.first
+            guard let numStr = numberStr, let num = Int(numStr), num >= 1 && num <= 30 else { continue }
+
+            // Determine if this is days or weeks
+            let totalDays: Int
+            let unitLabel: String
+            if pattern.unit == "week" || (pattern.unit == "dayOrWeek" && matched.contains("week")) {
+                totalDays = num * 7
+                unitLabel = "\(num)周"
+            } else {
+                totalDays = num
+                unitLabel = "\(num)天"
+            }
+
+            // Resolve the date range
+            let rangeEndDate = cal.date(byAdding: .day, value: -1, to: cal.startOfDay(for: now))! // yesterday
+            let rangeStartDate = cal.date(byAdding: .day, value: -(totalDays - 1), to: rangeEndDate)!
+            let dataRangeStartLocal = cal.date(byAdding: .day, value: -13, to: cal.startOfDay(for: now))!
+
+            // Check if requested range exceeds our 14-day data window
+            let fullyInRange = rangeStartDate >= dataRangeStartLocal
+            let outOfRangeWarning: String
+            if !fullyInRange {
+                let availableDays = cal.dateComponents([.day], from: dataRangeStartLocal, to: rangeEndDate).day.map { $0 + 1 } ?? totalDays
+                outOfRangeWarning = "⚠️ 数据仅覆盖近14天，实际可用\(availableDays)天数据"
+            } else {
+                outOfRangeWarning = ""
+            }
+
+            let effectiveStart = max(rangeStartDate, dataRangeStartLocal)
+            let startLabel = dateFmt.string(from: effectiveStart)
+            let endLabel = dateFmt.string(from: rangeEndDate)
+
+            // Build the hint with today-exclusion guidance
+            var hint = "「最近\(unitLabel)」= \(startLabel)~\(endLabel)（\(weekdayFmt.string(from: effectiveStart))~昨天）"
+            hint += "→ 查看趋势表/日历/位置中这些日期的数据。"
+            // Critical: guide GPT on today's data handling
+            if hourOfDay < 22 {
+                hint += "今天的数据尚在积累中（截至\(hourOfDay)点），如需包含今天请标注「截至目前」而非视为完整一天。"
+            }
+            if !outOfRangeWarning.isEmpty {
+                hint += outOfRangeWarning
+            }
+            hints.append(hint)
+            break // only match the first pattern
+        }
+
+        // Chinese number words for "最近两/三/几天" patterns — users frequently use
+        // Chinese numerals instead of Arabic digits (e.g. "最近三天" instead of "最近3天").
+        // Without this, "最近三天睡得怎么样" gets no temporal hint while "最近3天" does.
+        let chineseNumMap: [(word: String, value: Int)] = [
+            ("两", 2), ("二", 2), ("三", 3), ("四", 4), ("五", 5),
+            ("六", 6), ("七", 7), ("八", 8), ("九", 9), ("十", 10)
+        ]
+        let recentChinesePatterns = ["最近", "近", "过去", "前", "这"]
+        let dayUnitWords = ["天", "日"]
+        let weekUnitWords = ["周", "星期", "礼拜"]
+
+        // Only check if the regex patterns above didn't already match
+        let hasRecentDayHint = hints.contains(where: { $0.contains("「最近") && ($0.contains("天」") || $0.contains("周」")) })
+        if !hasRecentDayHint {
+            outerLoop: for prefix in recentChinesePatterns {
+                guard lower.contains(prefix) else { continue }
+                for (numWord, numValue) in chineseNumMap {
+                    for dayUnit in dayUnitWords {
+                        if lower.contains("\(prefix)\(numWord)\(dayUnit)") {
+                            let totalDays = numValue
+                            let rangeEndDate = cal.date(byAdding: .day, value: -1, to: cal.startOfDay(for: now))!
+                            let rangeStartDate = cal.date(byAdding: .day, value: -(totalDays - 1), to: rangeEndDate)!
+                            let dataRangeStartLocal = cal.date(byAdding: .day, value: -13, to: cal.startOfDay(for: now))!
+                            let effectiveStart = max(rangeStartDate, dataRangeStartLocal)
+                            let startLabel = dateFmt.string(from: effectiveStart)
+                            let endLabel = dateFmt.string(from: rangeEndDate)
+
+                            var hint = "「最近\(numWord)\(dayUnit)」= \(startLabel)~\(endLabel)（\(weekdayFmt.string(from: effectiveStart))~昨天）"
+                            hint += "→ 查看趋势表中这些日期的数据。"
+                            if hourOfDay < 22 {
+                                hint += "今天的数据尚在积累中（截至\(hourOfDay)点），如需包含今天请标注「截至目前」而非视为完整一天。"
+                            }
+                            hints.append(hint)
+                            break outerLoop
+                        }
+                    }
+                    for weekUnit in weekUnitWords {
+                        if lower.contains("\(prefix)\(numWord)\(weekUnit)") || lower.contains("\(prefix)\(numWord)个\(weekUnit)") {
+                            let totalDays = numValue * 7
+                            let rangeEndDate = cal.date(byAdding: .day, value: -1, to: cal.startOfDay(for: now))!
+                            let rangeStartDate = cal.date(byAdding: .day, value: -(totalDays - 1), to: rangeEndDate)!
+                            let dataRangeStartLocal = cal.date(byAdding: .day, value: -13, to: cal.startOfDay(for: now))!
+                            let effectiveStart = max(rangeStartDate, dataRangeStartLocal)
+                            let startLabel = dateFmt.string(from: effectiveStart)
+                            let endLabel = dateFmt.string(from: rangeEndDate)
+
+                            let fullyInRange = rangeStartDate >= dataRangeStartLocal
+                            let warning = fullyInRange ? "" : "⚠️ 数据仅覆盖近14天。"
+
+                            var hint = "「最近\(numWord)\(weekUnit)」= \(startLabel)~\(endLabel)"
+                            hint += "→ 查看趋势表中这些日期的数据。"
+                            if hourOfDay < 22 {
+                                hint += "今天的数据尚在积累中，如需包含今天请标注「截至目前」。"
+                            }
+                            hint += warning
+                            hints.append(hint)
+                            break outerLoop
+                        }
+                    }
+                }
+            }
+        }
+
+        // "几天" pattern — "最近几天怎么样" / "这几天运动了吗"
+        // "几" is an indefinite small number (typically 3-5 in Chinese context).
+        // Without this, "最近几天" gets no temporal hint. Resolve to "recent 3-5 days"
+        // and guide GPT to focus on the most recent 3-5 completed days.
+        let indefinitePatterns = ["最近几天", "近几天", "过去几天", "这几天", "前几天"]
+        if !hasRecentDayHint && indefinitePatterns.contains(where: { lower.contains($0) }) {
+            let fiveDaysAgo = cal.date(byAdding: .day, value: -5, to: cal.startOfDay(for: now))!
+            let yesterday = cal.date(byAdding: .day, value: -1, to: cal.startOfDay(for: now))!
+            hints.append("「最近几天」→ 大约\(dateFmt.string(from: fiveDaysAgo))~\(dateFmt.string(from: yesterday))（近5天完整数据），回答时聚焦趋势表中最近3~5天的数据行")
+        }
+
         // --- Absolute date references ---
         // Users commonly ask "3月15日走了多少步" or "15号有什么安排" with explicit dates.
         // GPT can parse these dates, but critically it doesn't know whether the date

@@ -1578,52 +1578,6 @@ final class GPTContextBuilder {
             hints.append("「\(longRangeWords.first { lower.contains($0) }!)」⚠️ 远超14天数据范围（\(dateFmt.string(from: dataStart))~\(dateFmt.string(from: now))），无法回答。请坦诚告知用户我们只有近两周的数据，然后基于已有数据给出部分参考。")
         }
 
-        // --- Month references ---
-        // Users commonly ask "这个月运动了几次" or "上个月睡得怎么样".
-        // Without explicit month boundaries, GPT has to calculate month start/end
-        // from the date string and often gets it wrong, especially near month
-        // transitions (e.g. on March 2, "上个月" = Feb 1-28, not "近30天").
-        // Also clarify data coverage: we only have 14 days, so most month queries
-        // will be partial — GPT must communicate this honestly.
-
-        let thisMonthStart = cal.date(from: cal.dateComponents([.year, .month], from: now))!
-        let dayOfMonth = cal.component(.day, from: now)
-
-        let lastMonthWords = ["上个月", "上月", "last month"]
-        if lastMonthWords.contains(where: { lower.contains($0) }) {
-            let lastMonthDate = cal.date(byAdding: .month, value: -1, to: thisMonthStart)!
-            let lastMonthEnd = cal.date(byAdding: .day, value: -1, to: thisMonthStart)!
-            let lastMonthDays = cal.component(.day, from: lastMonthEnd)
-            let lastMonthFmt = DateFormatter(); lastMonthFmt.dateFormat = "M月"
-            let monthName = lastMonthFmt.string(from: lastMonthDate)
-            // How many days of last month fall within our 14-day window?
-            let dataStart = cal.date(byAdding: .day, value: -13, to: cal.startOfDay(for: now))!
-            let coveredStart = max(lastMonthDate, dataStart)
-            let coveredEnd = min(lastMonthEnd, cal.startOfDay(for: now))
-            if coveredStart <= coveredEnd {
-                let coveredDays = cal.dateComponents([.day], from: coveredStart, to: coveredEnd).day.map { $0 + 1 } ?? 0
-                if coveredDays >= lastMonthDays {
-                    hints.append("「上个月」= \(monthName)（\(dateFmt.string(from: lastMonthDate))~\(dateFmt.string(from: lastMonthEnd))，共\(lastMonthDays)天，数据完整覆盖）")
-                } else {
-                    hints.append("「上个月」= \(monthName)（\(dateFmt.string(from: lastMonthDate))~\(dateFmt.string(from: lastMonthEnd))，共\(lastMonthDays)天）⚠️ 我们只有近14天数据，仅覆盖\(monthName)的\(coveredDays)天（\(dateFmt.string(from: coveredStart))起），请说明数据不完整")
-                }
-            } else {
-                hints.append("「上个月」= \(monthName)（\(dateFmt.string(from: lastMonthDate))~\(dateFmt.string(from: lastMonthEnd))）⚠️ 超出14天数据范围，无法回答，请告知用户")
-            }
-        }
-
-        let thisMonthWords = ["这个月", "本月", "这月", "this month"]
-        if thisMonthWords.contains(where: { lower.contains($0) }) {
-            let thisMonthFmt = DateFormatter(); thisMonthFmt.dateFormat = "M月"
-            let monthName = thisMonthFmt.string(from: now)
-            if dayOfMonth <= 14 {
-                hints.append("「这个月」= \(monthName)（\(dateFmt.string(from: thisMonthStart))~\(dateFmt.string(from: now))，已过\(dayOfMonth)天，数据完整覆盖）")
-            } else {
-                let dataStart = cal.date(byAdding: .day, value: -13, to: cal.startOfDay(for: now))!
-                hints.append("「这个月」= \(monthName)（\(dateFmt.string(from: thisMonthStart))~\(dateFmt.string(from: now))，已过\(dayOfMonth)天）⚠️ 我们只有近14天数据，仅覆盖\(dateFmt.string(from: dataStart))起，月初\(dayOfMonth - 14)天无数据，请说明")
-            }
-        }
-
         // --- Year references ---
         // Users commonly ask "今年运动了多少次" or "去年这个时候我在干嘛".
         // Without explicit guidance, GPT silently extrapolates 14 days → 365 days,
@@ -1705,6 +1659,129 @@ final class GPTContextBuilder {
                     hints.append("「\(pattern)」= 用户期望\(requestedDays)天数据，⚠️ 但我们只有近14天（\(dateFmt.string(from: dataStart))~\(dateFmt.string(from: now))）。请说明只有14天数据，基于已有数据回答，标注「近两周内」。")
                 }
                 break // Only match the first (most specific) pattern
+            }
+        }
+
+        // --- Month references ---
+        // "这个月运动了多少？" "上个月去了哪些地方？" "3月份有什么安排？" are very common
+        // temporal queries. Without explicit resolution, GPT must figure out on its own
+        // which dates a month covers and how that overlaps with our 14-day data window.
+        // GPT frequently gets this wrong — answering "上个月" using 14-day data without
+        // mentioning the limitation, or confusing "这个月" with "近14天". The SYSTEM prompt
+        // warns about out-of-range queries (「上个月」) but GPT often ignores it without
+        // a concrete hint showing exactly which dates overlap.
+        let currentMonth = cal.component(.month, from: now)
+        let currentYear = cal.component(.year, from: now)
+        let dataRangeStartForMonth = cal.date(byAdding: .day, value: -13, to: cal.startOfDay(for: now))!
+        let monthFmt = DateFormatter(); monthFmt.dateFormat = "M月d日"
+
+        // "这个月" / "本月" / "this month"
+        let thisMonthWords = ["这个月", "本月", "这月", "this month"]
+        if thisMonthWords.contains(where: { lower.contains($0) }) {
+            var monthStartComps = DateComponents()
+            monthStartComps.year = currentYear
+            monthStartComps.month = currentMonth
+            monthStartComps.day = 1
+            if let monthStart = cal.date(from: monthStartComps) {
+                let dayOfMonth = cal.component(.day, from: now)
+                // How much of this month is within our 14-day window?
+                let overlapStart = max(monthStart, dataRangeStartForMonth)
+                let overlapDays = cal.dateComponents([.day], from: cal.startOfDay(for: overlapStart), to: cal.startOfDay(for: now)).day ?? 0
+                if overlapStart <= monthStart {
+                    // Entire month-to-date is within data range (early in month or month start < 14 days ago)
+                    hints.append("「这个月/本月」= \(monthFmt.string(from: monthStart))~\(monthFmt.string(from: now))（已过\(dayOfMonth)天，数据完整覆盖）→ 参考趋势表和周统计中对应日期")
+                } else {
+                    // Only partial month is in data range
+                    hints.append("「这个月/本月」= \(monthFmt.string(from: monthStart))~\(monthFmt.string(from: now))（已过\(dayOfMonth)天），⚠️ 但我们只有\(monthFmt.string(from: overlapStart))起的\(overlapDays + 1)天数据（近14天）。月初\(monthFmt.string(from: monthStart))~\(monthFmt.string(from: cal.date(byAdding: .day, value: -1, to: overlapStart) ?? overlapStart))无数据。请说明仅有近14天数据，回答时标注「本月已有的\(overlapDays + 1)天数据中…」")
+                }
+            }
+        }
+
+        // "上个月" / "上月" / "last month"
+        let lastMonthWords = ["上个月", "上月", "last month"]
+        if lastMonthWords.contains(where: { lower.contains($0) }) {
+            var lastMonthComps = DateComponents()
+            lastMonthComps.year = currentMonth == 1 ? currentYear - 1 : currentYear
+            lastMonthComps.month = currentMonth == 1 ? 12 : currentMonth - 1
+            lastMonthComps.day = 1
+            if let lastMonthStart = cal.date(from: lastMonthComps) {
+                var thisMonthStartComps = DateComponents()
+                thisMonthStartComps.year = currentYear
+                thisMonthStartComps.month = currentMonth
+                thisMonthStartComps.day = 1
+                let thisMonthStart = cal.date(from: thisMonthStartComps) ?? now
+                let lastMonthEnd = cal.date(byAdding: .day, value: -1, to: thisMonthStart) ?? now
+                let lastMonthDays = cal.dateComponents([.day], from: lastMonthStart, to: thisMonthStart).day ?? 30
+
+                // Check if any of last month overlaps with our 14-day window
+                if dataRangeStartForMonth < thisMonthStart {
+                    // Some overlap — we have data for the tail end of last month
+                    let overlapDays = cal.dateComponents([.day], from: dataRangeStartForMonth, to: cal.startOfDay(for: thisMonthStart)).day ?? 0
+                    hints.append("「上个月/上月」= \(monthFmt.string(from: lastMonthStart))~\(monthFmt.string(from: lastMonthEnd))（共\(lastMonthDays)天），⚠️ 我们仅有其中最后\(overlapDays)天的数据（\(monthFmt.string(from: dataRangeStartForMonth))起），月初大部分时间无数据。请先说明只有部分数据，基于已有数据回答并标注范围。")
+                } else {
+                    // No overlap — entirely outside data range
+                    hints.append("「上个月/上月」= \(monthFmt.string(from: lastMonthStart))~\(monthFmt.string(from: lastMonthEnd))（共\(lastMonthDays)天），⚠️ 完全超出14天数据范围，无任何数据。请坦诚告知用户我们只有近14天数据，无法回答上个月的问题，可以建议看「近两周」的数据。")
+                }
+            }
+        }
+
+        // "N月份" / "N月" (bare month without day) — e.g. "2月份去了哪里" "3月有什么安排"
+        // Only match when no "X月Y日/号" pattern is present (those are handled in absolute date section below).
+        // Regex: match standalone "N月" or "N月份" NOT followed by a digit (which would be a date like "3月15日").
+        if let monthRange = lower.range(of: #"(\d{1,2})月(?:份)?(?!\d)"#, options: .regularExpression) {
+            let monthMatched = String(lower[monthRange])
+            let monthNumStr = monthMatched.components(separatedBy: CharacterSet.decimalDigits.inverted).filter { !$0.isEmpty }.first
+            if let monthNum = monthNumStr.flatMap({ Int($0) }), monthNum >= 1 && monthNum <= 12 {
+                // Avoid re-hinting if "这个月"/"上个月" already handled this month number
+                let isCurrentMonth = monthNum == currentMonth
+                let isPrevMonth = monthNum == (currentMonth == 1 ? 12 : currentMonth - 1)
+                let alreadyHandled = (isCurrentMonth && thisMonthWords.contains(where: { lower.contains($0) }))
+                    || (isPrevMonth && lastMonthWords.contains(where: { lower.contains($0) }))
+
+                if !alreadyHandled {
+                    // Resolve which year this month belongs to
+                    let targetYear: Int
+                    if monthNum > currentMonth + 2 {
+                        targetYear = currentYear - 1 // e.g. asking about "10月" in March → last year
+                    } else {
+                        targetYear = currentYear
+                    }
+                    var targetComps = DateComponents()
+                    targetComps.year = targetYear
+                    targetComps.month = monthNum
+                    targetComps.day = 1
+                    if let targetMonthStart = cal.date(from: targetComps) {
+                        let nextMonthComps = DateComponents(year: targetYear, month: monthNum + 1, day: 1)
+                        let nextMonthStart = cal.date(from: nextMonthComps) ?? cal.date(byAdding: .month, value: 1, to: targetMonthStart)!
+                        let targetMonthEnd = cal.date(byAdding: .day, value: -1, to: nextMonthStart)!
+                        let targetMonthDays = cal.dateComponents([.day], from: targetMonthStart, to: nextMonthStart).day ?? 30
+
+                        // Check overlap with data range
+                        let monthEndStart = cal.startOfDay(for: targetMonthEnd)
+                        if dataRangeStartForMonth <= monthEndStart && cal.startOfDay(for: targetMonthStart) <= cal.startOfDay(for: now) {
+                            // Some overlap exists
+                            let overlapStart = max(targetMonthStart, dataRangeStartForMonth)
+                            let overlapEnd = min(targetMonthEnd, now)
+                            let overlapDays = cal.dateComponents([.day], from: cal.startOfDay(for: overlapStart), to: cal.startOfDay(for: overlapEnd)).day ?? 0
+                            if overlapDays + 1 >= targetMonthDays {
+                                hints.append("「\(monthNum)月」= \(monthFmt.string(from: targetMonthStart))~\(monthFmt.string(from: targetMonthEnd))（数据完整覆盖）")
+                            } else {
+                                hints.append("「\(monthNum)月」= \(monthFmt.string(from: targetMonthStart))~\(monthFmt.string(from: targetMonthEnd))（共\(targetMonthDays)天），⚠️ 仅有\(overlapDays + 1)天在数据范围内（\(monthFmt.string(from: overlapStart))~\(monthFmt.string(from: overlapEnd))），请说明数据覆盖有限。")
+                            }
+                        } else if cal.startOfDay(for: targetMonthStart) > cal.startOfDay(for: now) {
+                            // Future month — only calendar might have data
+                            let futureEnd = cal.date(byAdding: .day, value: 7, to: cal.startOfDay(for: now))!
+                            if cal.startOfDay(for: targetMonthStart) <= futureEnd {
+                                hints.append("「\(monthNum)月」= \(monthFmt.string(from: targetMonthStart))起，日历数据仅覆盖未来7天（至\(monthFmt.string(from: futureEnd))），更远的日程无数据")
+                            } else {
+                                hints.append("「\(monthNum)月」= \(monthFmt.string(from: targetMonthStart))~\(monthFmt.string(from: targetMonthEnd))，⚠️ 超出所有数据范围（健康/日历/位置均无数据）")
+                            }
+                        } else {
+                            // Entirely in the past, outside data range
+                            hints.append("「\(monthNum)月」= \(monthFmt.string(from: targetMonthStart))~\(monthFmt.string(from: targetMonthEnd))，⚠️ 完全超出14天数据范围，无任何数据。请坦诚告知用户。")
+                        }
+                    }
+                }
             }
         }
 

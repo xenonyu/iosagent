@@ -874,6 +874,8 @@ final class GPTContextBuilder {
             "重复", "例会", "周会", "站会", "recurring",
             // Free time / availability queries — map to calendar for free slot analysis
             "有空", "空闲", "有时间", "忙不忙", "忙吗", "free", "available", "busy",
+            // "Am I in a meeting?" patterns — "在开会吗" "开着会呢" "现在有会吗"
+            "在开会", "开着会", "在做什么",
             "schedule", "calendar", "meeting", "event", "appointment", "interview"
         ]
         if calendarWords.contains(where: { lower.contains($0) }) {
@@ -3282,12 +3284,60 @@ final class GPTContextBuilder {
         if todayEvents.isEmpty {
             lines.append("今天：无日程")
         } else {
-            // Find the next upcoming event for a highlight line
+            // CURRENT MOMENT STATUS — a single, prominent line that tells GPT exactly
+            // what's happening RIGHT NOW. This eliminates the most common GPT error
+            // for calendar queries: when the user asks "我现在在开会吗？" / "现在有空吗？"
+            // / "我在做什么？", GPT had to scan per-event annotations and mentally compute
+            // the answer — often getting it wrong (e.g. citing a finished meeting as ongoing,
+            // or missing that two meetings overlap). This pre-computed status line gives GPT
+            // a definitive, unambiguous answer at a glance.
+            let ongoingNow = todayEvents.filter { !$0.isAllDay && $0.startDate <= now && $0.endDate > now }
             let nextEvent = todayEvents.first { !$0.isAllDay && $0.startDate > now }
-            if let next = nextEvent {
+            if !ongoingNow.isEmpty {
+                // Currently in one or more events — show titles and remaining time
+                let descriptions = ongoingNow.prefix(3).map { e -> String in
+                    let remainMins = Int(e.endDate.timeIntervalSince(now) / 60)
+                    let remainStr: String
+                    if remainMins <= 1 {
+                        remainStr = "即将结束"
+                    } else if remainMins < 60 {
+                        remainStr = "还剩\(remainMins)分钟"
+                    } else {
+                        let hrs = remainMins / 60
+                        let mins = remainMins % 60
+                        remainStr = mins > 0 ? "还剩\(hrs)小时\(mins)分钟" : "还剩\(hrs)小时"
+                    }
+                    var desc = "\(e.title)（\(remainStr)）"
+                    if !e.location.isEmpty { desc += "@\(e.location)" }
+                    return desc
+                }
+                var statusLine = "📍 当前状态：正在进行 \(descriptions.joined(separator: "；"))"
+                // Also hint what's next after the current event(s) ends
+                if let next = nextEvent {
+                    let minsUntilNext = Int(next.startDate.timeIntervalSince(now) / 60)
+                    if minsUntilNext <= 120 {
+                        statusLine += " → 之后：\(next.title)（\(minsUntilNext)分钟后）"
+                    }
+                }
+                lines.append(statusLine)
+            } else if let next = nextEvent {
+                // Currently free — show when the next event starts
                 let minutesUntil = Int(next.startDate.timeIntervalSince(now) / 60)
-                if minutesUntil <= 60 {
-                    lines.append("⏰ 下一个日程：\(next.title)（\(minutesUntil)分钟后）")
+                if minutesUntil <= 15 {
+                    lines.append("📍 当前状态：空闲，但 \(next.title) 即将开始（\(minutesUntil)分钟后）")
+                } else if minutesUntil <= 120 {
+                    lines.append("📍 当前状态：空闲 → 下一个日程：\(next.title)（\(minutesUntil)分钟后，\(timeFmt.string(from: next.startDate))开始）")
+                } else {
+                    let nextTimeStr = timeFmt.string(from: next.startDate)
+                    lines.append("📍 当前状态：空闲 → 下一个日程：\(next.title)（\(nextTimeStr)开始）")
+                }
+            } else {
+                // All events are done for the day
+                let nonAllDay = todayEvents.filter { !$0.isAllDay }
+                if nonAllDay.isEmpty {
+                    lines.append("📍 当前状态：今天只有全天事件，无具体时间段的日程")
+                } else {
+                    lines.append("📍 当前状态：今天的日程已全部结束")
                 }
             }
 

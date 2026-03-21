@@ -1180,22 +1180,50 @@ final class GPTContextBuilder {
             hints.append("「昨天」= \(dateFmt.string(from: yesterdayDate))（\(weekdayFmt.string(from: yesterdayDate))）→ 趋势表/日历/位置中标记为「昨天」的行")
         }
 
-        // "昨晚" / "last night" — special: sleep attributed to today's row
+        // "昨晚" / "last night" — special: sleep is attributed to the WAKE-UP day.
+        // During normal hours (5am+): "昨晚" = last night → woke up today → TODAY's row.
+        // During late-night (0-5am): the SYSTEM prompt shifts user's "today" → calendar
+        // yesterday, so user's "昨晚" = the PREVIOUS complete night of sleep. At 2am
+        // Tuesday (calendar), user perceives Monday as "today", so "昨晚" = Sunday night
+        // → woke up Monday morning → sleep data in MONDAY's row = calendar YESTERDAY.
+        // Without this fix, GPT looks at Tuesday's row which has no sleep data yet,
+        // answering "no sleep recorded" when the user just wants to know about Sunday night.
         let lastNightWords = ["昨晚", "昨天晚上", "昨夜", "last night"]
         if lastNightWords.contains(where: { lower.contains($0) }) {
-            hints.append("「昨晚」的睡眠 → 查看趋势表中「今天」行的睡眠数据（因为昨晚入睡→今天醒来，归属今天）")
+            if hourOfDay < 5 {
+                hints.append("「昨晚」→ ⚠️ 凌晨时段，用户的「昨晚」指前一个完整睡眠夜（\(dateFmt.string(from: twoDaysAgo))晚→\(dateFmt.string(from: yesterdayDate))醒来），查看趋势表中「昨天」（\(dateFmt.string(from: yesterdayDate))）行的睡眠数据。不要看「今天」行——今天的睡眠尚未产生或正在进行中。")
+            } else {
+                hints.append("「昨晚」的睡眠 → 查看趋势表中「今天」行的睡眠数据（因为昨晚入睡→今天醒来，归属今天）")
+            }
         }
 
         // "前天" / "the day before yesterday"
+        // During late-night (0-5am): user's "前天" shifts back one day due to
+        // perception shift ("today" = calendar yesterday). At 2am Tuesday, user's
+        // "前天" = Saturday (not Sunday). Resolve to the correct calendar date.
         let twoDaysAgoWords = ["前天", "前日", "day before yesterday"]
         if twoDaysAgoWords.contains(where: { lower.contains($0) }) {
-            hints.append("「前天」= \(dateFmt.string(from: twoDaysAgo))（\(weekdayFmt.string(from: twoDaysAgo))）→ 趋势表中标记为「前天」的行")
+            if hourOfDay < 5 {
+                hints.append("「前天」→ ⚠️ 凌晨时段，用户感知的「前天」= \(dateFmt.string(from: threeDaysAgo))（\(weekdayFmt.string(from: threeDaysAgo))）（因为用户的「今天」= 日历昨天\(dateFmt.string(from: yesterdayDate))）→ 查看趋势表中\(dateFmt.string(from: threeDaysAgo))对应的行")
+            } else {
+                hints.append("「前天」= \(dateFmt.string(from: twoDaysAgo))（\(weekdayFmt.string(from: twoDaysAgo))）→ 趋势表中标记为「前天」的行")
+            }
         }
 
-        // "前天晚上" — sleep attributed to yesterday's row
+        // "前天晚上" — sleep attributed to the wake-up day.
+        // Normal hours: 前天晚上 → woke up yesterday → YESTERDAY's row.
+        // Late-night (0-5am): user's "前天晚上" shifts back one day.
+        // At 2am Tuesday: user's "前天" = Saturday, Saturday night → woke up Sunday
+        // → sleep in Sunday's row = calendar day-before-yesterday.
         let twoDaysAgoNightWords = ["前天晚上", "前天夜里", "前晚"]
         if twoDaysAgoNightWords.contains(where: { lower.contains($0) }) {
-            hints.append("「前天晚上」的睡眠 → 查看趋势表中「昨天」行的睡眠数据（前天晚上入睡→昨天醒来，归属昨天）")
+            if hourOfDay < 5 {
+                // At 2am Tuesday: user's "前天" = Saturday (calendar 3 days ago).
+                // Saturday night → woke up Sunday = calendar 2 days ago row.
+                hints.append("「前天晚上」的睡眠 → ⚠️ 凌晨时段，用户的「前天」= \(dateFmt.string(from: threeDaysAgo))，该晚睡眠数据在\(dateFmt.string(from: twoDaysAgo))（\(weekdayFmt.string(from: twoDaysAgo))）行（\(dateFmt.string(from: threeDaysAgo))晚入睡→\(dateFmt.string(from: twoDaysAgo))醒来）")
+            } else {
+                hints.append("「前天晚上」的睡眠 → 查看趋势表中「昨天」行的睡眠数据（前天晚上入睡→昨天醒来，归属昨天）")
+            }
         }
 
         // "大前天"

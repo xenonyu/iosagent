@@ -4905,16 +4905,61 @@ final class GPTContextBuilder {
             lines.append(line)
         }
 
-        // Workout type breakdown for quick stats
-        var typeCounts: [String: Int] = [:]
-        for item in allWorkouts {
-            let name = "\(item.workout.typeEmoji) \(item.workout.typeName)"
-            typeCounts[name, default: 0] += 1
+        // Per-workout-type aggregate stats — pre-computed so GPT can directly answer
+        // "最近跑了多少公里？" "这周游泳消耗了多少卡路里？" "跑步平均心率多少？"
+        // without manually scanning and summing individual workout entries (error-prone).
+        // Groups by typeName (e.g. "跑步", "步行") and aggregates duration, distance,
+        // calories, and heart rate. When there's only one type, still show the aggregate
+        // since it answers "共跑了多远？" questions.
+        struct WorkoutTypeStats {
+            var count: Int = 0
+            var totalMinutes: Double = 0
+            var totalCalories: Double = 0
+            var totalDistanceM: Double = 0
+            var heartRateSum: Double = 0
+            var heartRateCount: Int = 0
+            var maxHeartRate: Double = 0
+            var emoji: String = ""
         }
-        if typeCounts.count > 1 {
-            let breakdown = typeCounts.sorted { $0.value > $1.value }
-                .map { "\($0.key)\($0.value)次" }
-            lines.append("运动类型：\(breakdown.joined(separator: "、"))")
+        var typeStats: [String: WorkoutTypeStats] = [:]
+        for item in allWorkouts {
+            let w = item.workout
+            let name = w.typeName
+            var stats = typeStats[name] ?? WorkoutTypeStats()
+            stats.count += 1
+            stats.totalMinutes += w.duration / 60
+            stats.totalCalories += w.totalCalories
+            stats.totalDistanceM += w.totalDistance
+            if w.avgHeartRate > 0 {
+                stats.heartRateSum += w.avgHeartRate
+                stats.heartRateCount += 1
+            }
+            if w.maxHeartRate > stats.maxHeartRate {
+                stats.maxHeartRate = w.maxHeartRate
+            }
+            stats.emoji = w.typeEmoji
+            typeStats[name] = stats
+        }
+        let sortedTypes = typeStats.sorted { $0.value.count > $1.value.count }
+        if !sortedTypes.isEmpty {
+            lines.append("运动类型汇总（⚠️ 用户问「跑了多少公里」「游泳消耗多少」等按类型聚合的问题时，直接引用以下数据，不要自己逐行加总）：")
+            for (name, stats) in sortedTypes {
+                var desc = "\(stats.emoji) \(name)：\(stats.count)次，共\(Int(stats.totalMinutes))分钟"
+                if stats.totalCalories > 0 {
+                    desc += "，\(Int(stats.totalCalories))kcal"
+                }
+                if stats.totalDistanceM > 100 {
+                    desc += "，\(String(format: "%.1f", stats.totalDistanceM / 1000))km"
+                }
+                if stats.heartRateCount > 0 {
+                    let avgHR = Int(stats.heartRateSum / Double(stats.heartRateCount))
+                    desc += "，均心率\(avgHR)bpm"
+                    if stats.maxHeartRate > 0 {
+                        desc += "(最高\(Int(stats.maxHeartRate)))"
+                    }
+                }
+                lines.append(desc)
+            }
         }
 
         return lines.joined(separator: "\n")

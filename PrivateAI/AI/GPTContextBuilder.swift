@@ -3142,6 +3142,27 @@ final class GPTContextBuilder {
             formatDelta("日均距离", thisVal: thisDistAvg, lastVal: lastDistAvg, unit: "km")
         }
 
+        // Weight — compare latest readings from each week rather than daily averages,
+        // because weight is typically recorded once per day (or less) from smart scales.
+        // Users commonly ask "这周和上周体重比较" / "瘦了吗" / "体重有变化吗" — without
+        // a pre-computed delta, GPT has to find weight values in two separate per-week
+        // stat blocks and manually subtract, often misreading the direction or confusing
+        // intra-week change (within a week) with inter-week change (between weeks).
+        // Use the latest reading from each week for the most representative comparison.
+        let thisWeightDays = thisWeek.filter { $0.bodyMassKg > 0 }.sorted { $0.date < $1.date }
+        let lastWeightDays = lastWeek.filter { $0.bodyMassKg > 0 }.sorted { $0.date < $1.date }
+        if let thisLatest = thisWeightDays.last, let lastLatest = lastWeightDays.last {
+            let diff = thisLatest.bodyMassKg - lastLatest.bodyMassKg
+            let dateFmt = DateFormatter(); dateFmt.dateFormat = "M/d"
+            if abs(diff) < 0.2 {
+                deltas.append("体重：持平（本周\(String(format: "%.1f", thisLatest.bodyMassKg))kg，上周\(String(format: "%.1f", lastLatest.bodyMassKg))kg）")
+            } else {
+                let arrow = diff > 0 ? "↑" : "↓"
+                let verb = diff > 0 ? "增加" : "减少"
+                deltas.append("体重：\(arrow)\(String(format: "%.1f", abs(diff)))kg（本周\(String(format: "%.1f", thisLatest.bodyMassKg))kg vs 上周\(String(format: "%.1f", lastLatest.bodyMassKg))kg，\(verb)\(String(format: "%.1f", abs(diff)))kg）")
+            }
+        }
+
         guard !deltas.isEmpty else { return "" }
 
         // Note: comparison is always based on daily averages, which is the only fair

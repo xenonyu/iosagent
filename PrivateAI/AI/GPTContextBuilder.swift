@@ -1145,6 +1145,69 @@ final class GPTContextBuilder {
             hints.append("「\(fewDaysWords.first { lower.contains($0) } ?? "前几天")」→ 大约\(dateFmt.string(from: threeDaysAgoDate))~\(dateFmt.string(from: now))（近3~4天）")
         }
 
+        // --- Approximate day-range expressions ---
+        // Chinese speakers commonly use vague multi-day expressions like "好几天",
+        // "两三天前", "一两天前", "这段时间", "这阵子", "半个月" that don't match any
+        // of the precise "N天" patterns above. Without hints, GPT receives NO temporal
+        // guidance for these queries — it has to guess the date range, often picking
+        // wrong rows from the trend table or giving vague answers without data.
+
+        // "好几天" / "好久" — colloquial "several days/quite a while"
+        let severalDaysWords = ["好几天", "好多天"]
+        if severalDaysWords.contains(where: { lower.contains($0) }) {
+            let fiveDaysAgo = cal.date(byAdding: .day, value: -5, to: cal.startOfDay(for: now))!
+            hints.append("「\(severalDaysWords.first { lower.contains($0) }!)」→ 大约\(dateFmt.string(from: fiveDaysAgo))~\(dateFmt.string(from: now))（近5~7天），查看趋势表对应数据行")
+        }
+
+        // "两三天前" / "三四天前" / "四五天前" — approximate range references.
+        // Very natural in Chinese: "两三天前好像去了什么地方", "四五天前跑的步"
+        let approxDayPatterns: [(pattern: String, minDays: Int, maxDays: Int)] = [
+            ("一两天前", 1, 2), ("一两天", 1, 2),
+            ("两三天前", 2, 3), ("两三天", 2, 3),
+            ("三四天前", 3, 4), ("三四天", 3, 4),
+            ("四五天前", 4, 5), ("四五天", 4, 5),
+            ("五六天前", 5, 6), ("五六天", 5, 6),
+            ("六七天前", 6, 7), ("六七天", 6, 7)
+        ]
+        for (pattern, minD, maxD) in approxDayPatterns {
+            if lower.contains(pattern) {
+                let startDate = cal.date(byAdding: .day, value: -maxD, to: cal.startOfDay(for: now))!
+                let endDate = cal.date(byAdding: .day, value: -minD, to: cal.startOfDay(for: now))!
+                hints.append("「\(pattern)」→ 大约\(dateFmt.string(from: startDate))~\(dateFmt.string(from: endDate))（\(minD)~\(maxD)天前）→ 查看趋势表/日历/位置中对应日期")
+                break // only match the first (most specific) approximate pattern
+            }
+        }
+
+        // "半个月" — extremely common Chinese expression ≈ 15 days.
+        // "近半个月" or "最近半个月" or bare "半个月" all refer to ~15 days.
+        // Our 14-day data window almost exactly covers this. Without this hint,
+        // GPT receives no guidance and may either overshoot (assume 30 days) or
+        // undershoot (assume 7 days) the intended range.
+        if !recentNDaysHandled {
+            let halfMonthWords = ["半个月", "半月"]
+            if halfMonthWords.contains(where: { lower.contains($0) }) {
+                let dataStart = cal.date(byAdding: .day, value: -13, to: cal.startOfDay(for: now))!
+                hints.append("「\(halfMonthWords.first { lower.contains($0) }!)」≈ 15天 → 我们有近14天数据（\(dateFmt.string(from: dataStart))~\(dateFmt.string(from: now))），基本覆盖。使用全部14天数据回答即可。")
+            }
+        }
+
+        // "这段时间" / "这阵子" / "这些天" — vague "this period" expressions.
+        // Without a hint, GPT has no anchor for the intended range.
+        // Default to ~7 days (one week) as a balanced interpretation.
+        let vagueRecentWords = ["这段时间", "这阵子", "这些天", "这些日子", "这段日子"]
+        if vagueRecentWords.contains(where: { lower.contains($0) }) {
+            let sevenDaysAgo = cal.date(byAdding: .day, value: -6, to: cal.startOfDay(for: now))!
+            hints.append("「\(vagueRecentWords.first { lower.contains($0) }!)」→ 大约近一周（\(dateFmt.string(from: sevenDaysAgo))~\(dateFmt.string(from: now))），可结合上下文扩大至近14天")
+        }
+
+        // "半年" / "几个月" — clearly beyond our data range, must warn.
+        // Users say "半年前还在跑步呢" or "这几个月运动少了" — GPT must not fabricate.
+        let longRangeWords = ["半年", "几个月", "好几个月", "大半年"]
+        if longRangeWords.contains(where: { lower.contains($0) }) {
+            let dataStart = cal.date(byAdding: .day, value: -13, to: cal.startOfDay(for: now))!
+            hints.append("「\(longRangeWords.first { lower.contains($0) }!)」⚠️ 远超14天数据范围（\(dateFmt.string(from: dataStart))~\(dateFmt.string(from: now))），无法回答。请坦诚告知用户我们只有近两周的数据，然后基于已有数据给出部分参考。")
+        }
+
         // --- Month references ---
         // Users commonly ask "这个月运动了几次" or "上个月睡得怎么样".
         // Without explicit month boundaries, GPT has to calculate month start/end

@@ -4437,8 +4437,170 @@ final class GPTContextBuilder {
             parts.append("周对比：\(comparisons.joined(separator: "，"))\(incompleteness)")
         }
 
+        // Per-day load analysis — pre-computed busiest/lightest day and back-to-back
+        // detection so GPT can directly answer "这周哪天最忙？" "有没有背靠背的会？"
+        // "哪天比较轻松？" without manually scanning per-day event listings. GPT
+        // frequently miscounts when comparing 7+ day entries, this eliminates that.
+        let dayLoadAnalysis = buildDayLoadAnalysis(
+            thisWeekEvents: thisWeekEvents,
+            lastWeekEvents: lastWeekEvents,
+            cal: cal
+        )
+        if !dayLoadAnalysis.isEmpty {
+            parts.append(dayLoadAnalysis)
+        }
+
         guard !parts.isEmpty else { return "" }
         return "日程周统计：\n\(parts.joined(separator: "\n"))"
+    }
+
+    /// Analyzes per-day meeting load within weekly event sets to pre-compute:
+    /// 1. Busiest day (most meeting minutes) — answers "哪天最忙？"
+    /// 2. Lightest day (fewest events) — answers "哪天最闲？"
+    /// 3. Back-to-back meeting detection — answers "有没有连续会议？" "会议挤吗？"
+    /// 4. Meeting-free days — answers "哪天没有会？"
+    ///
+    /// Without this, GPT must manually scan 7-14 day-level event listings and compare
+    /// event counts + duration — a task it frequently gets wrong (miscounting days,
+    /// confusing all-day events with timed meetings, overlooking overlaps).
+    private func buildDayLoadAnalysis(
+        thisWeekEvents: [CalendarEventItem],
+        lastWeekEvents: [CalendarEventItem],
+        cal: Calendar
+    ) -> String {
+        let now = Date()
+        let weekdayFmt = DateFormatter()
+        weekdayFmt.locale = Locale(identifier: "zh_CN")
+        weekdayFmt.dateFormat = "EEEE"
+
+        /// Analyzes a single week's events and returns annotated insights.
+        func analyzeWeek(_ events: [CalendarEventItem], label: String) -> [String] {
+            let nonAllDay = events.filter { !$0.isAllDay }
+            guard !nonAllDay.isEmpty else { return [] }
+
+            // Group non-all-day events by calendar day
+            var dayGroups: [Date: [CalendarEventItem]] = [:]
+            for e in nonAllDay {
+                let dayStart = cal.startOfDay(for: e.startDate)
+                dayGroups[dayStart, default: []].append(e)
+            }
+
+            guard !dayGroups.isEmpty else { return [] }
+
+            // Compute per-day meeting minutes
+            struct DayLoad {
+                let date: Date
+                let eventCount: Int
+                let meetingMins: Int
+                let hasBackToBack: Bool
+            }
+
+            let dayLoads: [DayLoad] = dayGroups.map { (day, dayEvents) in
+                let sorted = dayEvents.sorted { $0.startDate < $1.startDate }
+                let totalMins = sorted.map { Int($0.duration / 60) }.reduce(0, +)
+
+                // Back-to-back detection: two events where the gap between
+                // end of one and start of next is ≤5 minutes (or overlapping).
+                // This indicates a "会议密集" pattern that's stressful and worth flagging.
+                var hasB2B = false
+                for i in 0..<(sorted.count - 1) {
+                    let gap = sorted[i + 1].startDate.timeIntervalSince(sorted[i].endDate)
+                    if gap <= 5 * 60 { // ≤5 min gap or overlapping
+                        hasB2B = true
+                        break
+                    }
+                }
+
+                return DayLoad(date: day, eventCount: dayEvents.count,
+                               meetingMins: totalMins, hasBackToBack: hasB2B)
+            }.sorted { $0.date < $1.date }
+
+            var insights: [String] = []
+
+            // Busiest day (by meeting minutes, then by event count)
+            if let busiest = dayLoads.max(by: {
+                $0.meetingMins != $1.meetingMins ? $0.meetingMins < $1.meetingMins : $0.eventCount < $1.eventCount
+            }), dayLoads.count >= 2 {
+                let dayLabel = dayDisplayLabel(busiest.date, cal: cal, now: now, weekdayFmt: weekdayFmt)
+                let timeStr = busiest.meetingMins >= 60
+                    ? "\(busiest.meetingMins / 60)小时\(busiest.meetingMins % 60 > 0 ? "\(busiest.meetingMins % 60)分钟" : "")"
+                    : "\(busiest.meetingMins)分钟"
+                insights.append("\(label)最忙：\(dayLabel)（\(busiest.eventCount)个会议，\(timeStr)）")
+            }
+
+            // Lightest day with meetings (lowest meeting minutes among days that have meetings)
+            if let lightest = dayLoads.min(by: {
+                $0.meetingMins != $1.meetingMins ? $0.meetingMins < $1.meetingMins : $0.eventCount < $1.eventCount
+            }), dayLoads.count >= 3,
+               let busiest = dayLoads.max(by: { $0.meetingMins < $1.meetingMins }),
+               busiest.meetingMins > lightest.meetingMins * 2 { // Only show if meaningful contrast
+                let dayLabel = dayDisplayLabel(lightest.date, cal: cal, now: now, weekdayFmt: weekdayFmt)
+                insights.append("\(label)最轻松：\(dayLabel)（\(lightest.eventCount)个会议，\(lightest.meetingMins)分钟）")
+            }
+
+            // Meeting-free weekdays (Mon-Fri only — weekends without meetings are expected)
+            let todayWeekday = cal.component(.weekday, from: now)
+            let thisDaysSinceMonday = (todayWeekday + 5) % 7
+            let thisMondayStart = cal.date(byAdding: .day, value: -thisDaysSinceMonday, to: cal.startOfDay(for: now))!
+            // Compute the Monday of the week being analyzed
+            let weekMonday: Date = {
+                if let first = dayLoads.first {
+                    let wd = cal.component(.weekday, from: first.date)
+                    let dSinceMon = (wd + 5) % 7
+                    return cal.date(byAdding: .day, value: -dSinceMon, to: cal.startOfDay(for: first.date))!
+                }
+                return thisMondayStart
+            }()
+            let weekdaysWithMeetings = Set(dayLoads.map { cal.startOfDay(for: $0.date) })
+            var freeDays: [String] = []
+            for offset in 0..<5 { // Mon-Fri
+                let day = cal.date(byAdding: .day, value: offset, to: weekMonday)!
+                // Skip future days for "this week" analysis (they might have meetings scheduled later)
+                if day > cal.startOfDay(for: now) && weekMonday == thisMondayStart { continue }
+                if !weekdaysWithMeetings.contains(day) {
+                    freeDays.append(dayDisplayLabel(day, cal: cal, now: now, weekdayFmt: weekdayFmt))
+                }
+            }
+            if !freeDays.isEmpty && freeDays.count <= 3 {
+                insights.append("\(label)无会日：\(freeDays.joined(separator: "、"))")
+            }
+
+            // Back-to-back detection across the week
+            let b2bDays = dayLoads.filter { $0.hasBackToBack }
+            if !b2bDays.isEmpty {
+                let b2bLabels = b2bDays.prefix(3).map { load -> String in
+                    dayDisplayLabel(load.date, cal: cal, now: now, weekdayFmt: weekdayFmt)
+                }
+                insights.append("\(label)背靠背会议：\(b2bLabels.joined(separator: "、"))（会议间隔≤5分钟）")
+            }
+
+            return insights
+        }
+
+        var allInsights: [String] = []
+
+        if !thisWeekEvents.isEmpty {
+            allInsights.append(contentsOf: analyzeWeek(thisWeekEvents, label: "本周"))
+        }
+        if !lastWeekEvents.isEmpty {
+            allInsights.append(contentsOf: analyzeWeek(lastWeekEvents, label: "上周"))
+        }
+
+        guard !allInsights.isEmpty else { return "" }
+        return allInsights.joined(separator: "\n")
+    }
+
+    /// Returns a human-readable day label like "今天", "昨天", "周三" for calendar display.
+    private func dayDisplayLabel(_ date: Date, cal: Calendar, now: Date, weekdayFmt: DateFormatter) -> String {
+        if cal.isDateInToday(date) { return "今天" }
+        if cal.isDateInYesterday(date) { return "昨天" }
+        if let twoDaysAgo = cal.date(byAdding: .day, value: -2, to: cal.startOfDay(for: now)),
+           cal.isDate(date, inSameDayAs: twoDaysAgo) { return "前天" }
+        if let tomorrow = cal.date(byAdding: .day, value: 1, to: cal.startOfDay(for: now)),
+           cal.isDate(date, inSameDayAs: tomorrow) { return "明天" }
+        if let dayAfter = cal.date(byAdding: .day, value: 2, to: cal.startOfDay(for: now)),
+           cal.isDate(date, inSameDayAs: dayAfter) { return "后天" }
+        return weekdayFmt.string(from: date)
     }
 
     // MARK: - Free Time Slot Computation

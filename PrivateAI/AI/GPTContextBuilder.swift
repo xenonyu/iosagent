@@ -2425,7 +2425,7 @@ final class GPTContextBuilder {
         lines.append("站立：Apple Watch 建议每天至少12个小时有站立活动（每小时站起来活动1分钟以上即计入）")
 
         // Activity Rings explanation
-        lines.append("活动圆环（Apple Watch 三圆环）：🔴活动（Move）= 活动卡路里消耗（用户自定义目标，默认约500kcal），🟢健身（Exercise）= 30分钟运动，🔵站立（Stand）= 12小时站立。用户问「圆环合了吗」时，参考以上默认目标评估完成度。注意：我们只知道默认目标值，用户可能在 Apple Watch 上设置了不同的目标。")
+        lines.append("活动圆环（Apple Watch 三圆环）：🔴活动（Move）= 活动卡路里消耗（用户自定义目标，默认约500kcal），🟢健身（Exercise）= 30分钟运动，🔵站立（Stand）= 12个不同的小时内有站立活动（注意：站立圆环计算的是「有几个不同的钟点有站立」，不是总站立时长。每个钟点内站≥1分钟即计入1小时）。用户问「圆环合了吗」时，参考以上默认目标评估完成度。圆环进度数据中如标注「个人目标」则来自用户在 Apple Watch 上设置的实际目标值。")
 
         // Weight — BMI reference only when user has provided height or has weight data
         lines.append("体重：健康体重因身高而异，短期（1-3天）波动0.5-1kg属正常水分变化，关注周均趋势更有意义")
@@ -2602,7 +2602,7 @@ final class GPTContextBuilder {
         // Apple Watch, but we can't read custom targets via HealthKit read-only API.
         // The note "(默认目标)" signals this caveat to GPT.
         if healthAuthorized && hourOfDay >= 6 {
-            let hasRingData = h.activeCalories > 0 || h.exerciseMinutes > 0 || h.standMinutes > 0
+            let hasRingData = h.activeCalories > 0 || h.exerciseMinutes > 0 || h.standMinutes > 0 || h.standHoursAchieved > 0
             if hasRingData {
                 // Use the user's actual ring goals from HKActivitySummary when available.
                 // Many users customize their Move goal (300-1000+ kcal) — hardcoded 500kcal
@@ -2610,16 +2610,36 @@ final class GPTContextBuilder {
                 let hasActualGoals = h.moveGoalKcal > 0
                 let moveTarget = h.moveGoalKcal > 0 ? h.moveGoalKcal : 500
                 let exerciseTarget = h.exerciseGoalMinutes > 0 ? h.exerciseGoalMinutes : 30
-                // Stand ring uses "hours with ≥1 min standing" (0-24), not total minutes.
-                // HKActivitySummary.standHoursGoal is in hours (typically 12).
-                // Our standMinutes comes from appleStandTime — convert to approximate hours
-                // for ring comparison (standMinutes ÷ 60 ≈ stand hours for rough %).
                 let standTargetHours = h.standGoalHours > 0 ? h.standGoalHours : 12
-                let standTargetMinutes = standTargetHours * 60
 
                 let movePct = min(Int((h.activeCalories / moveTarget) * 100), 999)
                 let exercisePct = min(Int((h.exerciseMinutes / exerciseTarget) * 100), 999)
-                let standPct = h.standMinutes > 0 ? min(Int((h.standMinutes / standTargetMinutes) * 100), 999) : 0
+
+                // STAND RING — uses "stand hours" (distinct clock hours with ≥1 min standing),
+                // NOT total standing minutes. These are fundamentally different metrics:
+                // • Standing 1 min in each of 12 hours → standHoursAchieved=12 (ring closed!),
+                //   but standMinutes=12
+                // • Standing 720 min straight → standMinutes=720,
+                //   but standHoursAchieved may be 1 (all in the same clock hour)
+                //
+                // Previously used standMinutes / (standTargetHours * 60) which gave wildly
+                // wrong percentages. Now uses the actual stand hours from HKActivitySummary.
+                let standPct: Int
+                let hasStandHoursData: Bool
+                if h.standHoursAchieved > 0 {
+                    // Real stand hours from HKActivitySummary — accurate ring percentage
+                    standPct = min(Int((h.standHoursAchieved / standTargetHours) * 100), 999)
+                    hasStandHoursData = true
+                } else if h.standMinutes > 0 {
+                    // Fallback: no HKActivitySummary data but appleStandTime exists.
+                    // This is an approximation — standMinutes / 60 roughly equals stand hours
+                    // only if standing is spread across different clock hours (common in practice).
+                    standPct = min(Int((h.standMinutes / 60.0 / standTargetHours) * 100), 999)
+                    hasStandHoursData = false
+                } else {
+                    standPct = 0
+                    hasStandHoursData = false
+                }
 
                 let moveStatus = movePct >= 100 ? "✅" : "⬜"
                 let exStatus = exercisePct >= 100 ? "✅" : "⬜"
@@ -2632,8 +2652,16 @@ final class GPTContextBuilder {
                 var ringParts: [String] = []
                 ringParts.append("\(moveStatus)🔴活动 \(Int(h.activeCalories))/\(Int(moveTarget))kcal（\(movePct)%）")
                 ringParts.append("\(exStatus)🟢健身 \(Int(h.exerciseMinutes))/\(Int(exerciseTarget))分钟（\(exercisePct)%）")
-                if h.standMinutes > 0 {
-                    ringParts.append("\(standStatus)🔵站立 \(Int(h.standMinutes))/\(Int(standTargetMinutes))分钟（\(standPct)%）")
+                if h.standHoursAchieved > 0 || h.standMinutes > 0 {
+                    // Show stand hours (the real ring metric) when available; total standing
+                    // time is shown separately in the "站立时间" line above.
+                    if hasStandHoursData {
+                        ringParts.append("\(standStatus)🔵站立 \(Int(h.standHoursAchieved))/\(Int(standTargetHours))小时（\(standPct)%）")
+                    } else {
+                        // Fallback: approximate from standing minutes
+                        let approxHours = h.standMinutes / 60.0
+                        ringParts.append("\(standStatus)🔵站立 约\(String(format: "%.0f", approxHours))/\(Int(standTargetHours))小时（\(standPct)%，估算）")
+                    }
                 } else {
                     ringParts.append("⬜🔵站立 无数据（可能未佩戴 Apple Watch）")
                 }

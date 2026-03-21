@@ -214,17 +214,19 @@ final class HealthService: ObservableObject {
             group.leave()
         }
 
-        // Activity Ring Goals — fetch from HKActivitySummary so we use the user's
-        // actual Move/Exercise/Stand goals instead of hardcoded defaults. A user who
-        // set their Move goal to 300kcal would see 56% at 280kcal with the default
-        // 500kcal target, when they're actually at 93%. This is the most frequent
-        // source of ring accuracy complaints.
+        // Activity Ring Goals + Stand Hours — fetch from HKActivitySummary so we use
+        // the user's actual Move/Exercise/Stand goals instead of hardcoded defaults.
+        // Also fetch actual stand hours achieved (distinct clock hours with ≥1 min
+        // standing) — the real Stand ring metric. This is fundamentally different from
+        // appleStandTime (total standing minutes): standing 1 min in 12 different hours
+        // = 12 stand hours (ring closed!), but only 12 standMinutes.
         group.enter()
-        fetchActivityGoals(for: date) { moveGoal, exGoal, standGoal in
+        fetchActivitySummaryData(for: date) { moveGoal, exGoal, standGoal, standHrsAchieved in
             lock.lock()
             summary.moveGoalKcal = moveGoal
             summary.exerciseGoalMinutes = exGoal
             summary.standGoalHours = standGoal
+            summary.standHoursAchieved = standHrsAchieved
             lock.unlock()
             group.leave()
         }
@@ -487,10 +489,17 @@ final class HealthService: ObservableObject {
         store.execute(query)
     }
 
-    /// Fetches the user's actual Activity Ring goals from HKActivitySummary for a given date.
-    /// Returns (moveGoalKcal, exerciseGoalMinutes, standGoalHours). All 0 if unavailable.
-    private func fetchActivityGoals(for date: Date,
-                                     completion: @escaping (Double, Double, Double) -> Void) {
+    /// Fetches Activity Ring goals AND stand hours achieved from HKActivitySummary.
+    /// Returns (moveGoalKcal, exerciseGoalMinutes, standGoalHours, standHoursAchieved).
+    /// All 0 if unavailable.
+    ///
+    /// `standHoursAchieved` is the number of distinct clock hours in which the user
+    /// stood for ≥1 minute — the real Stand ring metric on Apple Watch. This is
+    /// fundamentally different from `appleStandTime` (total standing minutes):
+    /// standing 1 min in 12 different hours → standHoursAchieved=12 (ring closed!),
+    /// but appleStandTime may be only 12 minutes.
+    private func fetchActivitySummaryData(for date: Date,
+                                           completion: @escaping (Double, Double, Double, Double) -> Void) {
         let cal = Calendar.current
         let components = cal.dateComponents([.year, .month, .day], from: date)
         // Use a DateComponents predicate that matches the exact calendar day.
@@ -498,14 +507,16 @@ final class HealthService: ObservableObject {
         let datePredicate = HKQuery.predicateForActivitySummary(with: components)
         let query = HKActivitySummaryQuery(predicate: datePredicate) { _, summaries, _ in
             guard let summary = summaries?.first else {
-                completion(0, 0, 0)
+                completion(0, 0, 0, 0)
                 return
             }
             let moveGoal = summary.activeEnergyBurnedGoal.doubleValue(for: .kilocalorie())
             // exerciseTimeGoal and standHoursGoal are optional on iOS 16+
             let exGoal = summary.exerciseTimeGoal?.doubleValue(for: .minute()) ?? 0
             let standGoal = summary.standHoursGoal?.doubleValue(for: .count()) ?? 0
-            completion(moveGoal, exGoal, standGoal)
+            // appleStandHours = distinct clock hours with ≥1 min standing (the real ring value)
+            let standHrsAchieved = summary.appleStandHours.doubleValue(for: .count())
+            completion(moveGoal, exGoal, standGoal, standHrsAchieved)
         }
         store.execute(query)
     }

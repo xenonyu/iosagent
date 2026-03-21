@@ -331,6 +331,17 @@ struct HealthSummary {
     /// Note: this is "stand hours" (1-hour blocks where user stood ≥1 min), NOT total standing minutes.
     var standGoalHours: Double = 0
 
+    // MARK: - Activity Ring Achieved (from HKActivitySummary)
+
+    /// Actual stand hours achieved — the number of distinct clock hours in which the
+    /// user stood for ≥1 minute. This is the real Stand ring metric on Apple Watch.
+    /// IMPORTANT: This is fundamentally different from `standMinutes` (total standing time).
+    /// Example: 1 min standing in each of 12 hours → standHoursAchieved=12 (ring closed!),
+    /// but standMinutes=12. Conversely, 720 min continuous standing → standMinutes=720,
+    /// but standHoursAchieved may be only 1 (all in the same clock hour).
+    /// 0 = not available (fall back to approximation from standMinutes).
+    var standHoursAchieved: Double = 0
+
     /// True if sleep phase data is available (requires Apple Watch)
     var hasSleepPhases: Bool {
         sleepDeepHours > 0 || sleepREMHours > 0 || sleepCoreHours > 0

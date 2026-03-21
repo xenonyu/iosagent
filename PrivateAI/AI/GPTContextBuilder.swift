@@ -4599,8 +4599,17 @@ final class GPTContextBuilder {
 
         // For "exercise today → tonight's sleep", we need sleep from the NEXT day's row
         // (because sleep is attributed to wake-up day). Build a date→summary lookup.
+        //
+        // IMPORTANT: Use ALL summaries (including today), not just `completed`.
+        // Sleep is attributed to the wake-up day, so today's sleep data = last night's
+        // sleep, which is already complete/finalized. If yesterday was an exercise day,
+        // we need summaryByDate[today] to correlate yesterday's exercise with last
+        // night's sleep. Previously this used `completed` which excluded today,
+        // systematically dropping the most recent exercise→sleep data point.
+        // Exercise/rest day classification still uses `completed` (correct — today's
+        // exercise data is partial/accumulating), but sleep lookups need today's row.
         let summaryByDate: [Date: HealthSummary] = Dictionary(
-            uniqueKeysWithValues: completed.map { (cal.startOfDay(for: $0.date), $0) }
+            uniqueKeysWithValues: healthSummaries.map { (cal.startOfDay(for: $0.date), $0) }
         )
 
         let exerciseDaySleepHours: [Double] = exerciseDays.compactMap { day in

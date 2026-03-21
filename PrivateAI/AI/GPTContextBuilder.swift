@@ -345,12 +345,12 @@ final class GPTContextBuilder {
         - ⚠️ 今日健康数据标注了「截至X点」。如果现在还在上午或下午，今天的步数/运动/卡路里等数据还会继续增长，不要过早下结论说「今天步数偏少」「运动不够」。应该说「截至目前…」或「到目前为止…」，必要时可鼓励用户继续保持。只有晚上10点之后的数据才接近当天最终值。
         - ⚠️ 卡路里说明：「活动kcal」是运动/活动消耗，「总消耗kcal」= 活动 + 基础代谢（身体维持生命所需能量）。用户问「今天消耗了多少卡路里」时，应回答总消耗值。基础代谢约占总消耗60-75%，这是正常的。
         - ⚠️ 活动圆环（Apple Watch 三圆环）说明：用户问「圆环合了吗」「三个圆环怎么样」时，结合活动卡路里（🔴Move）、运动分钟数（🟢Exercise）和站立时间（🔵Stand）来评估。如果某个圆环数据为0或缺失，说明可能未佩戴 Apple Watch。站立时间衡量的是「一天中有几个小时站起来活动了」。
-        - 睡眠分析中包含预计算的「工作日vs周末」对比数据。用户问「周末有没有补觉」「工作日和周末睡眠差多少」「我作息规律吗」时，直接引用该对比数据，不需要自己分类统计。工作日 = 周一至周五醒来的夜晚，周末 = 周六/周日醒来的夜晚。
+        - 睡眠分析中包含预计算的「工作日vs周末」对比数据和「睡眠负债」数据。用户问「周末有没有补觉」「工作日和周末睡眠差多少」「我作息规律吗」时，直接引用该对比数据，不需要自己分类统计。工作日 = 周一至周五醒来的夜晚，周末 = 周六/周日醒来的夜晚。用户问「需要补觉吗」「这周睡够了吗」「欠了多少觉」「睡眠负债」时，直接引用睡眠负债数据回答。
         - 涉及多天数据时，可引用「近14天趋势」进行对比分析，指出趋势变化。
         - ⚠️ 使用预计算统计数据（重要，避免算错）：
           • 回答「这周运动了几次」「上周走了多少步」等聚合问题时，必须使用「本周/上周」周统计中的预计算数据（如「5天中3天有运动，共120分钟」），绝对不要自己手动数趋势表的行数或逐行加总。手动逐行统计14天数据极易出错（漏数、看错行、把上周数据算入本周）。
           • 周环比数据已预计算（如「日均步数↑1200步(+18%)」），直接引用，不要自己做减法或算百分比。
-          • 睡眠概要中的「平均入睡/起床时间」「工作日vs周末」已预计算，直接引用，不要自己从14行中挑选和平均。
+          • 睡眠概要中的「平均入睡/起床时间」「工作日vs周末」「睡眠负债」已预计算，直接引用，不要自己从14行中挑选和平均。
           • [健康趋势提醒]中的异常模式已预检测（如「连续3晚睡眠不足」「静息心率突升」），直接引用即可。
           • 趋势表是供你查看某一天的具体数据的（如用户问「昨天走了多少步」→ 看「昨天」行），不是让你逐行汇总的。
         - 周统计中会标注「X天中Y天有运动」，回答时要如实反映活跃天数，不要把少数几天的数据当作每天都达到了。例如7天中2天运动共60分钟，应该说「这周运动了2天，共60分钟」，而不是「日均运动30分钟」。
@@ -838,7 +838,7 @@ final class GPTContextBuilder {
         let healthWords = [
             "步数", "走步", "步行", "走路", "走了", "跑步", "跑了", "运动", "锻炼", "健身",
             "睡眠", "睡觉", "睡了", "睡得", "入睡", "起床", "失眠", "早起", "熬夜", "晚睡",
-            "补觉", "作息", "赖床",
+            "补觉", "作息", "赖床", "欠觉", "睡够", "睡眠负债", "sleep debt",
             "心率", "心跳", "卡路里", "热量", "消耗", "能量",
             "体重", "胖", "瘦", "血氧", "VO2", "减肥", "增重",
             // Direct health/body terms — "我的健康数据怎么样" or "身体状况如何"
@@ -4852,6 +4852,100 @@ final class GPTContextBuilder {
             }
 
             lines.append("工作日vs周末：\(wdweParts.joined(separator: "，"))")
+        }
+
+        // Cumulative sleep debt — pre-computed so GPT can directly answer "需要补觉吗？"
+        // "这周睡够了吗？" "欠了多少睡眠？" without mentally summing deficits across 14 rows.
+        // Sleep debt = sum of (recommended - actual) for each night where actual < recommended.
+        // Clinically, sleep debt accumulates: 5 nights of 6h when you need 7h = 5h debt,
+        // which cannot be fully recovered in a single night. This metric makes advice concrete:
+        // "你这周累计少睡了3.5小时" is far more actionable than "平均睡6.5小时，低于推荐".
+        do {
+            // Determine age-adjusted sleep target
+            let sleepTargetH: Double = {
+                guard let bd = profile.birthday else { return 7.0 }
+                let age = cal.dateComponents([.year], from: bd, to: Date()).year ?? 0
+                if age > 0 && age < 18 { return 8.0 }      // teens: 8-10h, use lower bound
+                else if age >= 65 { return 7.0 }             // seniors: 7-8h
+                else { return 7.0 }                          // adults: 7-9h, use lower bound
+            }()
+
+            // Split sleep days into this week and last week (same calendar-week alignment
+            // as buildPerWeekStats for consistency).
+            let todayWd = cal.component(.weekday, from: Date())
+            let dmSinceMon = (todayWd + 5) % 7
+            let thisMon = cal.date(byAdding: .day, value: -dmSinceMon, to: cal.startOfDay(for: Date()))!
+
+            let thisWeekSleep = chronological.filter { s in
+                let ds = cal.startOfDay(for: s.date)
+                return ds >= thisMon
+            }
+            let lastWeekSleep = chronological.filter { s in
+                let ds = cal.startOfDay(for: s.date)
+                let lastMon = cal.date(byAdding: .day, value: -7, to: thisMon)!
+                return ds >= lastMon && ds < thisMon
+            }
+
+            // Compute debt for a set of sleep nights
+            let computeDebt: ([HealthSummary]) -> (debt: Double, nights: Int, belowTarget: Int) = { nights in
+                var totalDebt: Double = 0
+                var belowCount = 0
+                for n in nights {
+                    let deficit = sleepTargetH - n.sleepHours
+                    if deficit > 0 {
+                        totalDebt += deficit
+                        belowCount += 1
+                    }
+                }
+                return (totalDebt, nights.count, belowCount)
+            }
+
+            var debtParts: [String] = []
+
+            if !thisWeekSleep.isEmpty {
+                let tw = computeDebt(thisWeekSleep)
+                if tw.debt >= 1.0 {
+                    debtParts.append("本周累计少睡\(String(format: "%.1f", tw.debt))h（\(tw.nights)晚中\(tw.belowTarget)晚不足\(String(format: "%.0f", sleepTargetH))h）")
+                } else if tw.debt > 0 {
+                    debtParts.append("本周睡眠接近达标（仅欠\(String(format: "%.1f", tw.debt))h）")
+                } else {
+                    debtParts.append("本周睡眠充足 ✅（每晚均≥\(String(format: "%.0f", sleepTargetH))h）")
+                }
+            }
+
+            if !lastWeekSleep.isEmpty {
+                let lw = computeDebt(lastWeekSleep)
+                if lw.debt >= 1.0 {
+                    debtParts.append("上周累计少睡\(String(format: "%.1f", lw.debt))h（\(lw.nights)晚中\(lw.belowTarget)晚不足\(String(format: "%.0f", sleepTargetH))h）")
+                } else if lw.debt > 0 {
+                    debtParts.append("上周睡眠接近达标（仅欠\(String(format: "%.1f", lw.debt))h）")
+                } else {
+                    debtParts.append("上周睡眠充足 ✅")
+                }
+            }
+
+            // Week-over-week debt comparison
+            if !thisWeekSleep.isEmpty && !lastWeekSleep.isEmpty {
+                let twDebt = computeDebt(thisWeekSleep).debt
+                let lwDebt = computeDebt(lastWeekSleep).debt
+                let debtChange = twDebt - lwDebt
+                // Normalize per night for fair comparison (this week may be incomplete)
+                let twAvgDebt = thisWeekSleep.isEmpty ? 0 : twDebt / Double(thisWeekSleep.count)
+                let lwAvgDebt = lastWeekSleep.isEmpty ? 0 : lwDebt / Double(lastWeekSleep.count)
+                let avgChange = twAvgDebt - lwAvgDebt
+                if abs(avgChange) >= 0.3 {
+                    if avgChange > 0 {
+                        debtParts.append("本周日均欠睡比上周增加\(String(format: "%.1f", avgChange))h，睡眠状况恶化")
+                    } else {
+                        debtParts.append("本周日均欠睡比上周减少\(String(format: "%.1f", abs(avgChange)))h，睡眠有所改善")
+                    }
+                }
+            }
+
+            if !debtParts.isEmpty {
+                lines.append("睡眠负债（基准：每晚\(String(format: "%.0f", sleepTargetH))h）：\(debtParts.joined(separator: "；"))")
+                lines.append("⚠️ 用户问「需要补觉吗」「睡够了吗」「欠了多少觉」时直接引用以上睡眠负债数据回答。睡眠负债>5h提示严重不足，需多晚逐步补回；<2h属正常波动。")
+            }
         }
 
         return lines.joined(separator: "\n")

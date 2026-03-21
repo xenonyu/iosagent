@@ -445,9 +445,20 @@ final class GPTContextBuilder {
         //
         // Safety: if the query also matches a specific topic (health, calendar, etc.),
         // isLightweightGreeting stays false → full data is included as before.
-        let isLightweightGreeting = isGreetingQuery(userQuery) && !queryTopics.contains(.health)
-            && !queryTopics.contains(.calendar) && !queryTopics.contains(.location)
-            && !queryTopics.contains(.photos) && !queryTopics.contains(.lifeEvents)
+        //
+        // IMPORTANT: We must check raw topics (skipGeneralExpansion: true) here, NOT
+        // the expanded `queryTopics`. Greetings like "你好" match generalWords in
+        // detectQueryTopics, which triggers the general→all expansion, setting ALL
+        // topics. Checking `queryTopics.contains(.health)` would always be true for
+        // greetings, making lightweight mode unreachable (dead code). By checking raw
+        // topics, we correctly detect that "你好" only matches {.general} — no specific
+        // data topic — so lightweight mode activates. "你好，今天步数多少" matches
+        // {.general, .health} in raw topics, so lightweight mode correctly stays off.
+        let rawTopics = detectQueryTopics(userQuery, skipGeneralExpansion: true)
+        let hasSpecificDataTopic = rawTopics.contains(.health) || rawTopics.contains(.calendar)
+            || rawTopics.contains(.location) || rawTopics.contains(.photos)
+            || rawTopics.contains(.lifeEvents)
+        let isLightweightGreeting = isGreetingQuery(userQuery) && !hasSpecificDataTopic
 
         // HEALTH sections — benchmarks, today, yesterday, trend, sleep, workout, insights
         if includeAllSections || queryTopics.contains(.health) {
@@ -791,7 +802,12 @@ final class GPTContextBuilder {
     /// When `previousUserQuery` is provided and the current query looks like a
     /// follow-up (short, uses context words like "那…呢"), inherits topics from
     /// the previous query so the relevance hint stays focused.
-    private func detectQueryTopics(_ query: String, previousUserQuery: String? = nil) -> Set<QueryTopic> {
+    /// When `skipGeneralExpansion` is true, returns only the raw keyword-matched
+    /// topics without expanding `.general` → all cases. This lets callers distinguish
+    /// "matched no specific topic" (→ {.general} or empty) from "matched health+calendar".
+    /// Used by lightweight greeting detection to check if a greeting query ALSO contains
+    /// specific data-topic keywords (e.g. "你好，今天步数多少").
+    private func detectQueryTopics(_ query: String, previousUserQuery: String? = nil, skipGeneralExpansion: Bool = false) -> Set<QueryTopic> {
         let lower = query.lowercased()
         var topics: Set<QueryTopic> = []
 
@@ -926,6 +942,10 @@ final class GPTContextBuilder {
         // BUT first check if this looks like a follow-up query that should
         // inherit topics from the previous exchange.
         if topics.isEmpty || topics.contains(.general) {
+            // When caller only needs raw keyword matches (e.g. for greeting detection),
+            // skip the general→all expansion and follow-up inheritance.
+            if skipGeneralExpansion { return topics }
+
             // Follow-up detection: short queries with context-dependent words
             // like "那…呢", "详细说说", "也看看", "继续" strongly suggest the user
             // is continuing the same topic from the previous exchange. Without

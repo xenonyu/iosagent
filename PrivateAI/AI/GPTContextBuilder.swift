@@ -2182,7 +2182,27 @@ final class GPTContextBuilder {
         var lines = ["[近\(dayCount)天健康趋势]", "日期  | 步数  | 运动(分) | 活动kcal\(headerTotalCal) | 睡眠(h)（对应哪晚） | 心率avg(min~max)bpm\(headerRHR)\(headerHRV)\(headerDistance)\(headerStand)\(headerWeight)"]
         // Show oldest→newest so GPT can naturally read the trend direction
         let chronological = trendDays
+
+        // Pre-compute this week's Monday boundary for inserting a visual separator
+        // between last week's and this week's data. Without this, GPT scanning a
+        // 14-row table frequently conflates which rows belong to "this week" vs
+        // "last week" — e.g. including last Sunday's data in a "这周" aggregate,
+        // or excluding this Monday from "本周" because it's far from "today" in the table.
+        // The separator makes the week boundary instantly unambiguous.
+        let todayWeekday = cal.component(.weekday, from: Date()) // 1=Sun..7=Sat
+        let daysSinceMonday = (todayWeekday + 5) % 7 // Mon=0..Sun=6
+        let thisMondayStart = cal.date(byAdding: .day, value: -daysSinceMonday, to: cal.startOfDay(for: Date()))!
+        var insertedWeekSeparator = false
+
         for s in chronological {
+            // Insert week boundary separator when transitioning from last week to this week.
+            // Placed BEFORE the first this-week row (this Monday's data) so the visual
+            // break reads naturally: "上周 data... --- 本周 --- this week data..."
+            if !insertedWeekSeparator && cal.startOfDay(for: s.date) >= thisMondayStart {
+                insertedWeekSeparator = true
+                lines.append("--- ↑ 上周 | 本周 ↓ ---")
+            }
+
             // Include weekday name (周一~周日) so GPT can answer "周三运动了吗？" without date math.
             // Also include "前天" for consistency with calendar/location/life-event sections —
             // when user asks "前天走了多少步", GPT can directly match the label.
@@ -4462,10 +4482,24 @@ final class GPTContextBuilder {
         let activeDays = Set(allWorkouts.map { cal.startOfDay(for: $0.date) }).count
         lines.append("共 \(totalSessions) 次运动，覆盖 \(activeDays) 天")
 
+        // Week boundary for workout list — workouts are sorted newest→oldest,
+        // so the separator fires when we transition FROM this week TO last week.
+        let wkTodayWeekday = cal.component(.weekday, from: Date())
+        let wkDaysSinceMonday = (wkTodayWeekday + 5) % 7
+        let wkThisMonday = cal.date(byAdding: .day, value: -wkDaysSinceMonday, to: cal.startOfDay(for: Date()))!
+        var insertedWorkoutWeekSep = false
+
         // List each workout (cap at 15 to avoid token bloat)
         for item in allWorkouts.prefix(15) {
             let w = item.workout
             let name = "\(w.typeEmoji) \(w.typeName)"
+
+            // Insert separator when crossing from this week into last week (newest→oldest order)
+            if !insertedWorkoutWeekSep && cal.startOfDay(for: item.date) < wkThisMonday {
+                insertedWorkoutWeekSep = true
+                lines.append("--- ↑ 本周 | 上周 ↓ ---")
+            }
+
             let dayLabel: String
             if cal.isDateInToday(item.date) {
                 dayLabel = "今天"
@@ -4531,7 +4565,22 @@ final class GPTContextBuilder {
         // Show oldest → newest for natural trend reading
         let chronological = Array(daysWithSleep.reversed())
 
+        // Week boundary separator (same logic as trendSection) so GPT doesn't mix up
+        // this week's vs last week's sleep data when answering "这周睡得怎么样".
+        let todayWeekday = cal.component(.weekday, from: Date())
+        let daysSinceMonday = (todayWeekday + 5) % 7
+        let thisMondayStart = cal.date(byAdding: .day, value: -daysSinceMonday, to: cal.startOfDay(for: Date()))!
+        var insertedSleepWeekSep = false
+
         for s in chronological {
+            // Insert week separator before the first this-week sleep entry.
+            // Sleep is attributed to wake-up day, so a row dated Monday = Sunday night's sleep.
+            // The separator still belongs before Monday's row because the row IS in this week.
+            if !insertedSleepWeekSep && cal.startOfDay(for: s.date) >= thisMondayStart {
+                insertedSleepWeekSep = true
+                lines.append("--- ↑ 上周 | 本周 ↓ ---")
+            }
+
             // Label with actual sleep night (e.g. "3/19晚→3/20") since sleep is attributed
             // to the wake-up day. This matches the SYSTEM prompt's sleep date rule.
             let prevDay = cal.date(byAdding: .day, value: -1, to: s.date) ?? s.date

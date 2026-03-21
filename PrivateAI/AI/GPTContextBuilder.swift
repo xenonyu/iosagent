@@ -4579,7 +4579,78 @@ final class GPTContextBuilder {
             }
         }
 
-        // 6. Late bedtime drift — bedtime shifting later over the past week
+        // 6. Deep sleep quality decline — deep sleep ratio dropping even if total
+        //    hours are stable. This is one of the most medically significant sleep
+        //    quality indicators: users who say "感觉最近睡得不好" often have normal
+        //    total hours but declining deep sleep %. The existing sleep trend check
+        //    (#2 above) only looks at total hours, completely missing quality changes.
+        //    Deep sleep (N3 stage) is the most restorative phase — declining ratio
+        //    correlates with daytime fatigue, reduced immunity, and cognitive fog.
+        let phaseDays = sleepDays.filter { $0.hasSleepPhases && $0.sleepHours > 0 }
+        if phaseDays.count >= 5 {
+            let recentPhase = Array(phaseDays.suffix(3))
+            let olderPhase = Array(phaseDays.dropLast(3).suffix(3))
+            if recentPhase.count >= 3 && olderPhase.count >= 2 {
+                let recentDeepRatio = recentPhase.map { $0.sleepDeepHours / $0.sleepHours * 100 }
+                    .reduce(0, +) / Double(recentPhase.count)
+                let olderDeepRatio = olderPhase.map { $0.sleepDeepHours / $0.sleepHours * 100 }
+                    .reduce(0, +) / Double(olderPhase.count)
+                let ratioDrop = olderDeepRatio - recentDeepRatio
+                // Flag if deep sleep ratio dropped by ≥5 percentage points (e.g. 22% → 15%)
+                // This is a meaningful decline — normal deep sleep is 15-25% of total.
+                if ratioDrop >= 5 && recentDeepRatio < 20 {
+                    let recentDeepAvg = recentPhase.map(\.sleepDeepHours).reduce(0, +) / Double(recentPhase.count)
+                    alerts.append("😴 近3晚深度睡眠质量下降：深睡占比\(Int(recentDeepRatio))%（之前\(Int(olderDeepRatio))%），均深睡仅\(String(format: "%.1f", recentDeepAvg))h。总睡眠时长可能正常，但恢复效果变差，可能与压力、晚间屏幕时间、或睡前饮食有关")
+                } else if ratioDrop <= -5 && recentDeepRatio > olderDeepRatio {
+                    alerts.append("💤 近3晚深度睡眠改善：深睡占比\(Int(recentDeepRatio))%（之前\(Int(olderDeepRatio))%），睡眠质量提升👍")
+                }
+            }
+        }
+
+        // 7. Sleep efficiency decline — spending more time in bed but sleeping less.
+        //    Sleep efficiency = actual sleep / time in bed. Declining efficiency (e.g.
+        //    from 92% to 75%) often indicates insomnia, restlessness, or excessive
+        //    phone use in bed. This is invisible from total sleep hours alone:
+        //    "7h sleep" with 7.5h in-bed (93%) vs 9.5h in-bed (74%) are vastly
+        //    different quality experiences.
+        let effDays = sleepDays.filter { $0.inBedHours > 0 && $0.inBedHours >= $0.sleepHours && $0.sleepHours > 0 }
+        if effDays.count >= 5 {
+            let recentEff = Array(effDays.suffix(3))
+            let olderEff = Array(effDays.dropLast(3).suffix(3))
+            if recentEff.count >= 3 && olderEff.count >= 2 {
+                let recentEffAvg = recentEff.map { ($0.sleepHours / $0.inBedHours) * 100 }
+                    .reduce(0, +) / Double(recentEff.count)
+                let olderEffAvg = olderEff.map { ($0.sleepHours / $0.inBedHours) * 100 }
+                    .reduce(0, +) / Double(olderEff.count)
+                let effDrop = olderEffAvg - recentEffAvg
+                // Flag if efficiency dropped by ≥8 percentage points — clinically meaningful
+                // (normal sleep efficiency is >85%, <75% suggests insomnia)
+                if effDrop >= 8 && recentEffAvg < 85 {
+                    alerts.append("🛏️ 近3晚睡眠效率下降至\(Int(recentEffAvg))%（之前\(Int(olderEffAvg))%），在床上躺的时间更长但实际睡着的时间变少，可能与入睡困难、夜醒增多有关")
+                } else if effDrop <= -8 && recentEffAvg >= 85 {
+                    alerts.append("🛏️ 近3晚睡眠效率提升至\(Int(recentEffAvg))%（之前\(Int(olderEffAvg))%），入睡更快、夜醒更少👍")
+                }
+            }
+        }
+
+        // 8. Blood oxygen (SpO2) anomaly — sudden drop below normal range.
+        //    Normal SpO2 is 95-100%. A reading below 92% may indicate respiratory
+        //    issues (sleep apnea, altitude effects, illness). Apple Watch measures
+        //    SpO2 in the background during sleep, so low readings correlate strongly
+        //    with sleep-disordered breathing. This is one of the most medically
+        //    actionable alerts we can provide.
+        let spo2Days = completed.filter { $0.oxygenSaturation > 0 }
+        if spo2Days.count >= 3 {
+            let recentSpo2 = Array(spo2Days.suffix(3))
+            let lowSpo2 = recentSpo2.filter { $0.oxygenSaturation < 94 }
+            if lowSpo2.count >= 2 {
+                let avgSpo2 = recentSpo2.map(\.oxygenSaturation).reduce(0, +) / Double(recentSpo2.count)
+                let minSpo2 = recentSpo2.map(\.oxygenSaturation).min() ?? 0
+                alerts.append("⚠️ 近\(recentSpo2.count)天血氧偏低：均值\(Int(avgSpo2))%，最低\(Int(minSpo2))%（正常≥95%）。可能与呼吸问题、睡眠呼吸暂停或高海拔有关，建议关注")
+            }
+        }
+
+        // 9. Late bedtime drift — bedtime shifting later over the past week
         //    Already detected in weeklySleepSection's drift analysis, but that only
         //    fires with 6+ data points split into halves. This catches shorter-term
         //    3-night trends: "最近三晚越睡越晚".

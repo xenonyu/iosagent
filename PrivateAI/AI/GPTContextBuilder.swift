@@ -1320,12 +1320,30 @@ final class GPTContextBuilder {
                 break // Only match the first day anchor for this period
             }
 
-            // Bare time-period without explicit day anchor — likely means "today"
+            // Bare time-period without explicit day anchor.
             // Only hint when no day anchor was found (to avoid duplicate hints)
             let hasDayAnchor = dayAnchors.contains { $0.keywords.contains(where: { lower.contains($0) }) }
             if !hasDayAnchor {
-                // Infer "today" for bare period references like just "上午有会吗？"
-                hints.append("「\(matchedPeriodKeyword)」→ 默认指今天（\(dateFmt.string(from: now))）的\(period.range)时段")
+                // Check if a weekday reference is present (e.g. "周三下午有什么会？").
+                // When a weekday is detected alongside a time period, DON'T default to
+                // "today" — that would contradict the weekday hint (e.g. "周三 = 3月19日"
+                // vs "下午 → 默认指今天3月21日"). Instead, defer to the weekday resolution
+                // and note the time-period filter generically, so GPT combines them correctly.
+                let weekdayRefNames = [
+                    "周一", "周二", "周三", "周四", "周五", "周六", "周日", "周天",
+                    "星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日", "星期天",
+                    "礼拜一", "礼拜二", "礼拜三", "礼拜四", "礼拜五", "礼拜六", "礼拜天", "礼拜日",
+                    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"
+                ]
+                let hasWeekdayRef = weekdayRefNames.contains(where: { lower.contains($0) })
+                if hasWeekdayRef {
+                    // Weekday + time period: don't anchor to "today", just note the time filter.
+                    // The weekday hint above already resolved the date; GPT combines them.
+                    hints.append("「\(matchedPeriodKeyword)」→ 筛选上述星期几对应日期中\(period.range)时段的数据")
+                } else {
+                    // Truly bare period reference (no day anchor, no weekday) like "上午有会吗？"
+                    hints.append("「\(matchedPeriodKeyword)」→ 默认指今天（\(dateFmt.string(from: now))）的\(period.range)时段")
+                }
             }
         }
 

@@ -3,6 +3,9 @@ import SwiftUI
 struct MessageBubble: View {
     let message: ChatMessage
     var animated: Bool = false
+    /// Retry closure — provided only for error messages (⚠️) so the user can re-send
+    /// the failed query with a single tap instead of retyping.
+    var onRetry: (() -> Void)?
     @State private var showCopied = false
     @State private var appeared = false
 
@@ -24,6 +27,11 @@ struct MessageBubble: View {
                 appeared = true
             }
         }
+    }
+
+    /// True if this is an error/failure message from the AI (network error, timeout, etc.)
+    private var isErrorMessage: Bool {
+        !message.isUser && message.content.hasPrefix("⚠️")
     }
 
     // MARK: - Markdown Rendering
@@ -103,6 +111,30 @@ struct MessageBubble: View {
                         .foregroundColor(.secondary)
                     if showCopied {
                         copiedIndicator
+                    }
+                    // Retry button for error messages — tap to re-send the failed query
+                    if isErrorMessage, let onRetry {
+                        Button {
+                            let impact = UIImpactFeedbackGenerator(style: .light)
+                            impact.impactOccurred()
+                            onRetry()
+                        } label: {
+                            HStack(spacing: 3) {
+                                Image(systemName: "arrow.clockwise")
+                                    .font(.system(size: 11, weight: .medium))
+                                Text("重试")
+                                    .font(.caption2)
+                                    .fontWeight(.medium)
+                            }
+                            .foregroundColor(Color("AccentPrimary"))
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .background(
+                                Capsule()
+                                    .fill(Color("AccentPrimary").opacity(0.1))
+                            )
+                        }
+                        .buttonStyle(.plain)
                     }
                 }
             }

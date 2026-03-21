@@ -22,7 +22,13 @@ struct ChatView: View {
                                     DateSeparator(date: message.timestamp)
                                 }
 
-                                MessageBubble(message: message, animated: index >= previousMessageCount)
+                                MessageBubble(
+                                    message: message,
+                                    animated: index >= previousMessageCount,
+                                    onRetry: (message.content.hasPrefix("⚠️") && !message.isUser && viewModel.lastFailedQuery != nil)
+                                        ? { viewModel.retryLastMessage() }
+                                        : nil
+                                )
                                     .id(message.id)
                             }
 

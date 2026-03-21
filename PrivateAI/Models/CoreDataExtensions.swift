@@ -27,6 +27,16 @@ extension CDChatMessage {
         return (try? context.fetch(request))?.map { $0.toModel() } ?? []
     }
 
+    /// Deletes a single chat message by its UUID.
+    static func delete(id: UUID, in context: NSManagedObjectContext) {
+        let request = CDChatMessage.fetchRequest()
+        request.predicate = NSPredicate(format: "id == %@", id as CVarArg)
+        request.fetchLimit = 1
+        if let match = (try? context.fetch(request))?.first {
+            context.delete(match)
+        }
+    }
+
     static func deleteAll(in context: NSManagedObjectContext) {
         let request = NSFetchRequest<NSFetchRequestResult>(entityName: "CDChatMessage")
         let deleteRequest = NSBatchDeleteRequest(fetchRequest: request)

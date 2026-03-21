@@ -1798,6 +1798,39 @@ final class GPTContextBuilder {
             }
         }
 
+        // --- Weekday + night sleep attribution ---
+        // "周三晚上睡得怎么样" is a very common query pattern. The weekday resolution
+        // above correctly resolves "周三" to a specific date, but GPT doesn't know that
+        // Wednesday NIGHT's sleep data lives in THURSDAY's trend-table row (sleep is
+        // attributed to the wake-up day). Without this hint, GPT looks at Wednesday's
+        // row — which actually contains Tuesday night's sleep — giving the wrong answer.
+        //
+        // Only emit when the query contains BOTH a weekday reference AND a night/sleep
+        // keyword. This avoids noise for "周三运动了吗" (no night context needed).
+        let nightSleepWords = ["晚上", "夜里", "夜晚", "晚间", "night", "夜", "睡"]
+        let hasNightSleepContext = nightSleepWords.contains(where: { lower.contains($0) })
+        if hasNightSleepContext && !resolvedWeekdays.isEmpty {
+            // For each resolved weekday, compute the next day (sleep attribution target)
+            for targetWeekday in resolvedWeekdays {
+                let targetDaysSinceMonday = (targetWeekday + 5) % 7
+                let targetThisWeek = cal.date(byAdding: .day, value: targetDaysSinceMonday, to: thisMonday)!
+                let targetLastWeek = cal.date(byAdding: .day, value: -7, to: targetThisWeek)!
+                let shortName = weekdayMap.first { $0.weekday == targetWeekday }?.short ?? "周?"
+
+                // The night of day X → sleep data in day X+1 row
+                let nextDayThisWeek = cal.date(byAdding: .day, value: 1, to: targetThisWeek)!
+                let nextDayLastWeek = cal.date(byAdding: .day, value: 1, to: targetLastWeek)!
+
+                if hasLastWeekPrefix {
+                    hints.append("⚠️ 上\(shortName)晚上的睡眠 → 查看\(dateFmt.string(from: nextDayLastWeek))行的睡眠数据（\(dateFmt.string(from: targetLastWeek))晚入睡→\(dateFmt.string(from: nextDayLastWeek))醒来，归属\(dateFmt.string(from: nextDayLastWeek))）")
+                } else if hasThisWeekPrefix || (targetThisWeek <= cal.startOfDay(for: now)) {
+                    // "这周三晚上" or bare "周三晚上" (when Wed already passed)
+                    hints.append("⚠️ \(shortName)晚上的睡眠 → 查看\(dateFmt.string(from: nextDayThisWeek))行的睡眠数据（\(dateFmt.string(from: targetThisWeek))晚入睡→\(dateFmt.string(from: nextDayThisWeek))醒来，归属\(dateFmt.string(from: nextDayThisWeek))）")
+                }
+                // Future weekdays (not yet arrived) don't need sleep hints
+            }
+        }
+
         // --- Absolute date references ---
         // Users commonly ask "3月15日走了多少步" or "15号有什么安排" with explicit dates.
         // GPT can parse these dates, but critically it doesn't know whether the date

@@ -12,6 +12,9 @@ final class ChatViewModel: ObservableObject {
     @Published var isListening: Bool = false
     @Published var photoSearchResults: [String] = []  // PHAsset IDs
     @Published var showPhotoResults: Bool = false
+    /// Stores the last user query that failed (network error, timeout, etc.)
+    /// so the user can retry without retyping. Cleared on successful send.
+    @Published var lastFailedQuery: String?
 
     // MARK: - Dependencies
 
@@ -150,6 +153,7 @@ final class ChatViewModel: ObservableObject {
                         self.persist(message: aiMsg)
                         self.addToHistory(aiMsg)
                         self.isThinking = false
+                        self.lastFailedQuery = nil
                     }
                 } catch {
                     await MainActor.run {
@@ -160,6 +164,8 @@ final class ChatViewModel: ObservableObject {
                         if let lastIdx = self.conversationHistory.lastIndex(where: { $0.isUser && $0.content == text }) {
                             self.conversationHistory.remove(at: lastIdx)
                         }
+
+                        self.lastFailedQuery = text
 
                         let errorText = self.friendlyErrorMessage(error)
                         let errorMsg = ChatMessage(
@@ -173,6 +179,46 @@ final class ChatViewModel: ObservableObject {
                 }
             }
         }
+    }
+
+    // MARK: - Retry
+
+    /// Re-sends the last failed query without the user having to retype.
+    /// Removes the error message from the UI first, then sends the original
+    /// query through the normal sendMessage() flow.
+    func retryLastMessage() {
+        guard let query = lastFailedQuery, !query.isEmpty else { return }
+        guard !isThinking else { return }
+
+        // Remove the error message (last AI message starting with ⚠️) and
+        // the orphaned user message before it, so the retry starts clean.
+        // Walk backwards to find and remove both.
+        var indicesToRemove: [Int] = []
+        if let lastMsgIdx = messages.indices.last,
+           !messages[lastMsgIdx].isUser,
+           messages[lastMsgIdx].content.hasPrefix("⚠️") {
+            indicesToRemove.append(lastMsgIdx)
+            // Also remove the user message right before it (the failed query)
+            if lastMsgIdx > 0, messages[lastMsgIdx - 1].isUser,
+               messages[lastMsgIdx - 1].content == query {
+                indicesToRemove.append(lastMsgIdx - 1)
+            }
+        }
+
+        // Remove from persisted store and UI
+        for idx in indicesToRemove.sorted(by: >) {
+            let msg = messages[idx]
+            CDChatMessage.delete(id: msg.id, in: context)
+            messages.remove(at: idx)
+        }
+        PersistenceController.shared.save()
+
+        // Clear the failed query tracker before retrying
+        lastFailedQuery = nil
+
+        // Feed the original query into the normal send flow
+        inputText = query
+        sendMessage()
     }
 
     // MARK: - Photo Search Detection

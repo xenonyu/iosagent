@@ -860,8 +860,23 @@ final class GPTContextBuilder {
         // that dilute the relevance hint's focus.
         let healthWords = [
             "步数", "走步", "步行", "走路", "走了", "跑步", "跑了", "运动", "锻炼", "健身",
-            "睡眠", "睡觉", "睡了", "睡得", "入睡", "起床", "失眠", "早起", "熬夜", "晚睡",
+            "睡眠", "睡觉", "睡了", "睡得", "睡的", "入睡", "起床", "失眠", "早起", "熬夜", "晚睡",
             "补觉", "作息", "赖床", "欠觉", "睡够", "睡眠负债", "sleep debt",
+            // Sleep negation / quality patterns — "几点睡的" uses 的(de) not 了(le) or 得(de),
+            // "睡不好" / "没睡好" are extremely common Chinese sleep complaint patterns.
+            // Without these, queries like "昨天几点睡的" or "最近睡不好" miss health topic
+            // detection entirely, causing all sections to load (40-60% token waste).
+            "睡不好", "睡不着", "睡不够", "没睡好", "没睡", "没睡着",
+            // Wake-up patterns — "醒" is the Chinese counterpart of "起床" but far more
+            // colloquial. "几点醒的" "醒了几次" "早醒" are very common sleep queries.
+            // Only "起床" was previously covered, missing all 醒-based variants.
+            "醒了", "醒来", "醒的", "早醒", "醒过",
+            // Sleep phase terms — users with Apple Watch ask about specific phases
+            "深睡", "浅睡", "深度睡眠", "浅度睡眠",
+            // Dream / snoring — sleep quality indicators users commonly ask about
+            "做梦", "梦到", "打鼾", "打呼", "呼噜",
+            // Drowsiness — implies user wants to see sleep data for cause analysis
+            "犯困", "瞌睡", "好困",
             "心率", "心跳", "卡路里", "热量", "消耗", "能量",
             "体重", "胖", "瘦", "血氧", "VO2", "减肥", "增重",
             // Direct health/body terms — "我的健康数据怎么样" or "身体状况如何"
@@ -888,10 +903,12 @@ final class GPTContextBuilder {
             // Calorie unit variants — "卡路里" is in the list but "千卡" and "大卡" are
             // common Chinese shorthand. "消耗了500千卡" would miss without these.
             "千卡", "大卡",
-            "exercise", "sleep", "step", "heart", "workout", "calorie", "weight",
+            "exercise", "sleep", "slept", "insomnia", "nap", "wake up", "woke up", "bedtime",
+            "deep sleep", "rem", "snore", "dream",
+            "step", "heart", "workout", "calorie", "weight",
             "hrv", "vo2", "bpm", "kcal", "swimming", "cycling", "yoga", "hiking", "running",
             "stand", "ring", "activity ring", "health", "body",
-            "stress", "anxious", "anxiety", "tired", "fatigue", "recovery", "relax"
+            "stress", "anxious", "anxiety", "tired", "fatigue", "recovery", "relax", "drowsy", "sleepy"
         ]
         if healthWords.contains(where: { lower.contains($0) }) {
             topics.insert(.health)

@@ -361,6 +361,7 @@ final class GPTContextBuilder {
           • 睡眠概要中的「平均入睡/起床时间」「工作日vs周末」「睡眠负债」已预计算，直接引用，不要自己从14行中挑选和平均。
           • [健康趋势提醒]中的异常模式已预检测（如「连续3晚睡眠不足」「静息心率突升」），直接引用即可。
           • 趋势表是供你查看某一天的具体数据的（如用户问「昨天走了多少步」→ 看「昨天」行），不是让你逐行汇总的。
+          • 例外：当用户问的是明确的小范围（如「最近3天」「前天到今天」≤5天），如果下方有[指定范围聚合]，直接引用该预计算数据。如果没有（如非健康话题），可以直接从趋势表读取对应2-5行数据回答，少量行不容易出错。
         - 周统计中会标注「X天中Y天有运动」，回答时要如实反映活跃天数，不要把少数几天的数据当作每天都达到了。例如7天中2天运动共60分钟，应该说「这周运动了2天，共60分钟」，而不是「日均运动30分钟」。
         - ⚠️ 跨周对比时，务必使用「日均」数据进行公平比较，因为本周天数可能不足7天。例如本周4天日均消耗2100kcal vs 上周7天日均2000kcal → 说明本周消耗更高，而不是比较总量（8400 vs 14000）得出本周更少的错误结论。
         - ⚠️ 体重数据说明：趋势表和周统计中会包含体重数据（如有记录）。体重数据来自智能体重秤或手动录入，不一定每天都有。回答体重趋势时，关注变化方向和幅度，短期波动（0.5kg以内）通常是正常的水分变化，不要过度解读。如果只有1-2天的记录，说明数据有限，不宜下趋势结论。
@@ -744,6 +745,21 @@ final class GPTContextBuilder {
             let temporalHint = buildTemporalHint(query: userQuery)
             if !temporalHint.isEmpty {
                 parts.append(temporalHint)
+            }
+
+            // RECENT N-DAYS AGGREGATE — when the user asks about a specific day range
+            // (e.g. "最近3天运动了几次", "近5天平均步数"), the system prompt instructs GPT
+            // to "never manually aggregate trend table rows". But pre-computed stats only
+            // cover "本周" and "上周" (Monday-based). Arbitrary ranges like "最近3天" or
+            // "近5天" don't align with week boundaries, leaving GPT stuck: it has the data
+            // in the trend table but is told not to sum it. This pre-computed aggregate
+            // bridges the gap — only emitted when a specific day count is detected AND
+            // health data is available, so normal prompts are not bloated.
+            if queryTopics.contains(.health) || includeAllSections {
+                let recentAggregate = buildRecentDaysAggregate(query: userQuery, summaries: weeklyHealth)
+                if !recentAggregate.isEmpty {
+                    parts.append(recentAggregate)
+                }
             }
         }
 
@@ -6895,6 +6911,146 @@ final class GPTContextBuilder {
 
         lines.append("提示：照片已在 App 界面以图片网格展示给用户，你只需用文字描述搜索结果概况。")
         return lines.joined(separator: "\n")
+    }
+
+    // MARK: - Recent N-Days Aggregate
+
+    /// Detects "recent N days" patterns in the user's query and pre-computes an aggregate
+    /// summary from health summaries for that exact date range. This solves the contradiction
+    /// where GPT is told "never manually aggregate trend table rows" but has no pre-computed
+    /// stats for arbitrary day ranges (only "本周" and "上周" exist).
+    ///
+    /// Only triggers for N in 2...10 — small enough to be useful, large enough that manual
+    /// aggregation is error-prone. For N > 10, the per-week stats already cover the data.
+    /// Excludes today's partial data from aggregates (consistent with per-week stats).
+    private func buildRecentDaysAggregate(query: String, summaries: [HealthSummary]) -> String {
+        guard !summaries.isEmpty else { return "" }
+        let lower = query.lowercased()
+        let cal = Calendar.current
+        let now = Date()
+
+        // Detect the requested number of days from the query.
+        // Supports: "最近3天", "近5天", "过去三天", "前几天", "这两天", "last 3 days" etc.
+        let requestedDays: Int? = {
+            // Chinese numeral patterns
+            let chineseNumerals: [(String, Int)] = [
+                ("两天", 2), ("三天", 3), ("四天", 4), ("五天", 5),
+                ("六天", 6), ("七天", 7), ("八天", 8), ("九天", 9), ("十天", 10)
+            ]
+            let prefixes = ["最近", "近", "过去", "前", "这"]
+            for prefix in prefixes {
+                for (numWord, days) in chineseNumerals {
+                    if lower.contains("\(prefix)\(numWord)") { return days }
+                }
+            }
+
+            // Arabic numeral patterns: "最近3天", "近5天", "过去7天"
+            for prefix in prefixes {
+                if let range = lower.range(of: "\(prefix)\\d{1,2}天", options: .regularExpression) {
+                    let matched = String(lower[range])
+                    let numStr = matched.components(separatedBy: CharacterSet.decimalDigits.inverted)
+                        .filter { !$0.isEmpty }.first
+                    if let n = numStr.flatMap({ Int($0) }), (2...10).contains(n) { return n }
+                }
+            }
+
+            // English patterns: "last 3 days", "past 5 days"
+            if let range = lower.range(of: #"(?:last|past|recent)\s*(\d{1,2})\s*days?"#, options: .regularExpression) {
+                let matched = String(lower[range])
+                let numStr = matched.components(separatedBy: CharacterSet.decimalDigits.inverted)
+                    .filter { !$0.isEmpty }.first
+                if let n = numStr.flatMap({ Int($0) }), (2...10).contains(n) { return n }
+            }
+
+            // Vague patterns → approximate day counts
+            if lower.contains("这两天") || lower.contains("这几天") { return 3 }
+            if lower.contains("前几天") || lower.contains("前些天") { return 4 }
+
+            return nil
+        }()
+
+        guard let days = requestedDays, days >= 2, days <= 10 else { return "" }
+
+        // Collect health summaries for the specified range, EXCLUDING today (partial data).
+        // "最近3天" = yesterday, day-before-yesterday, day-before-that (3 completed days).
+        // This matches per-week stats behavior where today is excluded from aggregates.
+        let completedSummaries = summaries
+            .filter { !cal.isDateInToday($0.date) }
+            .sorted { $0.date > $1.date } // newest first
+        let rangeSummaries = Array(completedSummaries.prefix(days))
+
+        guard !rangeSummaries.isEmpty else { return "" }
+
+        let dateFmt = DateFormatter(); dateFmt.dateFormat = "M月d日"
+        let oldest = rangeSummaries.last!.date
+        let newest = rangeSummaries.first!.date
+        let actualDays = rangeSummaries.count
+
+        var parts: [String] = []
+
+        // Steps aggregate
+        let stepsData = rangeSummaries.filter { $0.steps > 0 }
+        if !stepsData.isEmpty {
+            let totalSteps = Int(stepsData.map(\.steps).reduce(0, +))
+            let avgSteps = totalSteps / actualDays
+            parts.append("总\(totalSteps)步（日均\(avgSteps)步，\(stepsData.count)/\(actualDays)天有记录）")
+        }
+
+        // Exercise aggregate
+        let exerciseData = rangeSummaries.filter { $0.exerciseMinutes > 0 || !$0.workouts.isEmpty }
+        let totalExMins = Int(rangeSummaries.map(\.exerciseMinutes).reduce(0, +))
+        if !exerciseData.isEmpty {
+            parts.append("\(actualDays)天中\(exerciseData.count)天有运动，共\(totalExMins)分钟")
+        } else {
+            parts.append("无运动记录")
+        }
+
+        // Sleep aggregate
+        let sleepData = rangeSummaries.filter { $0.sleepHours > 0 }
+        if !sleepData.isEmpty {
+            let avgSleep = sleepData.map(\.sleepHours).reduce(0, +) / Double(sleepData.count)
+            parts.append("日均睡眠\(String(format: "%.1f", avgSleep))h（\(sleepData.count)/\(actualDays)天有数据）")
+        }
+
+        // Calories aggregate
+        let calData = rangeSummaries.filter { $0.activeCalories > 0 || $0.basalCalories > 0 }
+        if !calData.isEmpty {
+            let totalActive = Int(calData.map(\.activeCalories).reduce(0, +))
+            let totalAll = Int(calData.map { $0.activeCalories + $0.basalCalories }.reduce(0, +))
+            if totalAll > totalActive {
+                parts.append("总消耗\(totalAll)kcal（活动\(totalActive)kcal）")
+            } else {
+                parts.append("活动消耗\(totalActive)kcal")
+            }
+        }
+
+        // Distance aggregate
+        let distData = rangeSummaries.filter { $0.distanceKm > 0.01 }
+        if !distData.isEmpty {
+            let totalKm = distData.map(\.distanceKm).reduce(0, +)
+            parts.append("总距离\(String(format: "%.1f", totalKm))km")
+        }
+
+        guard !parts.isEmpty else { return "" }
+
+        // Include today's snapshot as supplementary info if it has data
+        let todaySummary = summaries.first { cal.isDateInToday($0.date) }
+        let todayNote: String
+        if let today = todaySummary, today.hasData {
+            let hourOfDay = cal.component(.hour, from: now)
+            var todayParts: [String] = []
+            if today.steps > 0 { todayParts.append("\(Int(today.steps))步") }
+            if today.exerciseMinutes > 0 { todayParts.append("运动\(Int(today.exerciseMinutes))分钟") }
+            if !todayParts.isEmpty {
+                todayNote = "\n+ 今天截至\(hourOfDay)点（未计入上方聚合）：\(todayParts.joined(separator: "、"))"
+            } else {
+                todayNote = ""
+            }
+        } else {
+            todayNote = ""
+        }
+
+        return "[指定范围聚合]（最近\(days)天 = \(dateFmt.string(from: oldest))~\(dateFmt.string(from: newest))，\(actualDays)个完整天）\n\(parts.joined(separator: "，"))\(todayNote)"
     }
 
 }

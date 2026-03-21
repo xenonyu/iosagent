@@ -4579,6 +4579,7 @@ final class GPTContextBuilder {
     /// - Sleep deprivation: 3+ consecutive nights under 6 hours
     /// - Sleep trend: consistent decline or improvement over recent nights
     /// - Resting HR anomaly: sudden spike >10bpm above recent baseline
+    /// - HRV trend: decline ≥15% signals stress/overtraining before resting HR rises
     /// - Exercise gap: broke a 3+ day exercise streak
     /// - Activity drop: step count fell >40% vs prior week average
     /// - Late bedtime drift: bedtime shifted >30 min later over the past week
@@ -4661,6 +4662,37 @@ final class GPTContextBuilder {
                         alerts.append("⚠️ \(dayLabel)静息心率\(Int(day.restingHeartRate))bpm，比近期基线（\(Int(baselineAvg))bpm）高\(Int(spike))bpm，可能提示疲劳/压力/生病")
                         break // Only flag the most recent spike
                     }
+                }
+            }
+        }
+
+        // 3b. HRV trend — declining HRV is the earliest biomarker for accumulated
+        //     stress, overtraining, or illness onset — often dropping 1-2 days BEFORE
+        //     resting heart rate rises (alert #3 above). This makes it the most
+        //     proactive health signal we can offer. Users asking "最近压力大吗？"
+        //     "身体恢复得好吗？" "状态怎么样？" get a data-backed answer instead of
+        //     generic advice. HRV is already collected per-day in the trend table but
+        //     had no pattern detection — a major gap given its clinical significance.
+        //
+        //     Compare recent 3-day HRV average vs baseline (older days). Flag when:
+        //     - Decline ≥15% AND ≥8ms absolute drop (avoids noise on high-HRV individuals)
+        //     - Improvement ≥15% AND ≥8ms absolute gain (positive reinforcement)
+        let hrvDays = completed.filter { $0.hrv > 0 }
+        if hrvDays.count >= 5 {
+            let recentHRV = Array(hrvDays.suffix(3))
+            let baselineHRV = Array(hrvDays.dropLast(3)) // all days before recent 3
+            if recentHRV.count >= 3 && !baselineHRV.isEmpty {
+                let recentAvg = recentHRV.map(\.hrv).reduce(0, +) / Double(recentHRV.count)
+                let baselineAvg = baselineHRV.map(\.hrv).reduce(0, +) / Double(baselineHRV.count)
+                let absDiff = recentAvg - baselineAvg
+                let pctChange = baselineAvg > 0 ? (absDiff / baselineAvg) * 100 : 0
+
+                if absDiff <= -8 && pctChange <= -15 {
+                    // Significant decline — stress/overtraining/illness warning
+                    alerts.append("⚠️ HRV近3天均值\(Int(recentAvg))ms，比之前基线（\(Int(baselineAvg))ms）下降\(Int(abs(absDiff)))ms（\(Int(abs(pctChange)))%），可能提示压力累积、恢复不足或身体疲劳。HRV下降通常先于静息心率升高，建议关注休息和恢复")
+                } else if absDiff >= 8 && pctChange >= 15 {
+                    // Significant improvement — positive reinforcement
+                    alerts.append("💚 HRV近3天均值\(Int(recentAvg))ms，比之前基线（\(Int(baselineAvg))ms）提升\(Int(absDiff))ms（+\(Int(pctChange))%），身体恢复状态良好👍")
                 }
             }
         }

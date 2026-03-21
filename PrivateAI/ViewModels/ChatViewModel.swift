@@ -116,6 +116,11 @@ final class ChatViewModel: ObservableObject {
     func sendMessage() {
         let text = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
+        // Prevent concurrent GPT requests. The UI layer (InputBar) disables the
+        // send button while thinking, but this guard is a belt-and-suspenders
+        // safety net against programmatic callers (voice input, quick actions,
+        // suggested questions) that might bypass the UI disabled state.
+        guard !isThinking else { return }
 
         let userMsg = ChatMessage(content: text, isUser: true)
         append(message: userMsg)

@@ -107,6 +107,7 @@ struct ChatView: View {
                 InputBar(
                     text: $viewModel.inputText,
                     isListening: viewModel.isListening,
+                    isThinking: viewModel.isThinking,
                     isFocused: $inputFocused,
                     onSend: {
                         let impact = UIImpactFeedbackGenerator(style: .light)
@@ -116,6 +117,7 @@ struct ChatView: View {
                     },
                     onVoice: viewModel.toggleVoiceInput,
                     onQuickAction: { command in
+                        guard !viewModel.isThinking else { return }
                         viewModel.inputText = command
                         viewModel.sendMessage()
                     }
@@ -418,6 +420,9 @@ struct QuickActionMenu: View {
 struct InputBar: View {
     @Binding var text: String
     let isListening: Bool
+    /// When true, send button and text-field submit are disabled to prevent
+    /// concurrent GPT requests (which cause out-of-order responses and token waste).
+    var isThinking: Bool = false
     var isFocused: FocusState<Bool>.Binding
     let onSend: () -> Void
     let onVoice: () -> Void
@@ -481,7 +486,7 @@ struct InputBar: View {
                     .background(Color(.systemGray6))
                     .clipShape(RoundedRectangle(cornerRadius: 20))
                     .focused(isFocused)
-                    .onSubmit { onSend() }
+                    .onSubmit { if !isThinking { onSend() } }
                     .onTapGesture {
                         if showQuickActions {
                             withAnimation(.easeOut(duration: 0.2)) {
@@ -496,7 +501,7 @@ struct InputBar: View {
                         .font(.title2)
                         .foregroundColor(text.isEmpty ? .secondary : Color("AccentPrimary"))
                 }
-                .disabled(text.isEmpty)
+                .disabled(text.isEmpty || isThinking)
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 10)

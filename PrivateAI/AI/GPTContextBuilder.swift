@@ -5078,12 +5078,12 @@ final class GPTContextBuilder {
             lines.append(line)
         }
 
-        // Per-workout-type aggregate stats — pre-computed so GPT can directly answer
-        // "最近跑了多少公里？" "这周游泳消耗了多少卡路里？" "跑步平均心率多少？"
-        // without manually scanning and summing individual workout entries (error-prone).
-        // Groups by typeName (e.g. "跑步", "步行") and aggregates duration, distance,
-        // calories, and heart rate. When there's only one type, still show the aggregate
-        // since it answers "共跑了多远？" questions.
+        // Per-workout-type aggregate stats, SPLIT BY WEEK — pre-computed so GPT can
+        // directly answer "这周跑了多少公里？" "上周游泳消耗了多少卡路里？" without
+        // manually scanning individual workout entries (error-prone). Previously this
+        // combined all 14 days into a single aggregate, causing GPT to give wrong answers
+        // for week-specific questions: "这周跑了15km" when only 5km was this week and
+        // 10km was last week. Splitting by week matches buildPerWeekStats pattern.
         struct WorkoutTypeStats {
             var count: Int = 0
             var totalMinutes: Double = 0
@@ -5094,44 +5094,91 @@ final class GPTContextBuilder {
             var maxHeartRate: Double = 0
             var emoji: String = ""
         }
-        var typeStats: [String: WorkoutTypeStats] = [:]
-        for item in allWorkouts {
-            let w = item.workout
-            let name = w.typeName
-            var stats = typeStats[name] ?? WorkoutTypeStats()
-            stats.count += 1
-            stats.totalMinutes += w.duration / 60
-            stats.totalCalories += w.totalCalories
-            stats.totalDistanceM += w.totalDistance
-            if w.avgHeartRate > 0 {
-                stats.heartRateSum += w.avgHeartRate
-                stats.heartRateCount += 1
+
+        // Helper to format a single workout type stat line
+        let formatTypeStat: (String, WorkoutTypeStats) -> String = { name, stats in
+            var desc = "\(stats.emoji) \(name)：\(stats.count)次，共\(Int(stats.totalMinutes))分钟"
+            if stats.totalCalories > 0 {
+                desc += "，\(Int(stats.totalCalories))kcal"
             }
-            if w.maxHeartRate > stats.maxHeartRate {
-                stats.maxHeartRate = w.maxHeartRate
+            if stats.totalDistanceM > 100 {
+                desc += "，\(String(format: "%.1f", stats.totalDistanceM / 1000))km"
             }
-            stats.emoji = w.typeEmoji
-            typeStats[name] = stats
+            if stats.heartRateCount > 0 {
+                let avgHR = Int(stats.heartRateSum / Double(stats.heartRateCount))
+                desc += "，均心率\(avgHR)bpm"
+                if stats.maxHeartRate > 0 {
+                    desc += "(最高\(Int(stats.maxHeartRate)))"
+                }
+            }
+            return desc
         }
-        let sortedTypes = typeStats.sorted { $0.value.count > $1.value.count }
-        if !sortedTypes.isEmpty {
-            lines.append("运动类型汇总（⚠️ 用户问「跑了多少公里」「游泳消耗多少」等按类型聚合的问题时，直接引用以下数据，不要自己逐行加总）：")
-            for (name, stats) in sortedTypes {
-                var desc = "\(stats.emoji) \(name)：\(stats.count)次，共\(Int(stats.totalMinutes))分钟"
-                if stats.totalCalories > 0 {
-                    desc += "，\(Int(stats.totalCalories))kcal"
+
+        // Accumulate stats into a dictionary for a given set of workout items
+        let accumulateStats: ([(date: Date, workout: WorkoutRecord)]) -> [String: WorkoutTypeStats] = { items in
+            var stats: [String: WorkoutTypeStats] = [:]
+            for item in items {
+                let w = item.workout
+                let name = w.typeName
+                var s = stats[name] ?? WorkoutTypeStats()
+                s.count += 1
+                s.totalMinutes += w.duration / 60
+                s.totalCalories += w.totalCalories
+                s.totalDistanceM += w.totalDistance
+                if w.avgHeartRate > 0 {
+                    s.heartRateSum += w.avgHeartRate
+                    s.heartRateCount += 1
                 }
-                if stats.totalDistanceM > 100 {
-                    desc += "，\(String(format: "%.1f", stats.totalDistanceM / 1000))km"
+                if w.maxHeartRate > s.maxHeartRate {
+                    s.maxHeartRate = w.maxHeartRate
                 }
-                if stats.heartRateCount > 0 {
-                    let avgHR = Int(stats.heartRateSum / Double(stats.heartRateCount))
-                    desc += "，均心率\(avgHR)bpm"
-                    if stats.maxHeartRate > 0 {
-                        desc += "(最高\(Int(stats.maxHeartRate)))"
-                    }
+                s.emoji = w.typeEmoji
+                stats[name] = s
+            }
+            return stats
+        }
+
+        // Split workouts into this week vs last week (exclude today's partial data)
+        let thisWeekWorkouts = allWorkouts.filter {
+            cal.startOfDay(for: $0.date) >= wkThisMonday && !cal.isDateInToday($0.date)
+        }
+        let lastWeekWorkouts = allWorkouts.filter {
+            cal.startOfDay(for: $0.date) < wkThisMonday
+        }
+        // Today's workouts shown separately (already complete sessions, unlike steps/exercise minutes)
+        let todayWorkouts = allWorkouts.filter { cal.isDateInToday($0.date) }
+
+        let thisWeekStats = accumulateStats(thisWeekWorkouts)
+        let lastWeekStats = accumulateStats(lastWeekWorkouts)
+        let todayStats = accumulateStats(todayWorkouts)
+
+        let hasAnyStats = !thisWeekStats.isEmpty || !lastWeekStats.isEmpty || !todayStats.isEmpty
+        if hasAnyStats {
+            lines.append("运动类型汇总（⚠️ 用户问「这周跑了多少公里」「上周游泳消耗多少」等问题时，直接引用对应周的数据，不要自己逐行加总，不要混淆本周和上周）：")
+
+            // Today (if any workouts today)
+            if !todayStats.isEmpty {
+                let sortedToday = todayStats.sorted { $0.value.count > $1.value.count }
+                lines.append("  今天：\(sortedToday.map { formatTypeStat($0.key, $0.value) }.joined(separator: "；"))")
+            }
+
+            // This week (Mon→yesterday, excluding today's partial)
+            if !thisWeekStats.isEmpty {
+                let daysSoFar = wkDaysSinceMonday // Mon=0..Sun=6, represents completed days before today
+                let sortedThis = thisWeekStats.sorted { $0.value.count > $1.value.count }
+                lines.append("  本周（周一至昨天，\(daysSoFar)天）：")
+                for (name, stats) in sortedThis {
+                    lines.append("    \(formatTypeStat(name, stats))")
                 }
-                lines.append(desc)
+            }
+
+            // Last week (full Mon→Sun)
+            if !lastWeekStats.isEmpty {
+                let sortedLast = lastWeekStats.sorted { $0.value.count > $1.value.count }
+                lines.append("  上周（周一至周日，7天）：")
+                for (name, stats) in sortedLast {
+                    lines.append("    \(formatTypeStat(name, stats))")
+                }
             }
         }
 

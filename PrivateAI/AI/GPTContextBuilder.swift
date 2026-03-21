@@ -358,6 +358,7 @@ final class GPTContextBuilder {
         - ⚠️ 体重数据说明：趋势表和周统计中会包含体重数据（如有记录）。体重数据来自智能体重秤或手动录入，不一定每天都有。回答体重趋势时，关注变化方向和幅度，短期波动（0.5kg以内）通常是正常的水分变化，不要过度解读。如果只有1-2天的记录，说明数据有限，不宜下趋势结论。
         - [生活模式洞察] 包含系统自动分析的跨领域关联（如运动→睡眠、晚睡→步数、会议→运动等）。用户问「为什么睡不好」「运动有用吗」「怎么改善」「有什么规律」时，直接引用这些洞察数据回答，比泛泛建议更有说服力。例如不要说「建议多运动有助睡眠」，而是说「从你的数据来看，运动的日子平均多睡X小时」。
         - 不要重复罗列所有数据，只回答用户问到的内容。
+        - [生活记录]中包含预计算的「心情分布」「心情趋势」和「分类心情」数据。用户问「最近心情怎么样」「情绪好吗」「开心的时候多吗」时，直接引用这些预计算数据，不要自己从记录列表中逐条数 emoji。如果心情趋势显示下滑，可以关切地询问用户是否需要聊聊。
         - 如果用户提到家人（如"我妈"、"我爸"等），参考下方[用户信息]中的家庭成员数据来回答。
         - 日历日程中 [日历名] 标签表示事件来源（如 [Work]、[个人]、[家庭]），用户问「工作会议」时参考此标签区分。日程的「备注」字段包含议程或描述，用户问「那个会议聊什么」时可引用。日历数据已标注星期几和相对日期（昨天/前天/明天/后天），用户问「周三有什么安排」时直接匹配对应日期即可。
         - 今天的日程带有时间状态标注（已结束/进行中），回答日程问题时优先告诉用户接下来的安排，而不是罗列全天。例如下午3点问「今天有什么安排」，重点说还有哪些未完成的，已结束的可简要带过。
@@ -4467,6 +4468,15 @@ final class GPTContextBuilder {
             lines.append("分类：\(summary.joined(separator: "、"))")
         }
 
+        // MOOD ANALYSIS — pre-computed so GPT can directly answer "心情怎么样？"
+        // "最近情绪好吗？" "我开心的时候多吗？" without manually counting emoji from
+        // 15 individual entries. Manual counting across entries is exactly the pattern
+        // that causes GPT miscounts (per SYSTEM prompt: "绝对不要自己手动数").
+        let moodAnalysis = buildMoodAnalysis(events, cal: cal)
+        if !moodAnalysis.isEmpty {
+            lines.append(moodAnalysis)
+        }
+
         for e in events.prefix(15) {
             let mood = MoodType(rawValue: e.mood ?? "") ?? .neutral
             let category = EventCategory(rawValue: e.category ?? "life") ?? .life
@@ -4505,6 +4515,128 @@ final class GPTContextBuilder {
             lines.append(line)
         }
         return lines.joined(separator: "\n")
+    }
+
+    // MARK: - Mood Analysis
+
+    /// Builds a pre-computed mood summary from life events so GPT can directly answer
+    /// "心情怎么样？" / "最近情绪好吗？" / "我开心的时候多吗？" without manually scanning
+    /// and counting mood emojis across 15 entries — a task GPT frequently miscounts.
+    ///
+    /// Includes:
+    /// 1. Mood distribution (positive/neutral/negative counts)
+    /// 2. Mood trend (recent vs older entries — getting happier or sadder?)
+    /// 3. Mood × category correlation (are work events more stressful? social events happier?)
+    private func buildMoodAnalysis(_ events: [CDLifeEvent], cal: Calendar) -> String {
+        // Need at least 3 events for meaningful analysis
+        guard events.count >= 3 else { return "" }
+
+        // Classify moods into positive/neutral/negative groups
+        var posCount = 0  // great, good
+        var neuCount = 0  // neutral
+        var negCount = 0  // tired, stressed, sad
+        var moodCounts: [String: Int] = [:]  // label → count
+
+        for e in events {
+            let mood = MoodType(rawValue: e.mood ?? "") ?? .neutral
+            moodCounts["\(mood.emoji)\(mood.label)", default: 0] += 1
+            switch mood {
+            case .great, .good: posCount += 1
+            case .neutral: neuCount += 1
+            case .tired, .stressed, .sad: negCount += 1
+            }
+        }
+
+        let total = events.count
+        var parts: [String] = []
+
+        // Overall mood distribution
+        let distParts = moodCounts.sorted { $0.value > $1.value }
+            .map { "\($0.key)\($0.value)次" }
+        parts.append("心情分布（\(total)条记录）：\(distParts.joined(separator: "、"))")
+
+        // Positive/negative ratio — a single-line summary GPT can quote directly
+        let posPct = Int(Double(posCount) / Double(total) * 100)
+        let negPct = Int(Double(negCount) / Double(total) * 100)
+        if posCount > negCount * 2 {
+            parts.append("整体偏积极（\(posPct)%正面，\(negPct)%负面）")
+        } else if negCount > posCount * 2 {
+            parts.append("整体偏低落（\(negPct)%负面，\(posPct)%正面）")
+        } else if posCount > 0 || negCount > 0 {
+            parts.append("正面\(posPct)%，负面\(negPct)%，中性\(100 - posPct - negPct)%")
+        }
+
+        // Mood trend: compare recent half vs older half
+        // Split by chronological order (events are already newest-first from fetchRecent)
+        if events.count >= 6 {
+            let midpoint = events.count / 2
+            let recentHalf = Array(events.prefix(midpoint))  // newer entries
+            let olderHalf = Array(events.suffix(from: midpoint))  // older entries
+
+            // Score: great=2, good=1, neutral=0, tired=-1, stressed=-1, sad=-2
+            let moodScore: (CDLifeEvent) -> Int = { e in
+                let mood = MoodType(rawValue: e.mood ?? "") ?? .neutral
+                switch mood {
+                case .great: return 2
+                case .good: return 1
+                case .neutral: return 0
+                case .tired: return -1
+                case .stressed: return -1
+                case .sad: return -2
+                }
+            }
+            let recentAvg = Double(recentHalf.map(moodScore).reduce(0, +)) / Double(recentHalf.count)
+            let olderAvg = Double(olderHalf.map(moodScore).reduce(0, +)) / Double(olderHalf.count)
+            let diff = recentAvg - olderAvg
+
+            if diff >= 0.5 {
+                parts.append("趋势：近期心情变好 ↑（较早期记录改善）")
+            } else if diff <= -0.5 {
+                parts.append("趋势：近期心情下滑 ↓（较早期记录变差）")
+            } else {
+                parts.append("趋势：心情基本稳定 →")
+            }
+        }
+
+        // Mood × category correlation — "工作的时候心情怎么样？"
+        // Only show if there are at least 2 categories with 2+ entries each
+        var catMoodScores: [String: (total: Int, count: Int)] = [:]
+        for e in events {
+            let cat = EventCategory(rawValue: e.category ?? "life") ?? .life
+            let mood = MoodType(rawValue: e.mood ?? "") ?? .neutral
+            let score: Int
+            switch mood {
+            case .great: score = 2
+            case .good: score = 1
+            case .neutral: score = 0
+            case .tired: score = -1
+            case .stressed: score = -1
+            case .sad: score = -2
+            }
+            if catMoodScores[cat.label] == nil {
+                catMoodScores[cat.label] = (total: 0, count: 0)
+            }
+            catMoodScores[cat.label]!.total += score
+            catMoodScores[cat.label]!.count += 1
+        }
+
+        let qualifiedCats = catMoodScores.filter { $0.value.count >= 2 }
+        if qualifiedCats.count >= 2 {
+            let ranked = qualifiedCats
+                .map { (cat: $0.key, avg: Double($0.value.total) / Double($0.value.count), count: $0.value.count) }
+                .sorted { $0.avg > $1.avg }
+
+            let catMoodParts = ranked.map { item -> String in
+                let indicator: String
+                if item.avg >= 1.0 { indicator = "😊" }
+                else if item.avg >= 0 { indicator = "😐" }
+                else { indicator = "😟" }
+                return "\(item.cat)\(indicator)(\(item.count)条)"
+            }
+            parts.append("分类心情：\(catMoodParts.joined(separator: "、"))")
+        }
+
+        return parts.joined(separator: "\n")
     }
 
     // MARK: - Weekly Workout History

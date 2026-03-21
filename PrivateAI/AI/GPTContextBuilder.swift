@@ -823,12 +823,28 @@ final class GPTContextBuilder {
             "头疼", "头痛", "胸闷", "心慌", "难受",
             // Activity Rings (Apple Watch) — users commonly ask "圆环合了吗？"
             "圆环", "活动圆环", "站立", "站了",
+            // Step count with unit/quantifier — bare "步" excluded (false positives: "下一步",
+            // "进步", "步骤") but "N万步"/"N千步"/"多少步"/"几步" are unambiguously health.
+            // Without these, "一万步够吗"/"日均多少步"/"8000步" miss health detection entirely,
+            // causing all sections to be included and wasting ~40% tokens.
+            "万步", "千步", "多少步", "几步",
+            // Calorie unit variants — "卡路里" is in the list but "千卡" and "大卡" are
+            // common Chinese shorthand. "消耗了500千卡" would miss without these.
+            "千卡", "大卡",
             "exercise", "sleep", "step", "heart", "workout", "calorie", "weight",
-            "hrv", "vo2", "bpm", "swimming", "cycling", "yoga", "hiking", "running",
+            "hrv", "vo2", "bpm", "kcal", "swimming", "cycling", "yoga", "hiking", "running",
             "stand", "ring", "activity ring", "health", "body",
             "stress", "anxious", "anxiety", "tired", "fatigue", "recovery", "relax"
         ]
         if healthWords.contains(where: { lower.contains($0) }) {
+            topics.insert(.health)
+        }
+        // Regex fallback for numeric step patterns: "8000步", "5000步", "10000步".
+        // These are extremely common queries ("够8000步了吗", "今天3000步") that
+        // don't match any compound keyword above because bare "步" is excluded.
+        // The digit prefix makes false positives impossible (no Chinese word is "N步"
+        // in a non-health context).
+        if !topics.contains(.health) && lower.range(of: #"\d+步"#, options: .regularExpression) != nil {
             topics.insert(.health)
         }
 

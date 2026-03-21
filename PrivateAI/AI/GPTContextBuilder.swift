@@ -2461,6 +2461,23 @@ final class GPTContextBuilder {
                 sleepDesc += "，均入睡\(String(format: "%02d:%02d", hh, mm))"
             }
 
+            // Average wake time — completes the sleep schedule picture.
+            // Users commonly ask "这周几点起？" or "上周起得早吗？" and without
+            // pre-computed wake time in per-week stats, GPT has to scan individual
+            // sleep analysis rows and manually average them — often getting it wrong.
+            // This parallels the onset time above for a complete bedtime→wake pair.
+            let wakes = sleepDays.compactMap { $0.wakeTime }
+            if wakes.count >= 2 {
+                let wakeMinutes = wakes.map { wake -> Double in
+                    let comps = cal.dateComponents([.hour, .minute], from: wake)
+                    return Double((comps.hour ?? 0) * 60 + (comps.minute ?? 0))
+                }
+                let wakeMean = wakeMinutes.reduce(0, +) / Double(wakeMinutes.count)
+                let wakeHH = Int(wakeMean) / 60
+                let wakeMM = Int(wakeMean) % 60
+                sleepDesc += "，均起床\(String(format: "%02d:%02d", wakeHH, wakeMM))"
+            }
+
             items.append(sleepDesc)
         }
 
@@ -2695,6 +2712,38 @@ final class GPTContextBuilder {
                         deltas.append("入睡时间：本周均\(thisTimeStr) vs 上周均\(lastTimeStr)，晚了约\(onsetDiffMins)分钟")
                     } else {
                         deltas.append("入睡时间：本周均\(thisTimeStr) vs 上周均\(lastTimeStr)，早了约\(abs(onsetDiffMins))分钟👍")
+                    }
+                }
+            }
+
+            // Wake time comparison — completes the sleep schedule picture.
+            // Bedtime shift is already tracked above; wake time shift answers the equally
+            // common question "这周比上周起得早吗？" or "最近是不是越起越晚？"
+            // Without this, GPT sees bedtime deltas but has to manually compute wake time
+            // changes from individual sleep analysis rows — frequently getting it wrong.
+            let thisWakes = thisSleepDays.compactMap { $0.wakeTime }
+            let lastWakes = lastSleepDays.compactMap { $0.wakeTime }
+            if thisWakes.count >= 2 && lastWakes.count >= 2 {
+                // Wake times are morning times — normalize as minutes from midnight
+                let toWakeMins: (Date) -> Double = { time in
+                    let comps = cal.dateComponents([.hour, .minute], from: time)
+                    return Double((comps.hour ?? 0) * 60 + (comps.minute ?? 0))
+                }
+                let wakeToTimeStr: (Double) -> String = { mins in
+                    let totalMins = Int(mins.rounded())
+                    return String(format: "%02d:%02d", totalMins / 60, totalMins % 60)
+                }
+                let thisWakeAvg = thisWakes.map(toWakeMins).reduce(0, +) / Double(thisWakes.count)
+                let lastWakeAvg = lastWakes.map(toWakeMins).reduce(0, +) / Double(lastWakes.count)
+                let wakeDiffMins = Int((thisWakeAvg - lastWakeAvg).rounded())
+                // Only report if ≥10 min difference — smaller shifts are normal variation
+                if abs(wakeDiffMins) >= 10 {
+                    let thisWakeStr = wakeToTimeStr(thisWakeAvg)
+                    let lastWakeStr = wakeToTimeStr(lastWakeAvg)
+                    if wakeDiffMins > 0 {
+                        deltas.append("起床时间：本周均\(thisWakeStr) vs 上周均\(lastWakeStr)，晚了约\(wakeDiffMins)分钟")
+                    } else {
+                        deltas.append("起床时间：本周均\(thisWakeStr) vs 上周均\(lastWakeStr)，早了约\(abs(wakeDiffMins))分钟👍")
                     }
                 }
             }

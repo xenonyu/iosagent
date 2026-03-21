@@ -5535,6 +5535,67 @@ final class GPTContextBuilder {
             }
         }
 
+        // 10. Single-day anomaly detection — flag when yesterday's key metrics
+        //     deviate significantly from the personal baseline (recent average).
+        //     Multi-day pattern checks above (#1-#9) catch trends and streaks, but
+        //     miss single-day outliers: "you walked 12,000 steps yesterday — nearly
+        //     double your average!" or "only 2,000 steps yesterday, way below your
+        //     usual 8,000". These single-day deviations are exactly the kind of
+        //     "mirror" insight users expect: GPT can proactively mention them in
+        //     greetings ("昨天走了好多！") or connect them to causes ("步数骤降——
+        //     是因为昨天有5个会议吗？"). Without pre-computing, GPT would need to
+        //     mentally compare yesterday's row against the 14-day trend table average,
+        //     which it often doesn't bother doing.
+        //
+        //     Uses completed days excluding yesterday for baseline, then compares
+        //     yesterday's values. Requires ≥5 baseline days for a stable average.
+        if let yesterday = completed.last, cal.isDateInYesterday(yesterday.date) {
+            let baselineDays = completed.dropLast() // all completed days except yesterday
+            let baselineWithSteps = baselineDays.filter { $0.steps > 0 }
+            let baselineWithSleep = baselineDays.filter { $0.sleepHours > 0 }
+
+            // Steps anomaly — ±50% from personal average AND ≥2000 step absolute diff.
+            // The absolute threshold prevents noise on low-step users (500→800 is +60%
+            // but not noteworthy). The percentage threshold prevents noise on high-step
+            // users (10000→11500 is +1500 but only 15%).
+            if baselineWithSteps.count >= 5 && yesterday.steps > 0 {
+                let baseAvg = baselineWithSteps.map(\.steps).reduce(0, +) / Double(baselineWithSteps.count)
+                let diff = yesterday.steps - baseAvg
+                let pctChange = baseAvg > 0 ? (diff / baseAvg) * 100 : 0
+                if diff >= 2000 && pctChange >= 50 {
+                    alerts.append("👟 昨天步数\(Int(yesterday.steps))步，比近期日均（\(Int(baseAvg))步）多\(Int(diff))步（+\(Int(pctChange))%），活动量明显增加")
+                } else if diff <= -2000 && pctChange <= -50 {
+                    alerts.append("👟 昨天步数仅\(Int(yesterday.steps))步，比近期日均（\(Int(baseAvg))步）少\(Int(abs(diff)))步（\(Int(pctChange))%），活动量明显减少")
+                }
+            }
+
+            // Sleep anomaly — ±1.5h from personal average (clinically meaningful change).
+            // A single night of significantly short/long sleep is worth flagging because
+            // it directly impacts next-day performance and mood.
+            if baselineWithSleep.count >= 5 && yesterday.sleepHours > 0 {
+                let baseAvg = baselineWithSleep.map(\.sleepHours).reduce(0, +) / Double(baselineWithSleep.count)
+                let diff = yesterday.sleepHours - baseAvg
+                if diff >= 1.5 {
+                    alerts.append("😴 昨晚睡了\(String(format: "%.1f", yesterday.sleepHours))h，比近期日均（\(String(format: "%.1f", baseAvg))h）多\(String(format: "%.1f", diff))h，可能在补觉")
+                } else if diff <= -1.5 {
+                    alerts.append("😴 昨晚只睡了\(String(format: "%.1f", yesterday.sleepHours))h，比近期日均（\(String(format: "%.1f", baseAvg))h）少\(String(format: "%.1f", abs(diff)))h，今天可能会感觉疲劳")
+                }
+            }
+
+            // Exercise anomaly — yesterday had an unusually long workout compared to
+            // average exercise-day duration. Flags personal bests and unusual efforts.
+            let baselineExDays = baselineDays.filter { $0.exerciseMinutes > 0 }
+            if baselineExDays.count >= 3 && yesterday.exerciseMinutes > 0 {
+                let baseAvgEx = baselineExDays.map(\.exerciseMinutes).reduce(0, +) / Double(baselineExDays.count)
+                let exDiff = yesterday.exerciseMinutes - baseAvgEx
+                // Flag when exercise is 2x the average AND ≥30 min absolute extra
+                // (avoids "20→45min" noise while catching "30→90min" real anomalies)
+                if exDiff >= 30 && yesterday.exerciseMinutes >= baseAvgEx * 2 {
+                    alerts.append("🏃 昨天运动\(Int(yesterday.exerciseMinutes))分钟，是近期运动日平均（\(Int(baseAvgEx))分钟）的\(String(format: "%.1f", yesterday.exerciseMinutes / baseAvgEx))倍，超常发挥💪")
+                }
+            }
+        }
+
         guard !alerts.isEmpty else { return "" }
         return "[健康趋势提醒]\n⚠️ 以下为系统自动检测的健康模式变化，在相关问题中可主动提及，但不要在不相关的对话中硬塞：\n" + alerts.joined(separator: "\n")
     }

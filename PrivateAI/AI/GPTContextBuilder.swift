@@ -1353,11 +1353,19 @@ final class GPTContextBuilder {
         // Also handle colloquial aliases:
         //  - "星期天" / "周天" — very common colloquial Chinese for Sunday
         //  - "礼拜一"~"礼拜天"/"礼拜日" — regional/dialect variant used widely
+        //  - English full weekday names — SYSTEM prompt says "用英文提问，用英文回答",
+        //    so English queries like "what did I do on Wednesday?" need date resolution.
+        //    Without these, GPT receives no temporal hint for English weekday references
+        //    and must guess the date — frequently picking the wrong week.
+        //    Use full names only to avoid false matches ("mon" in "money", "sat" in "satisfaction").
         let extraAliases: [(String, Int)] = [
             ("星期天", 1), ("周天", 1),
             ("礼拜一", 2), ("礼拜二", 3), ("礼拜三", 4),
             ("礼拜四", 5), ("礼拜五", 6), ("礼拜六", 7),
-            ("礼拜天", 1), ("礼拜日", 1)
+            ("礼拜天", 1), ("礼拜日", 1),
+            // English weekday names (full form to avoid false positives)
+            ("monday", 2), ("tuesday", 3), ("wednesday", 4),
+            ("thursday", 5), ("friday", 6), ("saturday", 7), ("sunday", 1)
         ]
 
         // Pre-check "上周X", "下周X", and "这周X" prefixes to avoid ambiguous fallback.
@@ -1370,11 +1378,27 @@ final class GPTContextBuilder {
         // Without this check, "这周三" falls through to the bare "周三" handler which
         // presents both this-week and last-week options as ambiguous — even though
         // the user's intent is clear.
-        let hasLastWeekPrefix = ["上周", "上个星期", "上星期", "上个礼拜", "上礼拜"]
+        // Include English prefixes so "last Monday", "next Friday", "this Wednesday"
+        // resolve unambiguously, matching the Chinese prefix behavior. Without these,
+        // "last monday" falls through to the bare weekday handler which shows both
+        // this-week and last-week dates as ambiguous options.
+        //
+        // English prefix detection: match "last/next/this" only when followed by a weekday
+        // name (via regex) to avoid false positives from "at last..." or "this is...".
+        // Chinese prefixes don't need this guard because "上周"/"下周" are unambiguous.
+        let englishWeekdayNames = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+        let hasEnglishLastPrefix = englishWeekdayNames.contains { lower.contains("last \($0)") }
+        let hasEnglishNextPrefix = englishWeekdayNames.contains { lower.contains("next \($0)") }
+        let hasEnglishThisPrefix = englishWeekdayNames.contains { lower.contains("this \($0)") }
+
+        let hasLastWeekPrefix = hasEnglishLastPrefix
+            || ["上周", "上个星期", "上星期", "上个礼拜", "上礼拜"]
             .contains(where: { lower.contains($0) })
-        let hasNextWeekPrefix = ["下周", "下个星期", "下星期", "下个礼拜", "下礼拜"]
+        let hasNextWeekPrefix = hasEnglishNextPrefix
+            || ["下周", "下个星期", "下星期", "下个礼拜", "下礼拜"]
             .contains(where: { lower.contains($0) })
-        let hasThisWeekPrefix = ["这周", "本周", "这个星期", "这星期", "这个礼拜", "这礼拜"]
+        let hasThisWeekPrefix = hasEnglishThisPrefix
+            || ["这周", "本周", "这个星期", "这星期", "这个礼拜", "这礼拜"]
             .contains(where: { lower.contains($0) })
 
         var resolvedWeekdays = Set<Int>() // avoid duplicates (周三 + 星期三)

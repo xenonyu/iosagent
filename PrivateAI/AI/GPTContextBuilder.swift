@@ -1203,6 +1203,71 @@ final class GPTContextBuilder {
             hints.append("「大前天」= \(dateFmt.string(from: threeDaysAgo))（\(weekdayFmt.string(from: threeDaysAgo))）")
         }
 
+        // --- Time-of-day period hints ---
+        // "今天上午", "昨天下午", "今天早上" etc. are extremely common Chinese query patterns.
+        // Without time-period guidance, GPT sees all events/activities for the day and may
+        // list everything instead of filtering to the requested period. For example:
+        //   "今天上午有几个会？" → GPT should count only morning meetings (before 12:00)
+        //   "昨天下午去了哪？" → GPT should look at afternoon location records (12:00-18:00)
+        //   "今天早上运动了吗？" → GPT should check for morning workouts only
+        //
+        // Time periods (Chinese standard usage):
+        //   早上/上午 = roughly 06:00-12:00
+        //   中午     = roughly 11:00-13:00
+        //   下午     = roughly 12:00-18:00
+        //   傍晚     = roughly 17:00-19:00
+        //   晚上     = roughly 18:00-24:00 (handled separately for "今晚"/"昨晚" sleep)
+        //
+        // Only emit a hint when a time-period word co-occurs with a day reference.
+        // Bare "上午" without a day reference is ambiguous (probably means today, which
+        // is already implicitly "now" context), so we skip it to avoid noise.
+        let timePeriods: [(keywords: [String], label: String, range: String)] = [
+            (["早上", "早晨", "清晨", "一早", "early morning", "this morning"],
+             "早上/早晨", "大约06:00~09:00"),
+            (["上午", "morning"],
+             "上午", "大约06:00~12:00"),
+            (["中午", "午间", "午饭", "noon", "midday"],
+             "中午", "大约11:00~13:00"),
+            (["下午", "afternoon"],
+             "下午", "大约12:00~18:00"),
+            (["傍晚", "黄昏", "evening"],
+             "傍晚", "大约17:00~19:00")
+        ]
+
+        // Day anchors with their resolved dates — check if the query combines a day + period
+        let dayAnchors: [(keywords: [String], dayLabel: String, date: Date)] = [
+            (["今天", "今日", "today"], "今天", now),
+            (["昨天", "昨日", "yesterday"], "昨天", yesterdayDate),
+            (["前天", "前日"], "前天", twoDaysAgo),
+            (["明天", "明日", "tomorrow"], "明天", tomorrowDate)
+        ]
+
+        for period in timePeriods {
+            guard period.keywords.contains(where: { lower.contains($0) }) else { continue }
+            let matchedPeriodKeyword = period.keywords.first { lower.contains($0) } ?? period.label
+
+            for anchor in dayAnchors {
+                guard anchor.keywords.contains(where: { lower.contains($0) }) else { continue }
+                // Avoid duplicate hints: "今天晚上"/"今晚"/"昨天晚上"/"昨晚" already have
+                // dedicated handlers above with sleep-attribution-aware logic. Don't emit
+                // a generic "晚上=18:00~24:00" that would conflict with those nuanced hints.
+                // Similarly, "早上"/"上午" combined with "今天" at late night hours is already
+                // handled by the "今天" late-night handler above.
+                // This section focuses on daytime period qualifiers (上午/下午/中午/傍晚)
+                // that the existing handlers don't cover.
+                hints.append("「\(anchor.dayLabel)\(matchedPeriodKeyword)」→ 筛选\(anchor.dayLabel)（\(dateFmt.string(from: anchor.date))）中\(period.range)时段的数据（日历事件、运动记录、位置记录等）")
+                break // Only match the first day anchor for this period
+            }
+
+            // Bare time-period without explicit day anchor — likely means "today"
+            // Only hint when no day anchor was found (to avoid duplicate hints)
+            let hasDayAnchor = dayAnchors.contains { $0.keywords.contains(where: { lower.contains($0) }) }
+            if !hasDayAnchor {
+                // Infer "today" for bare period references like just "上午有会吗？"
+                hints.append("「\(matchedPeriodKeyword)」→ 默认指今天（\(dateFmt.string(from: now))）的\(period.range)时段")
+            }
+        }
+
         // "明天" / "tomorrow"
         let tomorrowWords = ["明天", "明日", "tomorrow"]
         if tomorrowWords.contains(where: { lower.contains($0) }) {

@@ -2244,6 +2244,17 @@ final class GPTContextBuilder {
             lines.append(perWeekStats)
         }
 
+        // GOAL PROGRESS — pre-computed comparison of current week's data against
+        // health benchmarks so GPT can directly answer "运动够了吗？" / "步数达标了吗？"
+        // / "这周睡够了没？" with precise gap numbers. Without this, GPT has to
+        // cross-reference [健康参考标准] with [本周] stats and mentally subtract —
+        // frequently miscalculating (e.g. comparing daily avg to weekly total, or
+        // using the wrong benchmark for the user's age group).
+        let goalProgress = buildGoalProgress(summaries: Array(summaries), cal: cal)
+        if !goalProgress.isEmpty {
+            lines.append(goalProgress)
+        }
+
         return lines.joined(separator: "\n")
     }
 
@@ -2832,6 +2843,142 @@ final class GPTContextBuilder {
         // way to compare weeks of different lengths (this week may have 3 completed days
         // vs last week's full 7 days). This is stated explicitly so GPT quotes it properly.
         return "周环比（本周\(thisWeek.count)天日均 vs 上周\(lastWeek.count)天日均）：\(deltas.joined(separator: "，"))"
+    }
+
+    /// Pre-computes goal progress for the current week against health benchmarks.
+    /// Users commonly ask "运动够了吗？" "步数达标吗？" "这周睡够了没？" — GPT has
+    /// both the benchmarks and the weekly stats, but has to mentally cross-reference
+    /// them and often miscalculates (confusing daily vs weekly targets, using the
+    /// wrong age-bracket benchmark, comparing incomplete week totals to full-week
+    /// targets without prorating). Pre-computing these comparisons eliminates the
+    /// entire error class and lets GPT give confident, data-backed answers.
+    private func buildGoalProgress(summaries: [HealthSummary], cal: Calendar) -> String {
+        let now = Date()
+        let todayWeekday = cal.component(.weekday, from: now)
+        let daysSinceMonday = (todayWeekday + 5) % 7 // Mon=0..Sun=6
+        let thisMonday = cal.date(byAdding: .day, value: -daysSinceMonday, to: cal.startOfDay(for: now))!
+
+        // This week's completed days (Mon..yesterday, excluding today's partial data)
+        let thisWeekCompleted = summaries.filter { s in
+            let dayStart = cal.startOfDay(for: s.date)
+            return dayStart >= thisMonday && !cal.isDateInToday(s.date)
+        }
+        let todaySummary = summaries.first { cal.isDateInToday($0.date) }
+
+        // Need at least 1 completed day for meaningful goal assessment
+        guard !thisWeekCompleted.isEmpty else { return "" }
+
+        let completedCount = thisWeekCompleted.count
+        let hourOfDay = cal.component(.hour, from: now)
+
+        // Compute user's age from profile birthday for age-adjusted targets
+        let userAge: Int? = {
+            guard let bd = profile.birthday else { return nil }
+            let age = Calendar.current.dateComponents([.year], from: bd, to: Date()).year ?? 0
+            return age > 0 ? age : nil
+        }()
+
+        var items: [String] = []
+
+        // --- Steps goal ---
+        let stepsTarget: Int
+        if let age = userAge {
+            if age < 18 { stepsTarget = 10000 }
+            else if age < 60 { stepsTarget = 7000 }
+            else { stepsTarget = 6000 }
+        } else {
+            stepsTarget = 7000
+        }
+
+        let completedStepsAvg = thisWeekCompleted.map(\.steps).reduce(0, +) / Double(completedCount)
+        if completedStepsAvg > 0 {
+            let stepsGap = Double(stepsTarget) - completedStepsAvg
+            let pct = Int((completedStepsAvg / Double(stepsTarget)) * 100)
+            if stepsGap <= 0 {
+                items.append("步数：日均\(Int(completedStepsAvg))步 ✅ 达标（目标\(stepsTarget)步，完成\(pct)%）")
+            } else {
+                items.append("步数：日均\(Int(completedStepsAvg))步，距目标\(stepsTarget)步还差\(Int(stepsGap))步（完成\(pct)%）")
+            }
+        }
+
+        // --- Exercise goal (WHO: 150min/week moderate intensity) ---
+        let weeklyExTarget = 150 // minutes per week
+        let exerciseDays = thisWeekCompleted.filter { $0.exerciseMinutes > 0 }
+        let completedExTotal = Int(exerciseDays.map(\.exerciseMinutes).reduce(0, +))
+        // Include today's exercise if available (today's exercise data is typically
+        // finalized by the time a user asks "运动够了吗？" in the evening)
+        let todayEx = Int(todaySummary?.exerciseMinutes ?? 0)
+        let totalExWithToday = completedExTotal + todayEx
+
+        if completedExTotal > 0 || todayEx > 0 {
+            // Prorate target based on how much of the week has passed
+            let totalDaysThisWeek = daysSinceMonday + 1 // Mon=1..Sun=7
+            let proRatedTarget = weeklyExTarget * totalDaysThisWeek / 7
+            let exGap = proRatedTarget - totalExWithToday
+            let weekPct = Int((Double(totalExWithToday) / Double(weeklyExTarget)) * 100)
+
+            if totalExWithToday >= weeklyExTarget {
+                items.append("运动：本周已\(totalExWithToday)分钟 ✅ 达标（WHO建议\(weeklyExTarget)分钟/周，完成\(weekPct)%）")
+            } else if exGap <= 0 {
+                // Hit prorated target but not full week target
+                items.append("运动：本周已\(totalExWithToday)分钟，进度正常（周目标\(weeklyExTarget)分钟，已完成\(weekPct)%，按当前节奏本周可达标）")
+            } else {
+                let remainDays = 7 - totalDaysThisWeek
+                let remainNeeded = weeklyExTarget - totalExWithToday
+                if remainDays > 0 {
+                    let dailyNeeded = Int(ceil(Double(remainNeeded) / Double(remainDays)))
+                    items.append("运动：本周已\(totalExWithToday)分钟（\(exerciseDays.count + (todayEx > 0 ? 1 : 0))天运动），周目标\(weeklyExTarget)分钟还差\(remainNeeded)分钟（剩\(remainDays)天，每天需\(dailyNeeded)分钟）")
+                } else {
+                    items.append("运动：本周共\(totalExWithToday)分钟，目标\(weeklyExTarget)分钟，完成\(weekPct)%")
+                }
+            }
+        } else {
+            // No exercise this week at all
+            let remainDays = 7 - (daysSinceMonday + 1)
+            if remainDays > 0 {
+                let dailyNeeded = Int(ceil(Double(weeklyExTarget) / Double(remainDays)))
+                items.append("运动：本周暂无运动记录，WHO建议每周\(weeklyExTarget)分钟，剩\(remainDays)天需每天\(dailyNeeded)分钟")
+            } else {
+                items.append("运动：本周无运动记录（WHO建议每周\(weeklyExTarget)分钟）")
+            }
+        }
+
+        // --- Sleep goal ---
+        let sleepTargetLow: Double
+        let sleepTargetHigh: Double
+        if let age = userAge {
+            if age < 18 { sleepTargetLow = 8.0; sleepTargetHigh = 10.0 }
+            else if age < 65 { sleepTargetLow = 7.0; sleepTargetHigh = 9.0 }
+            else { sleepTargetLow = 7.0; sleepTargetHigh = 8.0 }
+        } else {
+            sleepTargetLow = 7.0; sleepTargetHigh = 9.0
+        }
+
+        let sleepDays = thisWeekCompleted.filter { $0.sleepHours > 0 }
+        if !sleepDays.isEmpty {
+            let avgSleep = sleepDays.map(\.sleepHours).reduce(0, +) / Double(sleepDays.count)
+            let shortNights = sleepDays.filter { $0.sleepHours < sleepTargetLow }.count
+
+            if avgSleep >= sleepTargetLow && avgSleep <= sleepTargetHigh {
+                items.append("睡眠：均\(String(format: "%.1f", avgSleep))h ✅ 在\(String(format: "%.0f", sleepTargetLow))-\(String(format: "%.0f", sleepTargetHigh))h推荐范围内")
+            } else if avgSleep < sleepTargetLow {
+                let deficit = sleepTargetLow - avgSleep
+                var desc = "睡眠：均\(String(format: "%.1f", avgSleep))h，低于推荐\(String(format: "%.0f", sleepTargetLow))h（日均不足\(String(format: "%.1f", deficit))h"
+                if shortNights > 0 {
+                    desc += "，\(shortNights)/\(sleepDays.count)晚不足\(String(format: "%.0f", sleepTargetLow))h"
+                }
+                desc += "）"
+                items.append(desc)
+            } else {
+                // Sleeping more than recommended — not necessarily bad but worth noting
+                items.append("睡眠：均\(String(format: "%.1f", avgSleep))h，超过推荐\(String(format: "%.0f", sleepTargetHigh))h上限（可能为补觉或日程允许）")
+            }
+        }
+
+        guard !items.isEmpty else { return "" }
+
+        let todayNote = todayEx > 0 ? "（含今天截至\(hourOfDay)点）" : "（不含今天进行中的数据）"
+        return "[本周目标进度]\(todayNote)\n" + items.joined(separator: "\n") + "\n⚠️ 用户问「够了吗」「达标吗」「运动够不够」时直接引用以上数据回答，不要自己重新计算。"
     }
 
     private func calendarSection(todayEvents: [CalendarEventItem], upcoming: [CalendarEventItem], past: [CalendarEventItem] = []) -> String {

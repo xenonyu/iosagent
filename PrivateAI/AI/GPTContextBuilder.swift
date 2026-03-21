@@ -2853,6 +2853,27 @@ final class GPTContextBuilder {
                 let hh = displayMins / 60
                 let mm = displayMins % 60
                 sleepDesc += "，均入睡\(String(format: "%02d:%02d", hh, mm))"
+
+                // Sleep onset regularity — standard deviation of bedtime.
+                // Users asking "我作息规律吗？" / "入睡时间稳定吗？" need a consistency
+                // metric, not just the average. Without this, GPT must mentally compute
+                // variance from individual sleep rows — a task it frequently gets wrong
+                // (e.g. misjudging 23:00/01:00/23:30 as "regular" because it averages
+                // to ~23:50). The SD directly answers the regularity question.
+                if onsetMinutes.count >= 3 {
+                    let variance = onsetMinutes.map { ($0 - meanMins) * ($0 - meanMins) }
+                        .reduce(0, +) / Double(onsetMinutes.count)
+                    let sdMins = Int((variance).squareRoot())
+                    if sdMins <= 20 {
+                        sleepDesc += "（入睡很规律，波动≤20分钟）"
+                    } else if sdMins <= 45 {
+                        sleepDesc += "（入睡较规律，波动±\(sdMins)分钟）"
+                    } else if sdMins <= 90 {
+                        sleepDesc += "（入睡不太规律，波动±\(sdMins)分钟）"
+                    } else {
+                        sleepDesc += "（入睡很不规律，波动±\(sdMins)分钟，作息紊乱）"
+                    }
+                }
             }
 
             // Average wake time — completes the sleep schedule picture.
@@ -2870,6 +2891,25 @@ final class GPTContextBuilder {
                 let wakeHH = Int(wakeMean) / 60
                 let wakeMM = Int(wakeMean) % 60
                 sleepDesc += "，均起床\(String(format: "%02d:%02d", wakeHH, wakeMM))"
+
+                // Wake time regularity — standard deviation of wake-up time.
+                // Complements the onset regularity above. A user might go to bed at
+                // consistent times but wake up erratically (alarm vs no alarm days),
+                // or vice versa. Both metrics together give a complete regularity picture.
+                if wakeMinutes.count >= 3 {
+                    let wakeVariance = wakeMinutes.map { ($0 - wakeMean) * ($0 - wakeMean) }
+                        .reduce(0, +) / Double(wakeMinutes.count)
+                    let wakeSdMins = Int((wakeVariance).squareRoot())
+                    if wakeSdMins <= 20 {
+                        sleepDesc += "（起床很规律，波动≤20分钟）"
+                    } else if wakeSdMins <= 45 {
+                        sleepDesc += "（起床较规律，波动±\(wakeSdMins)分钟）"
+                    } else if wakeSdMins <= 90 {
+                        sleepDesc += "（起床不太规律，波动±\(wakeSdMins)分钟）"
+                    } else {
+                        sleepDesc += "（起床很不规律，波动±\(wakeSdMins)分钟）"
+                    }
+                }
             }
 
             items.append(sleepDesc)

@@ -540,6 +540,81 @@ final class PhotoSearchService {
             }
         }
 
+        // "大前天" — 3 days ago (very common Chinese expression, previously unhandled)
+        if text.contains("大前天") {
+            let start = cal.date(byAdding: .day, value: -3, to: todayStart)!
+            let end = cal.date(byAdding: .day, value: -2, to: todayStart)!
+            return (start, end)
+        }
+
+        // --- Specific weekday references ---
+        // "周三拍的照片" / "上周五的照片" / "这周一的照片"
+        // Without this, photo searches with weekday references return all-time
+        // results because parseDateRange falls through to (nil, nil), making the
+        // search ignore the temporal intent entirely.
+        //
+        // Uses Monday-based weeks consistent with GPTContextBuilder.
+        let todayWeekday = cal.component(.weekday, from: now) // 1=Sun..7=Sat
+        let daysSinceMonday = (todayWeekday + 5) % 7 // Mon=0..Sun=6
+        let thisMonday = cal.date(byAdding: .day, value: -daysSinceMonday, to: todayStart)!
+
+        let weekdayMap: [(keywords: [String], weekday: Int)] = [
+            (["周一", "星期一", "礼拜一", "monday"], 2),
+            (["周二", "星期二", "礼拜二", "tuesday"], 3),
+            (["周三", "星期三", "礼拜三", "wednesday"], 4),
+            (["周四", "星期四", "礼拜四", "thursday"], 5),
+            (["周五", "星期五", "礼拜五", "friday"], 6),
+            (["周六", "星期六", "礼拜六", "saturday"], 7),
+            (["周日", "星期日", "星期天", "周天", "礼拜天", "礼拜日", "sunday"], 1)
+        ]
+        let hasLastWeekPrefix = containsAny(text, ["上周", "上个星期", "上星期", "上个礼拜", "上礼拜", "last"])
+        let hasThisWeekPrefix = containsAny(text, ["这周", "本周", "这个星期", "这星期", "这个礼拜", "这礼拜", "this"])
+
+        for (keywords, targetWeekday) in weekdayMap {
+            guard containsAny(text, keywords) else { continue }
+            let targetDaysSinceMonday = (targetWeekday + 5) % 7
+            let targetThisWeek = cal.date(byAdding: .day, value: targetDaysSinceMonday, to: thisMonday)!
+            let targetLastWeek = cal.date(byAdding: .day, value: -7, to: targetThisWeek)!
+
+            let resolvedDate: Date
+            if hasLastWeekPrefix {
+                resolvedDate = targetLastWeek
+            } else if hasThisWeekPrefix {
+                resolvedDate = targetThisWeek
+            } else if targetThisWeek <= todayStart {
+                // Bare "周三" when Wed already passed → this week's Wednesday
+                resolvedDate = targetThisWeek
+            } else {
+                // Bare "周五" when Fri hasn't come yet → last week's Friday
+                // (user likely referring to most recent occurrence for photo search)
+                resolvedDate = targetLastWeek
+            }
+            let start = cal.startOfDay(for: resolvedDate)
+            let end = cal.date(byAdding: .day, value: 1, to: start)!
+            return (start, end)
+        }
+
+        // --- Weekend references ---
+        // "周末拍的照片" / "上周末的照片" — covers Saturday + Sunday
+        if containsAny(text, ["上个周末", "上周末", "last weekend"]) {
+            let lastSaturday = cal.date(byAdding: .day, value: 5 - 7, to: thisMonday)! // last Sat
+            let lastSundayEnd = cal.date(byAdding: .day, value: 7 - 7 + 1, to: thisMonday)! // day after last Sun = this Mon
+            return (lastSaturday, lastSundayEnd)
+        }
+        if containsAny(text, ["周末", "这个周末", "这周末", "weekend"]) {
+            let thisSaturday = cal.date(byAdding: .day, value: 5, to: thisMonday)!
+            if todayStart >= thisSaturday {
+                // Currently on weekend — this weekend
+                let thisSundayEnd = cal.date(byAdding: .day, value: 7, to: thisMonday)!
+                return (thisSaturday, cal.date(byAdding: .day, value: 1, to: thisSundayEnd)!)
+            } else {
+                // Before Saturday — likely means last weekend for photo search (retrospective)
+                let lastSaturday = cal.date(byAdding: .day, value: 5 - 7, to: thisMonday)!
+                let lastSundayEnd = thisMonday // day after last Sunday = this Monday
+                return (lastSaturday, lastSundayEnd)
+            }
+        }
+
         // "去年" / "last year"
         if containsAny(text, ["去年", "last year"]) {
             let year = cal.component(.year, from: now) - 1

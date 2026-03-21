@@ -301,14 +301,153 @@ final class PhotoSearchService {
             q.keywords.append("indoor")
         }
 
-        // --- Flowers/plants ---
-        if containsAny(lower, ["花", "flower", "植物", "plant"]) {
+        // --- Flowers/plants (expanded) ---
+        // Specific flower types first (more precise tags), then generic fallback.
+        if containsAny(lower, ["樱花", "cherry blossom", "sakura"]) {
+            q.keywords.append(contentsOf: ["flower", "cherry", "blossom", "spring", "pink"])
+        } else if containsAny(lower, ["玫瑰", "rose"]) {
+            q.keywords.append(contentsOf: ["flower", "rose", "red"])
+        } else if containsAny(lower, ["荷花", "莲花", "lotus"]) {
+            q.keywords.append(contentsOf: ["flower", "lotus", "pond", "water"])
+        } else if containsAny(lower, ["向日葵", "sunflower"]) {
+            q.keywords.append(contentsOf: ["flower", "sunflower", "yellow"])
+        } else if containsAny(lower, ["梅花", "plum blossom"]) {
+            q.keywords.append(contentsOf: ["flower", "blossom", "winter", "branch"])
+        } else if containsAny(lower, ["花", "flower", "植物", "plant", "花园", "garden", "花卉", "鲜花"]) {
             q.keywords.append(contentsOf: ["flower", "plant", "garden"])
         }
+        if containsAny(lower, ["草地", "草坪", "grass", "lawn"]) {
+            q.keywords.append(contentsOf: ["grass", "green", "outdoor", "park"])
+        }
 
-        // --- Vehicle ---
-        if containsAny(lower, ["车", "car", "汽车"]) {
+        // --- People descriptors ---
+        // Vision tags typically include "person", "baby", "child", "crowd" etc.
+        if containsAny(lower, ["宝宝", "婴儿", "baby", "小宝贝"]) {
+            q.keywords.append(contentsOf: ["baby", "infant", "child", "person"])
+        }
+        if containsAny(lower, ["孩子", "小孩", "child", "kid", "儿童"]) {
+            q.keywords.append(contentsOf: ["child", "kid", "person"])
+        }
+        if containsAny(lower, ["人群", "crowd", "很多人", "大合照"]) {
+            q.keywords.append(contentsOf: ["crowd", "group", "person"])
+            q.minFaces = 4
+        }
+
+        // --- Vehicles (expanded) ---
+        if containsAny(lower, ["飞机", "airplane", "plane", "航班", "机场", "airport"]) {
+            q.keywords.append(contentsOf: ["airplane", "plane", "airport", "sky"])
+        } else if containsAny(lower, ["船", "boat", "ship", "游轮", "帆船", "cruise"]) {
+            q.keywords.append(contentsOf: ["boat", "ship", "water", "sea"])
+        } else if containsAny(lower, ["火车", "train", "高铁", "地铁", "subway", "列车"]) {
+            q.keywords.append(contentsOf: ["train", "railway", "station"])
+        } else if containsAny(lower, ["自行车", "bicycle", "bike", "骑车", "单车"]) {
+            q.keywords.append(contentsOf: ["bicycle", "bike", "cycling"])
+        } else if containsAny(lower, ["摩托", "motorcycle", "电动车"]) {
+            q.keywords.append(contentsOf: ["motorcycle", "vehicle"])
+        } else if containsAny(lower, ["车", "car", "汽车"]) {
             q.keywords.append(contentsOf: ["car", "vehicle"])
+        }
+
+        // --- Sports/activities ---
+        if containsAny(lower, ["游泳", "swimming", "泳池", "pool"]) {
+            q.keywords.append(contentsOf: ["swimming", "pool", "water", "sport"])
+        }
+        if containsAny(lower, ["跑步", "running", "marathon", "马拉松"]) {
+            q.keywords.append(contentsOf: ["running", "sport", "outdoor"])
+        }
+        if containsAny(lower, ["篮球", "basketball"]) {
+            q.keywords.append(contentsOf: ["basketball", "sport", "ball"])
+        }
+        if containsAny(lower, ["足球", "soccer", "football"]) {
+            q.keywords.append(contentsOf: ["soccer", "football", "sport", "ball"])
+        }
+        if containsAny(lower, ["瑜伽", "yoga"]) {
+            q.keywords.append(contentsOf: ["yoga", "sport", "fitness"])
+        }
+        if containsAny(lower, ["滑板", "skateboard", "冲浪", "surfing", "surf"]) {
+            q.keywords.append(contentsOf: ["skateboard", "surfing", "sport"])
+        }
+        if containsAny(lower, ["健身", "gym", "fitness", "举铁", "撸铁"]) {
+            q.keywords.append(contentsOf: ["gym", "fitness", "sport", "indoor"])
+        }
+
+        // --- Celebrations/events ---
+        if containsAny(lower, ["生日", "birthday"]) {
+            q.keywords.append(contentsOf: ["birthday", "cake", "celebration", "party"])
+        }
+        if containsAny(lower, ["婚礼", "wedding", "结婚"]) {
+            q.keywords.append(contentsOf: ["wedding", "ceremony", "celebration", "dress"])
+        }
+        if containsAny(lower, ["派对", "party", "聚会"]) {
+            q.keywords.append(contentsOf: ["party", "celebration", "indoor", "group"])
+        }
+        if containsAny(lower, ["圣诞", "christmas", "新年", "春节", "过年"]) {
+            q.keywords.append(contentsOf: ["christmas", "holiday", "celebration", "decoration"])
+        }
+        if containsAny(lower, ["毕业", "graduation"]) {
+            q.keywords.append(contentsOf: ["graduation", "ceremony", "celebration"])
+        }
+
+        // --- Art/culture/landmarks ---
+        if containsAny(lower, ["博物馆", "museum", "展览", "exhibition"]) {
+            q.keywords.append(contentsOf: ["museum", "art", "indoor", "exhibition"])
+        }
+        if containsAny(lower, ["寺庙", "temple", "神社", "shrine", "寺"]) {
+            q.keywords.append(contentsOf: ["temple", "shrine", "building", "architecture"])
+        }
+        if containsAny(lower, ["教堂", "church", "cathedral"]) {
+            q.keywords.append(contentsOf: ["church", "cathedral", "building", "architecture"])
+        }
+        if containsAny(lower, ["雕塑", "sculpture", "statue", "雕像"]) {
+            q.keywords.append(contentsOf: ["sculpture", "statue", "art"])
+        }
+        if containsAny(lower, ["公园", "park"]) {
+            q.keywords.append(contentsOf: ["park", "garden", "outdoor", "green"])
+        }
+
+        // --- Weather/atmosphere ---
+        if containsAny(lower, ["雨", "rain", "rainy", "下雨"]) {
+            q.keywords.append(contentsOf: ["rain", "wet", "weather", "umbrella"])
+        }
+        if containsAny(lower, ["彩虹", "rainbow"]) {
+            q.keywords.append(contentsOf: ["rainbow", "sky", "weather"])
+        }
+        if containsAny(lower, ["雾", "fog", "foggy", "迷雾"]) {
+            q.keywords.append(contentsOf: ["fog", "mist", "weather"])
+        }
+        if containsAny(lower, ["星空", "starry", "星星", "银河", "milky way"]) {
+            q.keywords.append(contentsOf: ["star", "night", "sky", "galaxy"])
+        }
+
+        // --- Interior spaces ---
+        if containsAny(lower, ["厨房", "kitchen"]) {
+            q.keywords.append(contentsOf: ["kitchen", "indoor", "food"])
+        }
+        if containsAny(lower, ["卧室", "bedroom", "房间", "room"]) {
+            q.keywords.append(contentsOf: ["bedroom", "room", "indoor"])
+        }
+        if containsAny(lower, ["办公室", "office", "工位"]) {
+            q.keywords.append(contentsOf: ["office", "indoor", "desk", "computer"])
+        }
+        if containsAny(lower, ["咖啡厅", "咖啡馆", "cafe", "coffee shop", "星巴克", "starbucks"]) {
+            q.keywords.append(contentsOf: ["cafe", "coffee", "indoor", "food"])
+        }
+        if containsAny(lower, ["餐厅", "restaurant", "饭店", "饭馆"]) {
+            q.keywords.append(contentsOf: ["restaurant", "food", "indoor", "dining"])
+        }
+
+        // --- Seasons (enhanced) ---
+        if containsAny(lower, ["秋天", "autumn", "fall", "秋叶", "红叶"]) {
+            q.keywords.append(contentsOf: ["autumn", "fall", "leaf", "orange", "outdoor"])
+        }
+        if containsAny(lower, ["春天", "spring", "春季"]) {
+            q.keywords.append(contentsOf: ["spring", "flower", "green", "outdoor"])
+        }
+        if containsAny(lower, ["夏天", "summer", "夏季"]) {
+            q.keywords.append(contentsOf: ["summer", "beach", "outdoor", "sun"])
+        }
+        if containsAny(lower, ["冬天", "winter", "冬季"]) {
+            q.keywords.append(contentsOf: ["winter", "snow", "cold"])
         }
 
         // --- Date/Time range ---

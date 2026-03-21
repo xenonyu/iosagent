@@ -97,8 +97,13 @@ final class LocationService: NSObject, ObservableObject {
                 return
             }
             let placeName = placemark.name ?? placemark.locality ?? ""
+            // Include subLocality (district/区) for richer Chinese address context.
+            // e.g. "南京西路, 静安区, 上海市, 上海" instead of "南京西路, 上海市, 上海".
+            // The district is the most useful granularity for intra-city queries
+            // like "最近去了哪些区域？" or "在哪个区待得最久？"
             let address = [
                 placemark.thoroughfare,
+                placemark.subLocality,
                 placemark.locality,
                 placemark.administrativeArea
             ].compactMap { $0 }.joined(separator: ", ")
@@ -145,8 +150,10 @@ extension LocationService: CLLocationManagerDelegate {
         liveGeocoder.reverseGeocodeLocation(location) { [weak self] placemarks, _ in
             guard let self, let placemark = placemarks?.first else { return }
             let name = placemark.name ?? placemark.locality ?? ""
+            // Include subLocality (district/区) — matches reverseGeocode format.
             let addr = [
                 placemark.thoroughfare,
+                placemark.subLocality,
                 placemark.locality,
                 placemark.administrativeArea
             ].compactMap { $0 }.joined(separator: ", ")

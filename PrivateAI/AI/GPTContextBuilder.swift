@@ -4806,12 +4806,27 @@ final class GPTContextBuilder {
         return "未知地点"
     }
 
-    /// Extracts the city component from the address field.
-    /// Address format from CLGeocoder is typically "街道, 城市, 省份" (Chinese locale).
+    /// Extracts the most specific area identifier from the address field.
+    ///
+    /// Address formats from CLGeocoder:
+    /// - New format (4 parts): "街道, 区/district, 城市, 省份" → returns "区" (most specific)
+    ///   e.g. "南京西路, 静安区, 上海市, 上海" → "静安区"
+    /// - Old format (3 parts): "街道, 城市, 省份" → returns "城市"
+    ///   e.g. "南京西路, 上海市, 上海" → "上海市"
+    /// - Fallback: returns the first available component.
+    ///
+    /// Preferring district-level granularity enables GPT to answer "最近去了哪些区域？"
+    /// with "静安区(3次), 浦东新区(2次)" instead of just "上海市(5次)".
     private func cityFromAddress(_ address: String?) -> String? {
         guard let addr = address, !addr.isEmpty else { return nil }
         let parts = addr.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
-        // The second component is typically the city (e.g. "南京西路, 上海市, 上海" → "上海市")
+
+        // 4-part address: street, district, city, province → prefer district
+        if parts.count >= 4 {
+            // The second component is the district (e.g. "静安区", "浦东新区", "海淀区")
+            return parts[1]
+        }
+        // 3-part address (legacy records without subLocality): street, city, province → use city
         if parts.count >= 2 { return parts[1] }
         return parts.first
     }

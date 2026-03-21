@@ -6080,6 +6080,75 @@ final class GPTContextBuilder {
             }
         }
 
+        // --- 5. Sleep duration → Next-day activity level ---
+        // The reverse of correlation #1 (Exercise→Sleep). Users commonly ask "睡不好
+        // 会影响运动吗？" "为什么今天不想动？" "最近不想运动是不是因为睡不好？".
+        // This is distinct from #2 (late bedtime → steps): #2 measures WHEN you sleep,
+        // this measures HOW MUCH you sleep. A user who sleeps 23:00-05:00 (6h, early bed)
+        // is captured by this but missed by #2. The two insights complement each other.
+        //
+        // Sleep is attributed to the wake-up day. The user's activity on that same day
+        // directly follows that night's sleep. So we compare sleep hours vs same-day steps.
+        let daysWithSleepAndSteps = completed.filter { $0.sleepHours > 0 && $0.steps > 0 }
+        if daysWithSleepAndSteps.count >= 5 {
+            // Split into short sleep (<6.5h) vs adequate sleep (≥7h).
+            // Use clinically meaningful thresholds rather than median split:
+            // <6.5h is clinically "short sleep", ≥7h meets most adult recommendations.
+            // The gap between 6.5-7h is excluded to make the contrast clearer.
+            let shortSleepDays = daysWithSleepAndSteps.filter { $0.sleepHours < 6.5 }
+            let adequateSleepDays = daysWithSleepAndSteps.filter { $0.sleepHours >= 7.0 }
+
+            if shortSleepDays.count >= 2 && adequateSleepDays.count >= 2 {
+                let shortSleepStepsAvg = shortSleepDays.map(\.steps).reduce(0, +) / Double(shortSleepDays.count)
+                let adequateSleepStepsAvg = adequateSleepDays.map(\.steps).reduce(0, +) / Double(adequateSleepDays.count)
+                let stepDiff = adequateSleepStepsAvg - shortSleepStepsAvg
+
+                if stepDiff >= 1000 {
+                    let shortSleepAvg = shortSleepDays.map(\.sleepHours).reduce(0, +) / Double(shortSleepDays.count)
+                    let adequateSleepAvg = adequateSleepDays.map(\.sleepHours).reduce(0, +) / Double(adequateSleepDays.count)
+                    insights.append("😴→👟 睡够\(String(format: "%.0f", adequateSleepAvg))h+的日子平均\(Int(adequateSleepStepsAvg))步，睡不足\(String(format: "%.1f", shortSleepAvg))h的日子仅\(Int(shortSleepStepsAvg))步（少\(Int(stepDiff))步）——睡眠不足明显影响第二天活动量")
+                } else if stepDiff <= -1000 {
+                    // Reverse pattern: short sleep → more active (unusual but possible —
+                    // e.g. early wake for gym, or anxiety-driven hyperactivity)
+                    insights.append("😴→👟 有趣的是，睡眠较短的日子反而平均\(Int(shortSleepStepsAvg))步，比睡得充足的日子（\(Int(adequateSleepStepsAvg))步）更活跃")
+                }
+
+                // Exercise probability comparison — even more direct answer to
+                // "睡不好会影响运动吗？". Users care about whether they actually exercised,
+                // not just step count (which includes passive walking).
+                let shortExPct = Double(shortSleepDays.filter { $0.exerciseMinutes > 0 }.count) / Double(shortSleepDays.count) * 100
+                let adequateExPct = Double(adequateSleepDays.filter { $0.exerciseMinutes > 0 }.count) / Double(adequateSleepDays.count) * 100
+                if adequateExPct - shortExPct >= 20 {
+                    insights.append("  运动概率：睡够7h的日子\(Int(adequateExPct))%有运动，睡不足6.5h的日子仅\(Int(shortExPct))%")
+                }
+            }
+        }
+
+        // --- 6. Sleep quality → Next-day HRV ---
+        // HRV (heart rate variability) is the most sensitive biomarker for recovery.
+        // Poor sleep → low next-morning HRV is one of the most medically validated
+        // correlations. Users asking "为什么今天HRV这么低？" "最近压力大是不是因为
+        // 睡不好？" get a data-backed answer. Sleep is attributed to wake-up day,
+        // and HRV for that day reflects recovery from the previous night's sleep,
+        // so we correlate same-day sleep hours with same-day HRV.
+        let daysWithSleepAndHRV = completed.filter { $0.sleepHours > 0 && $0.hrv > 0 }
+        if daysWithSleepAndHRV.count >= 5 {
+            let shortSleepHRVDays = daysWithSleepAndHRV.filter { $0.sleepHours < 6.5 }
+            let adequateSleepHRVDays = daysWithSleepAndHRV.filter { $0.sleepHours >= 7.0 }
+
+            if shortSleepHRVDays.count >= 2 && adequateSleepHRVDays.count >= 2 {
+                let shortHRVAvg = shortSleepHRVDays.map(\.hrv).reduce(0, +) / Double(shortSleepHRVDays.count)
+                let adequateHRVAvg = adequateSleepHRVDays.map(\.hrv).reduce(0, +) / Double(adequateSleepHRVDays.count)
+                let hrvDiff = adequateHRVAvg - shortHRVAvg
+
+                // HRV difference ≥5ms is meaningful — normal daily HRV variation is ~3-5ms,
+                // so a consistent 5ms+ gap between sleep groups is a real signal.
+                if hrvDiff >= 5 {
+                    insights.append("😴→💓 睡够7h+的日子HRV均值\(Int(adequateHRVAvg))ms，睡不足的日子仅\(Int(shortHRVAvg))ms（差\(Int(hrvDiff))ms）——睡眠不足直接降低身体恢复能力")
+                }
+            }
+        }
+
         guard !insights.isEmpty else { return "" }
         return "[生活模式洞察]\n以下为系统分析的跨领域关联（基于近\(completed.count)天数据），在用户问「为什么」「有什么规律」「怎么改善」等问题时可引用：\n" + insights.joined(separator: "\n")
     }

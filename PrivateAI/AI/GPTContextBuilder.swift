@@ -380,7 +380,17 @@ final class GPTContextBuilder {
         if !profile.name.isEmpty { profileParts.append("名字：\(profile.name)") }
         if let bd = profile.birthday {
             let age = Calendar.current.dateComponents([.year], from: bd, to: Date()).year ?? 0
-            if age > 0 { profileParts.append("\(age)岁") }
+            // Include the actual birthday date so GPT can answer "我生日什么时候？"
+            // and "距离我生日还有多久？". Previously only age was shown, making
+            // birthday-date queries unanswerable when the birthday was >7 days away
+            // (outside the [特别日期提醒] 7-day window).
+            let bdFmt = DateFormatter(); bdFmt.dateFormat = "M月d日"
+            let bdStr = bdFmt.string(from: bd)
+            if age > 0 {
+                profileParts.append("\(age)岁（生日：\(bdStr)）")
+            } else {
+                profileParts.append("生日：\(bdStr)")
+            }
         }
         if !profile.occupation.isEmpty { profileParts.append("职业：\(profile.occupation)") }
         if !profile.interests.isEmpty { profileParts.append("兴趣：\(profile.interests.joined(separator: "、"))") }
@@ -546,7 +556,15 @@ final class GPTContextBuilder {
             } else {
                 let hasCalendarData = !todayEvents.isEmpty || !upcomingEvents.isEmpty || !pastEvents.isEmpty
                 if hasCalendarData || self.calendarService.isAuthorized {
-                    parts.append(calendarSection(todayEvents: todayEvents, upcoming: upcomingEvents, past: pastEvents))
+                    // When the user is specifically asking about calendar events, extend
+                    // the "full detail" window from 3 days to 7 days. This enables GPT to
+                    // answer "上周三那个会议讲了什么？" with full notes/attendees/location —
+                    // questions that fail with compact format (notes stripped for events >3 days old).
+                    // For non-calendar queries that happen to include the calendar section
+                    // (e.g. general "总结这周"), keep 3-day detail to save tokens.
+                    let calendarFocused = queryTopics.contains(.calendar) && !includeAllSections
+                    let detailDays = calendarFocused ? 7 : 3
+                    parts.append(calendarSection(todayEvents: todayEvents, upcoming: upcomingEvents, past: pastEvents, recentDetailDays: detailDays))
                 }
             }
         }
@@ -3129,7 +3147,10 @@ final class GPTContextBuilder {
         return "[本周目标进度]\(todayNote)\n" + items.joined(separator: "\n") + "\n⚠️ 用户问「够了吗」「达标吗」「运动够不够」时直接引用以上数据回答，不要自己重新计算。"
     }
 
-    private func calendarSection(todayEvents: [CalendarEventItem], upcoming: [CalendarEventItem], past: [CalendarEventItem] = []) -> String {
+    /// `recentDetailDays` controls how many past days get full event detail (notes,
+    /// attendees, etc.) vs compact summary. Default 3 is adequate for general queries;
+    /// calendar-focused queries use 7 so GPT can answer "上周三那个会议讲了什么？"
+    private func calendarSection(todayEvents: [CalendarEventItem], upcoming: [CalendarEventItem], past: [CalendarEventItem] = [], recentDetailDays: Int = 3) -> String {
         let cal = Calendar.current
         let df = DateFormatter(); df.dateFormat = "M月d日"
         df.locale = Locale(identifier: "zh_CN")
@@ -3210,7 +3231,7 @@ final class GPTContextBuilder {
             // for the past 3 days (yesterday, 前天, 大前天). Older days get a compact
             // daily summary (count + titles only) to save ~60-70% of tokens while
             // preserving data for GPT to answer common queries like "上周有几个会?"
-            let recentCutoff = cal.date(byAdding: .day, value: -3, to: cal.startOfDay(for: now)) ?? now
+            let recentCutoff = cal.date(byAdding: .day, value: -recentDetailDays, to: cal.startOfDay(for: now)) ?? now
 
             for day in sortedDays.prefix(14) {
                 guard let dayEvents = dayGroups[day] else { continue }

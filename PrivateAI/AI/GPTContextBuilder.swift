@@ -2480,6 +2480,20 @@ final class GPTContextBuilder {
             if let today = todaySummary, today.hasData {
                 line += "\n  + 今天（截至\(hourOfDay)点，仍在积累）：\(todaySnapshot(today))"
             }
+            // MERGED WORKOUT SUMMARY — When today has workouts, provide a combined
+            // "本周合计（含今天）" per-type breakdown so GPT can directly answer
+            // "这周跑步了几次？" without manual addition. The SYSTEM prompt instructs
+            // GPT to "use pre-computed stats, never manually count", but weekSubTotal
+            // excludes today. Without this merged line, GPT either: (1) quotes the
+            // pre-computed count (wrong — misses today), or (2) tries to add today's
+            // workouts manually (contradicts the instruction and GPT often miscounts).
+            // This line eliminates the contradiction by providing the definitive total.
+            if let today = todaySummary, !today.workouts.isEmpty {
+                let mergedLine = mergedWorkoutSummary(completedDays: thisWeekDays, today: today, hourOfDay: hourOfDay)
+                if !mergedLine.isEmpty {
+                    line += "\n  → \(mergedLine)"
+                }
+            }
             parts.append(line)
         } else if let today = todaySummary, today.hasData {
             // Monday (or first day of week): no completed days yet, but today has data.
@@ -2775,6 +2789,51 @@ final class GPTContextBuilder {
         if s.sleepHours > 0 { items.append("睡眠\(String(format: "%.1f", s.sleepHours))h") }
         if s.standMinutes > 0 { items.append("站立\(Int(s.standMinutes))分钟") }
         return items.isEmpty ? "暂无数据" : items.joined(separator: "，")
+    }
+
+    /// Merges completed days' workout stats with today's workouts to produce a single
+    /// definitive "本周合计（含今天）" per-type breakdown. This prevents the contradiction
+    /// where GPT is told to "use pre-computed stats, never manually count" but the
+    /// pre-computed workout-type counts exclude today's completed workouts.
+    ///
+    /// Example output:
+    ///   "本周合计（含今天截至15点）：运动5天，🏃跑步3次80分钟 8.5km、🚴骑行1次30分钟"
+    private func mergedWorkoutSummary(completedDays: [HealthSummary],
+                                       today: HealthSummary,
+                                       hourOfDay: Int) -> String {
+        let allWorkouts = completedDays.flatMap(\.workouts) + today.workouts
+        guard !allWorkouts.isEmpty else { return "" }
+
+        // Count total exercise days (completed days with exercise + today if exercised)
+        let completedExDays = completedDays.filter { $0.exerciseMinutes > 0 }.count
+        let todayExercised = today.exerciseMinutes > 0 || !today.workouts.isEmpty
+        let totalExDays = completedExDays + (todayExercised ? 1 : 0)
+        let totalDays = completedDays.count + 1 // +1 for today
+
+        // Group by typeName and aggregate
+        var typeStats: [String: (emoji: String, count: Int, totalMins: Int, totalDistM: Double)] = [:]
+        var typeOrder: [String] = []
+        for w in allWorkouts {
+            let name = w.typeName
+            if typeStats[name] == nil {
+                typeOrder.append(name)
+                typeStats[name] = (emoji: w.typeEmoji, count: 0, totalMins: 0, totalDistM: 0)
+            }
+            typeStats[name]!.count += 1
+            typeStats[name]!.totalMins += Int(w.duration / 60)
+            typeStats[name]!.totalDistM += w.totalDistance
+        }
+
+        let typeParts = typeOrder.prefix(6).compactMap { name -> String? in
+            guard let s = typeStats[name] else { return nil }
+            var part = "\(s.emoji)\(name)\(s.count)次\(s.totalMins)分钟"
+            if s.totalDistM > 100 {
+                part += " \(String(format: "%.1f", s.totalDistM / 1000))km"
+            }
+            return part
+        }
+
+        return "本周合计（含今天截至\(hourOfDay)点）：\(totalExDays)/\(totalDays)天运动，\(typeParts.joined(separator: "、"))"
     }
 
     /// Pre-computes week-over-week deltas using daily averages for fair comparison.

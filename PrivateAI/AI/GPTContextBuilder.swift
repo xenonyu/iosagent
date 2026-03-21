@@ -6303,6 +6303,53 @@ final class GPTContextBuilder {
             }
         }
 
+        // 4c. Active exercise streak — count consecutive days WITH exercise from
+        //     the most recent day backward. Users commonly ask "我连续运动了几天？"
+        //     "我保持运动多久了？" and the SYSTEM prompt instructs GPT to "never manually
+        //     count trend table rows". Without a pre-computed streak, GPT must either
+        //     disobey that instruction (and frequently miscount) or say "I can't tell"
+        //     when the data is right there. The gap detection above (#4/#4b) only catches
+        //     NEGATIVE patterns (broken streaks, inactivity); this provides the POSITIVE
+        //     reinforcement that's crucial for habit maintenance. Seeing "🔥 连续运动6天"
+        //     is exactly the "mirror" value proposition — data-driven encouragement only
+        //     a personal AI with real health data can provide.
+        //
+        //     Include today only if exercise data exists; today's partial data (0 at 9am)
+        //     should NOT break an otherwise ongoing streak.
+        if !streakBroken || exerciseStreak < 3 {
+            // Only compute active streak if the gap detection above didn't already fire
+            // (if gap detection fired, the streak is already broken — no active streak).
+            var activeStreak = 0
+            var streakStartDate: Date?
+            // Scan from newest → oldest, including today if it has exercise
+            let allReversed = chrono.reversed() // newest first
+            for s in allReversed {
+                let hasExercise = s.exerciseMinutes > 0 || !s.workouts.isEmpty
+                if cal.isDateInToday(s.date) && !hasExercise {
+                    // Skip today if no exercise yet — don't break the streak prematurely
+                    continue
+                }
+                if hasExercise {
+                    activeStreak += 1
+                    streakStartDate = s.date
+                } else {
+                    break
+                }
+            }
+            if activeStreak >= 3 {
+                let startLabel: String
+                if let start = streakStartDate {
+                    startLabel = "（从\(dateFmt.string(from: start))起）"
+                } else {
+                    startLabel = ""
+                }
+                // Check if today already has exercise (streak includes today)
+                let todayHasExercise = chrono.last.map { cal.isDateInToday($0.date) && ($0.exerciseMinutes > 0 || !$0.workouts.isEmpty) } ?? false
+                let todayNote = todayHasExercise ? "，含今天" : ""
+                alerts.append("🔥 连续运动\(activeStreak)天\(startLabel)\(todayNote)，坚持得很好！")
+            }
+        }
+
         // 5. Step count significant drop — weekly average dropped >40%
         //    Sudden inactivity may indicate illness, injury, or lifestyle change.
         let recentStepDays = Array(completed.suffix(7))

@@ -336,6 +336,14 @@ final class GPTContextBuilder {
         - 用药/服药提醒
         如果用户询问以上内容，坦诚说明「这类数据我暂时无法获取」，并简要建议可以用什么方式记录（如 iOS 健康 App 手动录入血压、使用屏幕使用时间功能等），但不要编造数据。
 
+        ⚠️ 以下为实时/外部信息，本 App 无法获取（即使你作为 AI 可能有通用知识，也不要假装拥有实时数据）：
+        - 天气/气温/降雨/空气质量（用户问「今天天气怎么样」时，说明你没有天气数据，可建议查看系统天气 App 或 Siri）
+        - 新闻/热点/时事
+        - 股票/基金/汇率/加密货币等实时金融数据
+        - 交通/导航/路线规划（用户问「怎么去XX」时，建议使用地图 App）
+        - 外卖/购物/快递状态
+        对于这类问题，请直接说明「这需要实时数据，我暂时无法获取」，简要建议用什么 App 或方式查询。不要基于通用知识编造具体的今日天气、股价等。
+
         回复要求：
         - \(toneInstruction)
         - 如果用户用英文提问，用英文回答。
@@ -800,6 +808,31 @@ final class GPTContextBuilder {
             "举个例子", "举些例子", "给我个例子", "示例"
         ]
         if capabilityPatterns.contains(where: { lower.contains($0) }) {
+            return true
+        }
+
+        // External/real-time queries — these ask about data the app doesn't have
+        // (weather, news, stocks, navigation). User data is irrelevant; GPT only
+        // needs the SYSTEM prompt to explain it can't provide real-time info.
+        // Without this, "今天天气怎么样" loads 14 days of health + calendar + location
+        // data (~5000 tokens) just so GPT can say "I don't have weather data".
+        let externalDataPatterns = [
+            // Weather — extremely common query, #1 reason users try a new assistant
+            "天气", "气温", "温度", "下雨", "下雪", "刮风", "雾霾", "空气质量", "紫外线",
+            "穿什么", "带伞", "weather", "temperature", "rain", "snow", "forecast",
+            // News / current events
+            "新闻", "热搜", "热点", "时事", "头条", "news", "headline",
+            // Finance — real-time data
+            "股票", "股价", "基金", "汇率", "比特币", "加密货币", "大盘",
+            "stock", "bitcoin", "crypto", "exchange rate",
+            // Navigation / traffic
+            "怎么去", "怎么走", "路线", "导航", "堵车", "打车",
+            "navigate", "directions", "how to get to",
+            // Delivery / shopping
+            "快递", "外卖", "物流", "发货",
+            "delivery", "package", "tracking"
+        ]
+        if externalDataPatterns.contains(where: { lower.contains($0) }) {
             return true
         }
 

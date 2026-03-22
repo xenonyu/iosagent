@@ -4060,6 +4060,7 @@ final class GPTContextBuilder {
                     let eventDescs = dayEvents.prefix(5).map { e -> String in
                         let timeStr = e.isAllDay ? "全天" : "\(timeFmt.string(from: e.startDate))–\(timeFmt.string(from: e.endDate))"
                         var desc = "\(timeStr) \(e.title)"
+                        if e.isTentative { desc += " ⏳待确认" }
                         if !e.calendar.isEmpty { desc += " [\(e.calendar)]" }
                         if !e.recurrenceDescription.isEmpty { desc += " 🔄\(e.recurrenceDescription)" }
                         if !e.location.isEmpty { desc += "（\(e.location)）" }
@@ -4086,6 +4087,7 @@ final class GPTContextBuilder {
                     let titles = dayEvents.prefix(4).map { e -> String in
                         let timePrefix = e.isAllDay ? "全天" : "\(timeFmt.string(from: e.startDate))–\(timeFmt.string(from: e.endDate))"
                         var entry = "\(timePrefix) \(e.title)"
+                        if e.isTentative { entry += "⏳待确认" }
                         if !e.calendar.isEmpty { entry += "[\(e.calendar)]" }
                         if !e.recurrenceDescription.isEmpty { entry += "🔄" }
                         if !e.location.isEmpty { entry += "(\(e.location))" }
@@ -4200,6 +4202,7 @@ final class GPTContextBuilder {
                 }
 
                 var line = "  \(e.timeDisplay) \(e.title)\(status)"
+                if e.isTentative { line += " ⏳待确认" }
                 if !e.calendar.isEmpty { line += " [\(e.calendar)]" }
                 if !e.recurrenceDescription.isEmpty { line += " 🔄\(e.recurrenceDescription)" }
                 if !e.location.isEmpty { line += "（\(e.location)）" }
@@ -4341,6 +4344,7 @@ final class GPTContextBuilder {
                     let eventDescs = dayEvents.prefix(8).map { e -> String in
                         let timeStr = e.isAllDay ? "全天" : "\(timeFmt.string(from: e.startDate))–\(timeFmt.string(from: e.endDate))"
                         var desc = "\(timeStr) \(e.title)"
+                        if e.isTentative { desc += " ⏳待确认" }
                         if !e.calendar.isEmpty { desc += " [\(e.calendar)]" }
                         if !e.recurrenceDescription.isEmpty { desc += " 🔄\(e.recurrenceDescription)" }
                         if !e.location.isEmpty { desc += "（\(e.location)）" }
@@ -4394,6 +4398,7 @@ final class GPTContextBuilder {
                     let titles = dayEvents.prefix(4).map { e -> String in
                         let timePrefix = e.isAllDay ? "全天" : "\(timeFmt.string(from: e.startDate))–\(timeFmt.string(from: e.endDate))"
                         var entry = "\(timePrefix) \(e.title)"
+                        if e.isTentative { entry += "⏳待确认" }
                         if !e.calendar.isEmpty { entry += "[\(e.calendar)]" }
                         if !e.recurrenceDescription.isEmpty { entry += "🔄" }
                         if !e.location.isEmpty { entry += "(\(e.location))" }
